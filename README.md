@@ -1,67 +1,77 @@
-# MMT-Trade Bot
+# MMT-Trade
 
-Kompakter Python-Bot mit **textbasiertem TUI** (Terminal-UI) für Trading-Daten. **Tab „Daten“** nutzt die [CCXT](https://docs.ccxt.com/)-API (Binance, Coinbase, Bybit) mit **Rate-Limit-Schonung**; optional MMT.gg in den API-Tabs.
+Web-basierte SaaS-App: Börsendaten (CCXT) + Kerzenchart. Ein Fenster, lokal auf localhost.
+
+## Stack
+
+- **Backend:** Node.js, Express, CCXT (Binance, Coinbase, Bybit, OKX)
+- **Frontend:** Vue 3, Vite, TradingView Lightweight Charts
 
 ## Voraussetzungen
 
-- Python 3.10+
-- Windows / macOS / Linux (Terminal mit Farbunterstützung)
+- **Node.js 18+** (CCXT, Vite und Vue 3 benötigen mindestens Node 18)
 
 ## Einrichtung
 
 ```bash
-git clone <repo-url>
-cd mmt-trade
-
-python -m venv .venv
-.venv\Scripts\activate   # Windows
-# source .venv/bin/activate  # macOS/Linux
-
-pip install -r requirements.txt
+npm run install:all
 ```
 
-## Starten
+Oder manuell:
 
 ```bash
-python run.py
+npm install
+cd web/backend && npm install
+cd ../frontend && npm install
 ```
 
-## TUI – 3 Tabs
+## Starten (localhost)
 
-- **Daten-CCXT** (Start-Tab, nur CCXT)
-  - **Kein API-Key nötig** – nur öffentliche Endpoints. [CCXT Beispiele](https://docs.ccxt.com/examples/py/).
-  - **Börse**: Binance, Coinbase, Bybit, **OKX**.
-  - **Symbol**: Pro Börse **Top 10 USDT-Paare** nach Handelsvolumen (automatisch beim Börsenwechsel).
-  - **Chart laden**: Öffnet ein Kerzenchart-Fenster (X-Achse = Zeit, Y-Achse = Preis), grün/rot, Volume-Panel, gleitende Durchschnitte (9, 21). Zusätzlich Tabelle in der TUI.
-  - Timeframe: 5m, 15m, 1h, 4h. Rate Limits: ~1,2 s Abstand, Ticker-Cache 5 Min.
+```bash
+npm run dev
+```
 
-- **MMT**: API-Key, Base-URL, Test, Candles (für MMT.gg).
+- **Backend:** http://localhost:3001  
+- **Frontend:** http://localhost:5173  
 
-- **Einstellungen**: MMT-Exchange, Symbol, Timeframe, Region (für MMT-Tab).
+Im Browser **http://localhost:5173** öffnen. Die App nutzt den API-Proxy automatisch.
 
-Tastatur: **Q** = Beenden, **F1** = Daten-CCXT, **F2** = MMT, **F3** = Einstellungen.
+## Manuell starten
 
-## CCXT
+```bash
+# Terminal 1 – Backend
+cd web/backend && npm start
 
-- [CCXT-Dokumentation](https://docs.ccxt.com/)
-- Öffentliche Endpoints (kein API-Key nötig für Ticker/OHLCV).
-- `enableRateLimit` aktiv; zusätzlich Mindestabstand und Ticker-Cache im Code.
+# Terminal 2 – Frontend
+cd web/frontend && npm run dev
+```
+
+## API (Backend)
+
+| Endpoint | Beschreibung |
+|----------|--------------|
+| `GET /api/exchanges` | Liste der Börsen |
+| `GET /api/symbols?exchange=binance&limit=10` | Top 10 USDT-Symbole |
+| `GET /api/ohlcv?exchange=binance&symbol=BTC/USDT&timeframe=1h&limit=50` | OHLCV-Kerzen |
 
 ## Projektstruktur
 
 ```
 mmt-trade/
-├── run.py
-├── requirements.txt       # textual, ccxt, httpx
-├── README.md
-└── src/
-    ├── api/
-    │   ├── ccxt_client.py   # CCXT: Top-Symbole, OHLCV, Rate-Limits
-    │   └── mmt.py           # MMT.gg (optional)
-    ├── tui/
-    │   ├── app.py           # TUI (Daten, API 1/2, Einstellungen)
-    │   └── chart.py         # ASCII-OHLC-Darstellung
-    ├── gui/                 # Optional: CustomTkinter
-    └── bot/
-        └── core.py
+├── package.json           # Root: npm run dev startet beides
+├── web/
+│   ├── backend/           # Express + CCXT
+│   │   ├── index.js
+│   │   └── package.json
+│   └── frontend/          # Vue 3 + Vite + Lightweight Charts
+│       ├── src/
+│       │   ├── App.vue
+│       │   ├── api.js
+│       │   └── components/LWChart.vue
+│       └── package.json
+└── src/                   # (alt) Python – wird nicht mehr genutzt
 ```
+
+## MMT.gg
+
+MMT.gg nutzt eigene Shader-Rendering- und Backend-Infrastruktur. Für diese App werden Vue 3 und TradingView Lightweight Charts verwendet – stabil und gut für Kerzencharts geeignet.

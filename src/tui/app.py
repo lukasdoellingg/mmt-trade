@@ -22,8 +22,7 @@ from src.api.ccxt_client import (
     fetch_top_symbols_by_volume,
 )
 from src.api.mmt import candles, ping
-from src.chart.candlestick import show_candlestick_chart
-from src.tui.chart import render_ohlcv_for_rich
+from src.chart.candlestick import open_chart_gui
 
 
 PREMIUM_CSS = """
@@ -459,19 +458,24 @@ class MMTTradeTUI(App[None]):
                 self._set_daten_chart("[yellow]Keine Kerzen erhalten.[/]")
                 self._log("CCXT: Keine Kerzen zurückgegeben.", "warn")
             else:
-                chart_text = render_ohlcv_for_rich(ohlcv, 25)
-                self._set_daten_chart(chart_text)
                 self._log(f"CCXT: {len(ohlcv)} Kerzen geladen.", "info")
                 try:
-                    show_candlestick_chart(
+                    open_chart_gui(
                         ohlcv,
                         symbol=symbol,
                         exchange=exchange_id.title(),
                         timeframe=timeframe,
                     )
-                    self._log("CCXT: Chart-Fenster geöffnet (X=Zeit, Y=Preis).", "info")
+                    self._set_daten_chart(
+                        "[dim]Chart-GUI geöffnet (eigenes Fenster).[/]\n\n"
+                        "[green]Verschieben:[/] Toolbar → Hand, dann ziehen\n"
+                        "[green]Zoomen:[/] Toolbar → Lupe, dann ziehen\n\n"
+                        "[dim]Neuen Chart: Symbol/Timeframe wählen → „Chart laden“[/]"
+                    )
+                    self._log("CCXT: Chart-GUI geöffnet (eigenes Fenster, Pan/Zoom in Toolbar).", "info")
                 except Exception as chart_err:
-                    self._log(f"CCXT: Chart-Fenster: {chart_err}", "warn")
+                    self._set_daten_chart(f"[red]Chart-Fehler: {chart_err}[/]")
+                    self._log(f"CCXT: Chart-GUI: {chart_err}", "warn")
         except Exception as e:
             self._log(f"CCXT: Chart-Fehler: {e}", "err")
             self._set_daten_chart(f"[red]Fehler: {e}[/]")

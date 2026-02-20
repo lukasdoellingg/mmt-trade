@@ -1,24 +1,14 @@
 #!/usr/bin/env python3
 """
-MMT-Trade Bot – Einstiegspunkt.
-Startet die TUI (Terminal-UI, Hacker-Style). Für grafisches GUI: python -c "from src.gui import App; App().run()"
+MMT-Trade – Einstiegspunkt.
+
+Hinweis: Das Projekt wurde auf eine Web-App umgestellt (Vue 3 + Node.js Backend).
+Starte die Web-App mit:  npm run dev
+Öffne dann http://localhost:5173 im Browser.
+
+Diese Datei wird nicht mehr verwendet.
 """
 
 import sys
-from pathlib import Path
-
-# Projektroot für Imports
-root = Path(__file__).resolve().parent
-if str(root) not in sys.path:
-    sys.path.insert(0, str(root))
-
-from src.tui import MMTTradeTUI
-
-
-def main() -> None:
-    app = MMTTradeTUI()
-    app.run()
-
-
-if __name__ == "__main__":
-    main()
+print("MMT-Trade wurde auf eine Web-App umgebaut. Starte mit: npm run dev", file=sys.stderr)
+sys.exit(1)
