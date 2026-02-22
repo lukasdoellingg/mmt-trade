@@ -8,6 +8,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "highcharts": "^12.5.0",
+    "highcharts-vue": "^2.0.1",
     "lightweight-charts": "^4.2.0",
     "vue": "^3.5.0"
   },
