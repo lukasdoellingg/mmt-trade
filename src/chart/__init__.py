@@ -1,1 +1,0 @@
-# Chart-Modul: Kerzencharts (mplfinance)

@@ -59,17 +59,16 @@ cd web/frontend && npm run dev
 ```
 mmt-trade/
 ├── package.json           # Root: npm run dev startet beides
-├── web/
-│   ├── backend/           # Express + CCXT
-│   │   ├── index.js
-│   │   └── package.json
-│   └── frontend/          # Vue 3 + Vite + Lightweight Charts
-│       ├── src/
-│       │   ├── App.vue
-│       │   ├── api.js
-│       │   └── components/LWChart.vue
-│       └── package.json
-└── src/                   # (alt) Python – wird nicht mehr genutzt
+└── web/
+    ├── backend/           # Express + CCXT
+    │   ├── index.js
+    │   └── package.json
+    └── frontend/          # Vue 3 + Vite + Lightweight Charts
+        ├── src/
+        │   ├── App.vue
+        │   ├── api.js
+        │   └── components/
+        └── package.json
 ```
 
 ## MMT.gg
