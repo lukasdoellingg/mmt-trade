@@ -1,4 +1,4 @@
-import { symbolToWs } from './utils/symbols.js';
+import { symbolToWs } from './utils/symbols';
 
 const RECONNECT_MS = 3000;
 const MAX_RECONNECT = 5;
@@ -6,21 +6,42 @@ const STALE_TIMEOUT_MS = 15000;
 const PRUNE_MAX_LEVELS = 500;
 const PRUNE_INTERVAL = 100;
 
-function apply(map, levels) {
+type Level = [number, number];
+type BookMap = Map<string, number>;
+
+interface OrderBook {
+  bids: Level[];
+  asks: Level[];
+}
+
+interface StreamContext {
+  bids: BookMap;
+  asks: BookMap;
+  apply: (map: BookMap, levels: unknown[][]) => void;
+  snap: (map: BookMap, levels: unknown[][]) => void;
+  markDirty: () => void;
+  flush: () => void;
+}
+
+type OnUpdate = (book: OrderBook) => void;
+type OnLoaded = () => void;
+type ConnectFn = (ctx: StreamContext) => WebSocket;
+
+function apply(map: BookMap, levels: unknown[][]): void {
   for (let i = 0; i < levels.length; i++) {
     const p = String(levels[i][0]), q = +levels[i][1];
     q === 0 ? map.delete(p) : map.set(p, q);
   }
 }
 
-function snap(map, levels) {
+function snap(map: BookMap, levels: unknown[][]): void {
   map.clear();
   apply(map, levels);
 }
 
-function pruneMap(map, keepTop, desc) {
+function pruneMap(map: BookMap, keepTop: number, desc: boolean): void {
   if (map.size <= keepTop) return;
-  const entries = [];
+  const entries: [number, number][] = [];
   for (const [p, q] of map) entries.push([+p, q]);
   entries.sort((a, b) => desc ? b[0] - a[0] : a[0] - b[0]);
   map.clear();
@@ -29,14 +50,18 @@ function pruneMap(map, keepTop, desc) {
   }
 }
 
-function makeStream(connect) {
-  let ws = null, closed = false, retries = 0, timer = null, staleTimer = null;
-  const bids = new Map(), asks = new Map();
+function makeStream(connect: ConnectFn) {
+  let ws: WebSocket | null = null;
+  let closed = false, retries = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let staleTimer: ReturnType<typeof setTimeout> | null = null;
+  const bids: BookMap = new Map();
+  const asks: BookMap = new Map();
   let loaded = false;
   let updateCount = 0;
   let dirty = false;
 
-  function resetStaleTimer() {
+  function resetStaleTimer(): void {
     if (staleTimer) clearTimeout(staleTimer);
     if (closed) return;
     staleTimer = setTimeout(() => {
@@ -45,7 +70,7 @@ function makeStream(connect) {
     }, STALE_TIMEOUT_MS);
   }
 
-  function markDirty() {
+  function markDirty(): void {
     dirty = true;
     if (++updateCount >= PRUNE_INTERVAL) {
       updateCount = 0;
@@ -55,24 +80,24 @@ function makeStream(connect) {
     resetStaleTimer();
   }
 
-  function flush(onUpdate, onLoaded) {
+  function flush(onUpdate: OnUpdate, onLoaded: OnLoaded): void {
     if (!dirty) return;
     dirty = false;
-    const bidArr = new Array(Math.min(bids.size, PRUNE_MAX_LEVELS));
-    const askArr = new Array(Math.min(asks.size, PRUNE_MAX_LEVELS));
+    const bidArr: Level[] = new Array(Math.min(bids.size, PRUNE_MAX_LEVELS));
+    const askArr: Level[] = new Array(Math.min(asks.size, PRUNE_MAX_LEVELS));
     let bi = 0, ai = 0;
     for (const [p, q] of bids) { if (bi >= bidArr.length) break; bidArr[bi++] = [+p, q]; }
     for (const [p, q] of asks) { if (ai >= askArr.length) break; askArr[ai++] = [+p, q]; }
     bidArr.sort((a, b) => b[0] - a[0]);
     askArr.sort((a, b) => a[0] - b[0]);
-    const book = { bids: bidArr, asks: askArr };
+    const book: OrderBook = { bids: bidArr, asks: askArr };
     if (book.bids.length || book.asks.length) {
       onUpdate(book);
       if (!loaded) { loaded = true; onLoaded(); }
     }
   }
 
-  function start(onUpdate, onLoaded) {
+  function start(onUpdate: OnUpdate, onLoaded: OnLoaded): void {
     if (closed) return;
     ws = connect({
       bids, asks, apply, snap,
@@ -91,7 +116,7 @@ function makeStream(connect) {
     resetStaleTimer();
   }
 
-  return (onUpdate, onLoaded) => {
+  return (onUpdate: OnUpdate, onLoaded: OnLoaded) => {
     start(onUpdate, onLoaded);
     return () => {
       closed = true;
@@ -102,7 +127,12 @@ function makeStream(connect) {
   };
 }
 
-function binanceStream(symbol) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function parse(raw: unknown): any {
+  try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return null; }
+}
+
+function binanceStream(symbol: string) {
   const wsSym = symbolToWs(symbol, 'binance');
   return makeStream(({ bids, asks, apply: ap, markDirty, flush }) => {
     const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${wsSym}@depth@100ms`);
@@ -117,7 +147,7 @@ function binanceStream(symbol) {
   });
 }
 
-function bybitStream(symbol) {
+function bybitStream(symbol: string) {
   const sym = (symbol || 'BTC/USDT').toUpperCase().replace(/[\s/]/g, '');
   return makeStream(({ bids, asks, apply: ap, snap: sn, markDirty, flush }) => {
     const ws = new WebSocket('wss://stream.bybit.com/v5/public/spot');
@@ -134,7 +164,7 @@ function bybitStream(symbol) {
   });
 }
 
-function okxStream(symbol) {
+function okxStream(symbol: string) {
   const instId = symbolToWs(symbol, 'okx');
   return makeStream(({ bids, asks, apply: ap, snap: sn, markDirty, flush }) => {
     const ws = new WebSocket('wss://ws.okx.com:8443/ws/v5/public');
@@ -152,10 +182,10 @@ function okxStream(symbol) {
   });
 }
 
-function coinbaseStream(symbol) {
+function coinbaseStream(symbol: string) {
   const [base] = (symbol || 'BTC/USDT').toUpperCase().replace(/\s/g, '').split('/');
   const pid = `${base}-USD`;
-  return makeStream(({ bids, asks, apply: ap, snap: sn, markDirty, flush }) => {
+  return makeStream(({ bids, asks, snap: sn, markDirty, flush }) => {
     const ws = new WebSocket('wss://ws-feed.exchange.coinbase.com');
     ws.onopen = () => ws.send(JSON.stringify({ type: 'subscribe', product_ids: [pid], channels: ['level2_batch'] }));
     ws.onmessage = e => {
@@ -163,36 +193,34 @@ function coinbaseStream(symbol) {
       if (!d) return;
       if (d.type === 'snapshot' && d.product_id === pid) {
         sn(bids, d.bids || []); sn(asks, d.asks || []);
-        markDirty();
-        flush();
+        markDirty(); flush();
       } else if (d.type === 'l2update' && d.product_id === pid) {
         const ch = d.changes;
         if (ch) for (let i = 0; i < ch.length; i++) {
           const c = ch[i], m = c[0] === 'buy' ? bids : asks;
           +c[2] === 0 ? m.delete(String(c[1])) : m.set(String(c[1]), +c[2]);
         }
-        markDirty();
-        flush();
+        markDirty(); flush();
       }
     };
     return ws;
   });
 }
 
-function parse(raw) {
-  try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return null; }
-}
-
-export function createAllOrderbooksWs(symbol, onUpdate, opts = {}) {
+export function createAllOrderbooksWs(
+  symbol: string,
+  onUpdate: (exId: string, book: OrderBook) => void,
+  opts: { onLoaded?: (exId: string) => void } = {},
+): () => void {
   const onLoaded = opts.onLoaded || (() => {});
-  const streams = [
+  const streams: [string, (s: string) => ReturnType<typeof makeStream>][] = [
     ['binance', binanceStream],
     ['bybit', bybitStream],
     ['okx', okxStream],
     ['coinbase', coinbaseStream],
   ];
   const cleanups = streams.map(([id, factory]) =>
-    factory(symbol)(ob => onUpdate(id, ob), () => onLoaded(id))
+    factory(symbol)((ob) => onUpdate(id, ob), () => onLoaded(id))
   );
   return () => cleanups.forEach(fn => fn());
 }

@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue';
 
 const props = defineProps({
@@ -26,6 +26,7 @@ function mount() {
   scriptEl.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
   scriptEl.async = true;
   scriptEl.type = 'text/javascript';
+  scriptEl.crossOrigin = 'anonymous';
   scriptEl.innerHTML = JSON.stringify({
     autosize: true, symbol: tvSymbol(), interval: TF_MAP[props.timeframe] ?? '60',
     timezone: 'Etc/UTC', theme: 'dark', style: '1', locale: 'en',

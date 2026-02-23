@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed, markRaw } from 'vue';
 import StartScreen from './components/StartScreen.vue';
 import DashHeader from './components/DashHeader.vue';
@@ -6,12 +6,14 @@ import DashboardView from './views/DashboardView.vue';
 import TradeView from './views/TradeView.vue';
 import TradFiView from './views/TradFiView.vue';
 import TradFiMarketsView from './views/TradFiMarketsView.vue';
+import HeatmapView from './views/HeatmapView.vue';
 
 const VIEW_MAP = {
   futures: markRaw(DashboardView),
   chart: markRaw(TradeView),
   cme: markRaw(TradFiView),
   tradfi: markRaw(TradFiMarketsView),
+  heatmap: markRaw(HeatmapView),
 };
 
 const selected = ref(null);

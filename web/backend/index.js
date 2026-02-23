@@ -2,10 +2,19 @@ import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
 import ccxt from 'ccxt';
+import { WebSocketServer, WebSocket } from 'ws';
+import protobuf from 'protobufjs';
 
 const app = express();
-app.use(cors());
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+app.use(cors({ origin: CORS_ORIGIN }));
 app.use(compression());
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  next();
+});
+app.disable('x-powered-by');
 
 const PORT = process.env.PORT || 3001;
 const REQUEST_TIMEOUT_MS = 30000;
@@ -23,15 +32,42 @@ const exchangeCache = new Map();
 const marketsLoaded = new Set();
 const runtimeOiHistory = new Map();
 
+// Heatmap WS upstreams (per symbol)
+const heatmapUpstreams = new Map();
+
+// Protobuf schema for heatmap frames
+const HEATMAP_PROTO = `
+syntax = "proto3";
+
+message HeatmapLevel {
+  double price = 1;
+  double volume = 2;
+  bool isBid = 3;
+}
+
+message HeatmapFrame {
+  int64 ts = 1;
+  repeated HeatmapLevel levels = 2;
+}
+`;
+
+const heatmapRoot = protobuf.parse(HEATMAP_PROTO).root;
+const HeatmapFrame = heatmapRoot.lookupType('HeatmapFrame');
+
 // --------------- Utilities ---------------
 
+const throttleQueues = new Map();
 async function throttle(id) {
   id = (id || 'binance').toLowerCase();
-  const minMs = PER_EXCHANGE_MS[id] ?? 800;
-  const now = Date.now();
-  const wait = minMs - (now - (lastRequestByExchange.get(id) ?? 0));
-  if (wait > 0) await new Promise(r => setTimeout(r, wait));
-  lastRequestByExchange.set(id, Date.now());
+  const prev = throttleQueues.get(id) || Promise.resolve();
+  const next = prev.then(async () => {
+    const minMs = PER_EXCHANGE_MS[id] ?? 800;
+    const wait = minMs - (Date.now() - (lastRequestByExchange.get(id) ?? 0));
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastRequestByExchange.set(id, Date.now());
+  });
+  throttleQueues.set(id, next.catch(() => {}));
+  return next;
 }
 
 function cached(key, ttl = CACHE_TTL_MS) {
@@ -42,7 +78,9 @@ function cached(key, ttl = CACHE_TTL_MS) {
 }
 
 function setCache(key, data) {
-  if (cache.size >= CACHE_MAX_SIZE) cache.delete(cache.keys().next().value);
+  if (!cache.has(key) && cache.size >= CACHE_MAX_SIZE) {
+    cache.delete(cache.keys().next().value);
+  }
   cache.set(key, { at: Date.now(), data });
 }
 
@@ -50,6 +88,8 @@ async function withRetry(fn, retries = MAX_RETRIES) {
   for (let i = 0; i <= retries; i++) {
     try { return await fn(); }
     catch (e) {
+      const status = e?.statusCode || e?.status || (e?.message?.match?.(/HTTP (\d+)/)?.[1] | 0);
+      if (status >= 400 && status < 500) throw e;
       if (i === retries) throw e;
       await new Promise(r => setTimeout(r, RETRY_BASE_MS * (2 ** i)));
     }
@@ -164,11 +204,16 @@ function getExchange(id, type = 'spot') {
   return ex;
 }
 
+const marketLoadPromises = new Map();
 async function ensureMarkets(ex) {
+  if (!ex) throw new Error('Exchange instance is null');
   const key = ex.id + '_' + (ex.options?.defaultType || 'spot');
   if (marketsLoaded.has(key)) return;
-  await ex.loadMarkets();
-  marketsLoaded.add(key);
+  if (!marketLoadPromises.has(key)) {
+    const p = ex.loadMarkets().then(() => { marketsLoaded.add(key); }).catch(e => { marketLoadPromises.delete(key); throw e; });
+    marketLoadPromises.set(key, p);
+  }
+  await marketLoadPromises.get(key);
 }
 
 // --------------- Direct API fetchers for Deribit / Hyperliquid ---------------
@@ -238,9 +283,11 @@ async function paginatedFetch(fetchFn, id, limit, lookbackMs, maxPerPage = 200) 
   for (let page = 0; page < 10 && all.length < limit; page++) {
     await throttle(id);
     const batch = await fetchFn(since, maxPerPage);
-    if (!batch.length) break;
+    if (!batch || !batch.length) break;
     all.push(...batch);
-    since = batch[batch.length - 1].timestamp + 1;
+    const lastTs = batch[batch.length - 1]?.timestamp;
+    if (!lastTs || !isFinite(lastTs)) break;
+    since = lastTs + 1;
     if (batch.length < maxPerPage) break;
   }
   return all.slice(-limit);
@@ -296,8 +343,10 @@ app.get('/api/symbols', async (req, res) => {
 });
 
 app.get('/api/ohlcv', async (req, res) => {
-  const id = (EXCHANGE_IDS[req.query.exchange] || req.query.exchange || 'binance').toLowerCase();
+  const id = validateExchangeId(req.query.exchange);
+  if (!id) return res.status(400).json({ error: 'Unsupported exchange' });
   const symbol = req.query.symbol || 'BTC/USDT';
+  if (!SYMBOL_RE.test(symbol)) return res.status(400).json({ error: 'Invalid symbol' });
   const tf = req.query.timeframe || req.query.interval || '1h';
   const limit = Math.min(parseInt(req.query.limit, 10) || 50, 2000);
   if (!TIMEFRAMES.includes(tf)) return res.status(400).json({ error: 'invalid timeframe' });
@@ -305,8 +354,8 @@ app.get('/api/ohlcv', async (req, res) => {
     await throttle(id);
     const ex = getExchange(id);
     await ensureMarkets(ex);
-    res.json({ ohlcv: await ex.fetchOHLCV(symbol, tf, undefined, limit) });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    safeSend(res, { ohlcv: await ex.fetchOHLCV(symbol, tf, undefined, limit) });
+  } catch (e) { safeError(res, e); }
 });
 
 app.get('/api/futures-ohlcv-multi', async (req, res) => {
@@ -619,7 +668,8 @@ const OB_EXCHANGES = ['binance', 'coinbase', 'bybit', 'okx'];
 const OB_MAX_LIMITS = { binance: 500, bybit: 200, coinbase: 500, okx: 400 };
 
 app.get('/api/orderbook', async (req, res) => {
-  const id = (req.query.exchange || 'binance').toLowerCase();
+  const id = validateExchangeId(req.query.exchange);
+  if (!id) return res.status(400).json({ error: 'Unsupported exchange' });
   const symbol = req.query.symbol || 'BTC/USDT';
   const limit = Math.min(parseInt(req.query.limit, 10) || 100, OB_MAX_LIMITS[id] || 500);
   try {
@@ -627,8 +677,8 @@ app.get('/api/orderbook', async (req, res) => {
     const ex = getExchange(id);
     await ensureMarkets(ex);
     const book = await ex.fetchOrderBook(symbol, limit);
-    res.json({ exchange: id, symbol, bids: book.bids || [], asks: book.asks || [], timestamp: book.timestamp });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    safeSend(res, { exchange: id, symbol, bids: book.bids || [], asks: book.asks || [], timestamp: book.timestamp });
+  } catch (e) { safeError(res, e); }
 });
 
 app.get('/api/orderbooks', async (req, res) => {
@@ -641,9 +691,9 @@ app.get('/api/orderbooks', async (req, res) => {
       await ensureMarkets(ex);
       const book = await ex.fetchOrderBook(symbol, OB_MAX_LIMITS[id] || 200);
       result[id] = { bids: book.bids || [], asks: book.asks || [], timestamp: book.timestamp };
-    } catch (e) { result[id] = { bids: [], asks: [], error: e.message }; }
+    } catch { result[id] = { bids: [], asks: [] }; }
   }));
-  res.json({ symbol, orderbooks: result });
+  safeSend(res, { symbol, orderbooks: result });
 });
 
 // --------------- TradFi Routes ---------------
@@ -755,8 +805,14 @@ app.get('/api/tradfi/overview', async (req, res) => {
   safeSend(res, out);
 });
 
+const VALID_YAHOO_TICKERS = new Set([
+  'DX-Y.NYB', '^GSPC', 'GC=F', '^TNX', 'BTC=F', 'ETH=F',
+  'GBTC', 'ETHE', 'IBIT', 'FBTC', 'ARKB', 'BITB',
+]);
+
 app.get('/api/tradfi/chart', async (req, res) => {
   const ticker = req.query.ticker || 'DX-Y.NYB';
+  if (!VALID_YAHOO_TICKERS.has(ticker)) return res.status(400).json({ error: 'Unsupported ticker' });
   const range = VALID_YAHOO_RANGES.has(req.query.range) ? req.query.range : '1y';
   const interval = VALID_YAHOO_INTERVALS.has(req.query.interval) ? req.query.interval : '1d';
   const ck = `tradfi:chart:${ticker}:${range}:${interval}`;
@@ -853,7 +909,7 @@ app.get('/api/tradfi/etf-flows', async (req, res) => {
 // CME Options data via Yahoo Finance
 app.get('/api/tradfi/cme-options', async (req, res) => {
   const base = (req.query.symbol || 'BTC').toUpperCase();
-  const range = req.query.range || '1y';
+  const range = VALID_YAHOO_RANGES.has(req.query.range) ? req.query.range : '1y';
   const ck = `tradfi:cme-opt:${base}:${range}`;
   const c = cached(ck, 300_000);
   if (c) return res.json(c);
@@ -873,13 +929,181 @@ app.use((err, _req, res, _next) => {
   if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
 });
 
-// --------------- Graceful shutdown ---------------
+// --------------- WebSocket Heatmap Firehose ---------------
+
+const MAX_HEATMAP_SYMBOLS = 10;
+const VALID_HEATMAP_SYMBOLS = new Set(['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT']);
+
+function startBinanceHeatmap(symbolKey) {
+  if (heatmapUpstreams.has(symbolKey)) return heatmapUpstreams.get(symbolKey);
+  if (!VALID_HEATMAP_SYMBOLS.has(symbolKey)) return null;
+  if (heatmapUpstreams.size >= MAX_HEATMAP_SYMBOLS) return null;
+
+  const sym = (symbolKey || 'BTCUSDT').toLowerCase();
+  const wsUrl = `wss://fstream.binance.com/ws/${sym}@depth@100ms`;
+  const snapshotUrl = `https://fapi.binance.com/fapi/v1/depth?symbol=${symbolKey}&limit=1000`;
+
+  const upstream = {
+    ws: null, clients: new Set(), lastBucketTs: 0,
+    bids: new Map(), asks: new Map(), ready: false, lastU: 0,
+    buffered: [],
+  };
+
+  // Fetch initial snapshot then apply buffered + live deltas
+  async function initSnapshot() {
+    try {
+      const res = await fetch(snapshotUrl);
+      const snap = await res.json();
+      upstream.lastU = snap.lastUpdateId;
+      upstream.bids.clear();
+      upstream.asks.clear();
+      for (const [p, q] of snap.bids) upstream.bids.set(p, +q);
+      for (const [p, q] of snap.asks) upstream.asks.set(p, +q);
+
+      // Apply buffered deltas that came after snapshot
+      for (const delta of upstream.buffered) {
+        if (delta.u <= snap.lastUpdateId) continue;
+        applyDelta(upstream, delta);
+      }
+      upstream.buffered = [];
+      upstream.ready = true;
+    } catch (e) {
+      console.error('[Heatmap] snapshot fetch failed:', e.message);
+      setTimeout(initSnapshot, 5000);
+    }
+  }
+
+  function applyDelta(up, data) {
+    for (const [p, q] of (data.b || [])) {
+      const qty = +q;
+      if (qty <= 0) up.bids.delete(p); else up.bids.set(p, qty);
+    }
+    for (const [p, q] of (data.a || [])) {
+      const qty = +q;
+      if (qty <= 0) up.asks.delete(p); else up.asks.set(p, qty);
+    }
+    up.lastU = data.u;
+  }
+
+  upstream.ws = new WebSocket(wsUrl);
+  upstream.ws.on('message', msg => {
+    let data;
+    try { data = JSON.parse(msg); } catch { return; }
+    if (!data || data.e !== 'depthUpdate') return;
+
+    if (!upstream.ready) {
+      upstream.buffered.push(data);
+      if (upstream.buffered.length > 500) upstream.buffered.shift();
+      return;
+    }
+
+    applyDelta(upstream, data);
+
+    // Throttle broadcasts to 100ms buckets
+    const ts = data.E || Date.now();
+    const bucketTs = Math.floor(ts / 100) * 100;
+    if (bucketTs <= upstream.lastBucketTs) return;
+    upstream.lastBucketTs = bucketTs;
+
+    if (!upstream.clients.size) return;
+
+    // Build full book snapshot for broadcast (top N levels)
+    const MAX_LEVELS = 200;
+    const MAX_BOOK_SIZE = 2000;
+    const levels = [];
+
+    // Prune maps if they grow too large (exchange bugs, illiquid pairs)
+    if (upstream.bids.size > MAX_BOOK_SIZE) {
+      const sorted = [...upstream.bids].map(([p, q]) => [+p, q]).sort((a, b) => b[0] - a[0]);
+      upstream.bids.clear();
+      for (let i = 0; i < MAX_BOOK_SIZE; i++) upstream.bids.set(String(sorted[i][0]), sorted[i][1]);
+    }
+    if (upstream.asks.size > MAX_BOOK_SIZE) {
+      const sorted = [...upstream.asks].map(([p, q]) => [+p, q]).sort((a, b) => a[0] - b[0]);
+      upstream.asks.clear();
+      for (let i = 0; i < MAX_BOOK_SIZE; i++) upstream.asks.set(String(sorted[i][0]), sorted[i][1]);
+    }
+
+    const bidArr = [];
+    for (const [p, q] of upstream.bids) bidArr.push([+p, q]);
+    bidArr.sort((a, b) => b[0] - a[0]);
+    for (let i = 0; i < Math.min(bidArr.length, MAX_LEVELS); i++) {
+      levels.push({ price: bidArr[i][0], volume: bidArr[i][1], isBid: true });
+    }
+
+    const askArr = [];
+    for (const [p, q] of upstream.asks) askArr.push([+p, q]);
+    askArr.sort((a, b) => a[0] - b[0]);
+    for (let i = 0; i < Math.min(askArr.length, MAX_LEVELS); i++) {
+      levels.push({ price: askArr[i][0], volume: askArr[i][1], isBid: false });
+    }
+
+    if (!levels.length) return;
+    const payload = HeatmapFrame.encode(HeatmapFrame.create({ ts: bucketTs, levels })).finish();
+    for (const client of upstream.clients) {
+      if (client.readyState === 1) {
+        try { client.send(payload); } catch { /* ignore */ }
+      }
+    }
+  });
+
+  upstream.ws.on('error', e => console.error('[Binance heatmap ws error]', e.message));
+  upstream.ws.on('close', () => {
+    if (!upstream.clients.size) {
+      heatmapUpstreams.delete(symbolKey);
+      return;
+    }
+    // Reconnect after delay if clients are still connected
+    console.log(`[Heatmap] upstream closed for ${symbolKey}, reconnecting in 5s...`);
+    heatmapUpstreams.delete(symbolKey);
+    setTimeout(() => {
+      if (!upstream.clients.size) return;
+      const newUpstream = startBinanceHeatmap(symbolKey);
+      for (const client of upstream.clients) {
+        if (client.readyState === 1) newUpstream.clients.add(client);
+      }
+    }, 5000);
+  });
+
+  heatmapUpstreams.set(symbolKey, upstream);
+  initSnapshot();
+  return upstream;
+}
+
+// --------------- Graceful shutdown & server start ---------------
 
 const server = app.listen(PORT, () => console.log(`MMT-Trade Backend on http://localhost:${PORT}`));
+
+const wss = new WebSocketServer({ server, path: '/ws/heatmap' });
+
+wss.on('connection', (socket, req) => {
+  const url = new URL(req.url, `http://localhost:${PORT}`);
+  const sym = (url.searchParams.get('symbol') || 'BTCUSDT').toUpperCase();
+  const upstream = startBinanceHeatmap(sym);
+  if (!upstream) {
+    socket.close(4000, 'Unsupported symbol or limit reached');
+    return;
+  }
+  upstream.clients.add(socket);
+
+  socket.on('close', () => {
+    upstream.clients.delete(socket);
+    if (!upstream.clients.size && upstream.ws) {
+      try { upstream.ws.close(); } catch { /* ignore */ }
+      heatmapUpstreams.delete(sym);
+    }
+  });
+});
 
 function shutdown(signal) {
   console.log(`\n${signal} received, shutting down gracefully...`);
   for (const [, ex] of exchangeCache) { try { ex.close?.(); } catch { /* ignore */ } }
+  for (const [, upstream] of heatmapUpstreams) {
+    try { upstream.ws?.close(); } catch { /* ignore */ }
+    for (const client of upstream.clients) { try { client.close(1001, 'server shutdown'); } catch { /* ignore */ } }
+  }
+  heatmapUpstreams.clear();
+  wss.close();
   server.close(() => {
     console.log('HTTP server closed');
     process.exit(0);

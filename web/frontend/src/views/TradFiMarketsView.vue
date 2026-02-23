@@ -1,8 +1,8 @@
-<script setup>
-import { ref, shallowRef, computed, onMounted, onUnmounted } from 'vue';
+<script setup lang="ts">
+import { ref, shallowRef, computed, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue';
 import DashCard from '../components/DashCard.vue';
 import HC from '../components/charts/HighchartsChart.vue';
-import { fetchTradFiOverview, fetchTradFiChart } from '../api.js';
+import { fetchTradFiOverview, fetchTradFiChart } from '../api';
 
 const props = defineProps({
   symbol: { type: String, default: 'BTC/USDT' },
@@ -77,15 +77,22 @@ async function loadAll() {
   if (!signal.aborted) loading.value = false;
 }
 
-let refreshTimer = null;
-onMounted(() => {
+let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+function startTimer() {
+  if (refreshTimer) return;
   loadAll();
   refreshTimer = setInterval(loadAll, 120_000);
-});
-onUnmounted(() => {
-  if (refreshTimer) clearInterval(refreshTimer);
-  if (abortCtrl) abortCtrl.abort();
-});
+}
+function stopTimer() {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
+}
+
+onMounted(startTimer);
+onUnmounted(stopTimer);
+onActivated(startTimer);
+onDeactivated(stopTimer);
 
 function onTfChange(tf) {
   activeTf.value = tf;

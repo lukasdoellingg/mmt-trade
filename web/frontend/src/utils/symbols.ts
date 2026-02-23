@@ -1,5 +1,4 @@
-/** Symbol → WS-Format (btcusdt | BTC-USDT) */
-export function symbolToWs(symbol, exId) {
+export function symbolToWs(symbol: string, exId: string): string {
   const s = (symbol || 'BTC/USDT').toUpperCase().replace(/\s/g, '');
   const [base, quote = 'USDT'] = s.split('/');
   if (exId === 'binance' || exId === 'bybit') return (base + quote).toLowerCase();

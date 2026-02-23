@@ -1,16 +1,14 @@
-/**
- * Velo-style dark theme for Highcharts.
- * velo.xyz/futures: dark bg (#0f0f14), muted axes, small labels.
- */
-export const VELO_CHART = {
+import type { Options } from 'highcharts';
+
+export const VELO_CHART: Partial<Options> = {
   chart: {
     backgroundColor: 'transparent',
     style: { fontFamily: "'IBM Plex Mono', 'Roboto Mono', monospace" },
     spacing: [8, 8, 8, 8],
     animation: false,
   },
-  title: { text: null },
-  subtitle: { text: null },
+  title: { text: undefined },
+  subtitle: { text: undefined },
   credits: { enabled: false },
   legend: { enabled: false },
   time: { useUTC: true },
@@ -29,7 +27,7 @@ export const VELO_CHART = {
     gridLineColor: '#14141e',
     gridLineWidth: 1,
     labels: { style: { color: '#5a6a7a', fontSize: '9px' }, align: 'right', x: -6 },
-    title: { text: null },
+    title: { text: undefined },
     opposite: true,
   },
   tooltip: {

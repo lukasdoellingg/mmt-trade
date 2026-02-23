@@ -1,5 +1,19 @@
-/** VWAP D/W/M aus OHLCV. Nur getLastVwapAll wird verwendet. */
-export function getLastVwapAll(ohlcv) {
+interface OhlcvBar {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+interface VwapResult {
+  d: number;
+  w: number;
+  m: number;
+}
+
+export function getLastVwapAll(ohlcv: OhlcvBar[]): VwapResult | null {
   if (!Array.isArray(ohlcv) || ohlcv.length === 0) return null;
   let dTPV = 0, dVol = 0, wTPV = 0, wVol = 0, mTPV = 0, mVol = 0;
   let dK = '', wK = '', mK = '';

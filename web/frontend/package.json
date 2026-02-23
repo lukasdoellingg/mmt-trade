@@ -9,12 +9,11 @@
   },
   "dependencies": {
     "highcharts": "^12.5.0",
-    "highcharts-vue": "^2.0.1",
-    "lightweight-charts": "^4.2.0",
     "vue": "^3.5.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",
+    "typescript": "^5.9.3",
     "vite": "^5.4.0"
   }
 }

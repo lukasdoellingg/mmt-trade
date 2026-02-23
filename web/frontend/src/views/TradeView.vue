@@ -1,11 +1,11 @@
-<script setup>
-import { ref, shallowRef, watch, onUnmounted } from 'vue';
+<script setup lang="ts">
+import { ref, shallowRef, watch, onUnmounted, onActivated, onDeactivated } from 'vue';
 import TradingViewChart from '../components/TradingViewChart.vue';
 import OrderBook from '../components/OrderBook.vue';
-import { fetchOhlcv } from '../api.js';
-import { getLastVwapAll } from '../composables/useChartData.js';
-import { createAllOrderbooksWs } from '../orderbookWs.js';
-import { EXCHANGE_IDS, ALL_EXCHANGES } from '../constants.js';
+import { fetchOhlcv } from '../api';
+import { getLastVwapAll } from '../composables/useChartData';
+import { createAllOrderbooksWs } from '../orderbookWs';
+import { EXCHANGE_IDS, ALL_EXCHANGES } from '../constants';
 
 const props = defineProps({
   symbol: { type: String, required: true },
@@ -85,9 +85,14 @@ function stopStreams() {
   obCleanup?.(); obCleanup = null;
 }
 
-watch(() => props.symbol, startStreams, { immediate: true });
-watch(() => [props.symbol, props.timeframe, props.exchange], loadVwap, { immediate: true });
-onUnmounted(stopStreams);
+let active = false;
+
+watch(() => props.symbol, () => { if (active) startStreams(); });
+watch(() => [props.symbol, props.timeframe, props.exchange], () => { if (active) loadVwap(); });
+
+onActivated(() => { active = true; startStreams(); loadVwap(); });
+onDeactivated(() => { active = false; stopStreams(); });
+onUnmounted(() => { active = false; stopStreams(); });
 
 const FMT = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function fmtV(v) { return v != null ? FMT.format(v) : '—'; }

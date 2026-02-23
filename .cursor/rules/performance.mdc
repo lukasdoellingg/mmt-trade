@@ -1,0 +1,59 @@
+---
+description: Extreme performance standards for a high-end trading desk — FPS, RAM, CPU, GPU, network
+alwaysApply: true
+---
+
+# Trading Desk Performance Rules
+
+This is a latency-critical trading application. Every code change must preserve or improve performance across all axes: frame rate, memory, CPU, GPU, and network.
+
+## Rendering / FPS
+
+- Target 120 FPS minimum on the main thread. Never block the UI thread with computation.
+- Use `requestAnimationFrame` for all visual updates; never `setInterval`/`setTimeout` for rendering.
+- Batch DOM writes; avoid layout thrashing (no interleaved read/write of DOM geometry).
+- Prefer WebGL2 instanced draw calls over per-element draws. One draw call per layer.
+- Mark `<canvas>` elements with `{ alpha: false, desynchronized: true, antialias: false }` when applicable.
+- Vue components: use `v-once`, `v-memo`, `shallowRef`, `shallowReactive`, and `markRaw` to prevent deep reactivity on large data (candles, order book snapshots, typed arrays).
+
+## Memory / GC Pressure
+
+- **Zero-allocation hot paths.** No `new`, no object/array literals, no closures, no string concatenation inside `render()`, `onMessage`, or animation loops.
+- Pre-allocate typed arrays (`Float32Array`, `Uint8Array`) at init; reuse via sub-views or index offsets.
+- Use object pools for any repeatedly created structures (WebSocket message objects, candle records).
+- Avoid `Map`/`Set` in tight loops; prefer flat typed arrays or pre-sized `Array` with index math.
+- Never spread (`...`) large arrays. Mutate in place or use `TypedArray.set()`.
+- When interfacing with WASM, point `Float32Array` views directly into `wasm.memory.buffer` — zero-copy.
+
+## CPU / Compute
+
+- Offload all heavy computation (EMA, heatmap binning, order book aggregation) to Web Workers or WASM.
+- Prefer the Odin WASM engine for numeric kernels; fall back to JS only when WASM is unavailable.
+- Avoid `JSON.parse` on hot-path WebSocket messages when binary protocols (ArrayBuffer/MessagePack) are viable.
+- Use `ArrayBuffer` transfer (not copy) when posting between Workers and the main thread.
+- Debounce or throttle non-critical updates (UI labels, tooltips) to <=10 Hz; keep data ingestion at full rate.
+- Prefer bitwise/integer math over floating-point where precision allows.
+
+## GPU / WebGL2
+
+- Minimize state changes: sort draw calls by shader/texture, batch uniforms.
+- Use instanced rendering (`drawArraysInstanced`) — never issue per-quad draw calls.
+- Upload buffer data with `bufferSubData` (partial update) instead of `bufferData` (full re-upload) when only a slice changed.
+- Avoid `readPixels` and GPU→CPU round-trips in production render loops.
+- Destroy WebGL resources (`deleteBuffer`, `deleteProgram`, `deleteTexture`) on component unmount to prevent VRAM leaks.
+
+## Network / API Speed
+
+- Use a single multiplexed WebSocket per exchange; subscribe/unsubscribe by stream name, never open parallel sockets for the same feed.
+- Implement exponential back-off reconnect with jitter; cap reconnect attempts.
+- Keep WebSocket message handlers allocation-free — parse directly into pre-allocated buffers.
+- Prefer REST batch endpoints (e.g., `/fapi/v1/klines` with `limit=1500`) over pagination loops.
+- Cache static/slow-changing data (symbol info, exchange info) in memory with TTL; never re-fetch on every mount.
+- Use `AbortController` to cancel in-flight fetches on navigation or symbol change.
+
+## Code Quality Guards
+
+- Never add `console.log` in merged code — use a conditional `debug` flag or strip in production build.
+- Profile before optimising: back claims with DevTools Performance / Memory snapshots.
+- Every Web Worker and WASM module must have a clean teardown path (`terminate()`, `close()`, buffer detach).
+- Typed arrays and WASM memory views must be re-acquired after any `memory.grow()`.

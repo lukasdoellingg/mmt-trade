@@ -1,4 +1,4 @@
-export function formatVol(v) {
+export function formatVol(v: number | null | undefined): string {
   const n = Number(v) || 0;
   if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
   if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
@@ -6,7 +6,7 @@ export function formatVol(v) {
   return n.toFixed(0);
 }
 
-export function fmtK(v) {
+export function fmtK(v: number | null | undefined): string {
   if (v == null || isNaN(v)) return '—';
   const s = v < 0 ? '-' : '';
   const a = Math.abs(v);

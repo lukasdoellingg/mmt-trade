@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue';
 import NavMenu from './NavMenu.vue';
 
@@ -14,6 +14,7 @@ const viewLabel = computed(() => {
     case 'futures': return 'Futures';
     case 'cme': return 'CME + ETF';
     case 'tradfi': return 'TradFi';
+    case 'heatmap': return 'Heatmap';
     default: return '';
   }
 });

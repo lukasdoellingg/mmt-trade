@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue';
 
 defineProps({ active: { type: String, default: 'futures' } });
@@ -10,6 +10,7 @@ const ITEMS = [
   { id: 'futures', label: 'Futures' },
   { id: 'cme', label: 'CME + ETF' },
   { id: 'tradfi', label: 'TradFi' },
+  { id: 'heatmap', label: 'Heatmap' },
 ];
 
 function go(id) {

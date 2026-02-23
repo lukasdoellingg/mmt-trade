@@ -1,10 +1,10 @@
-<script setup>
-import { ref, shallowRef, computed, onMounted, onUnmounted } from 'vue';
+<script setup lang="ts">
+import { ref, shallowRef, computed, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue';
 import DashCard from '../components/DashCard.vue';
 import HC from '../components/charts/HighchartsChart.vue';
-import { fetchFuturesTickers, fetchFuturesOhlcvMulti, fetchFundingRates, fetchOpenInterest, fetchOpenInterestHistory, fetchBasis, fetchLiquidations } from '../api.js';
-import { EX_COLORS, EX_LABELS, FUTURES_EXCHANGES, INVERSE_EXCHANGES } from '../constants.js';
-import { fmtK } from '../utils/format.js';
+import { fetchFuturesTickers, fetchFuturesOhlcvMulti, fetchFundingRates, fetchOpenInterest, fetchOpenInterestHistory, fetchBasis, fetchLiquidations } from '../api';
+import { EX_COLORS, EX_LABELS, FUTURES_EXCHANGES, INVERSE_EXCHANGES } from '../constants';
+import { fmtK } from '../utils/format';
 
 const props = defineProps({
   symbol: { type: String, default: 'BTC/USDT' },
@@ -48,11 +48,13 @@ const oiHistRaw = shallowRef({});
 const futOhlcvRaw = shallowRef({});
 const liqRaw = shallowRef([]);
 
+const backendError = ref('');
 let abortCtrl = null;
 
 async function loadFuturesTickers(signal) {
   try {
     const res = await fetchFuturesTickers(props.symbol, signal);
+    backendError.value = '';
     const t = res.tickers || {};
     const items = [];
     for (const id of FUTURES_EXCHANGES) {
@@ -60,7 +62,13 @@ async function loadFuturesTickers(signal) {
       if (qv && qv > 0) items.push({ name: EX_LABELS[id], y: qv, color: EX_COLORS[id] });
     }
     volData.value = items;
-  } catch (e) { if (e.name !== 'AbortError') { /* silent */ } }
+  } catch (e: any) {
+    if (e.name !== 'AbortError') {
+      if (e.isBackendDown || e.message?.includes('Failed to fetch')) {
+        backendError.value = 'Backend server not running. Start with: cd web/backend && npm start';
+      }
+    }
+  }
 }
 
 async function loadOiSnapshot(signal) {
@@ -118,35 +126,35 @@ async function loadLiquidations(signal) {
   } catch (e) { if (e.name !== 'AbortError') { /* silent */ } }
 }
 
-let loadInProgress = false;
-
 async function loadAll() {
-  if (loadInProgress) return;
   if (abortCtrl) abortCtrl.abort();
   abortCtrl = new AbortController();
   const { signal } = abortCtrl;
   loading.value = true;
-  loadInProgress = true;
   try {
     await Promise.allSettled([
       loadFuturesTickers(signal), loadOiSnapshot(signal), loadFundingRates(signal),
       loadOiHistory(signal), loadFuturesOhlcv(signal), loadBasis(signal), loadLiquidations(signal),
     ]);
-  } finally {
-    loadInProgress = false;
-  }
+  } catch { /* swallow */ }
   if (!signal.aborted) loading.value = false;
 }
 
-let refreshTimer = null;
-onMounted(() => {
+let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+function startRefresh() {
   loadAll();
-  refreshTimer = setInterval(loadAll, 60_000);
-});
-onUnmounted(() => {
-  if (refreshTimer) clearInterval(refreshTimer);
-  if (abortCtrl) abortCtrl.abort();
-});
+  if (!refreshTimer) refreshTimer = setInterval(loadAll, 60_000);
+}
+function stopRefresh() {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
+}
+
+onMounted(startRefresh);
+onUnmounted(stopRefresh);
+onActivated(startRefresh);
+onDeactivated(stopRefresh);
 
 function sliceByTf(rawMap, tf, mapper) {
   const lim = tfToLimit(tf);
@@ -216,8 +224,11 @@ function buildFuturesSeries(tf) {
 const cvdBuilt = computed(() => buildFuturesSeries(tfCvd.value));
 const cvdSeries = computed(() => cvdMode.value === 'dollar' ? cvdBuilt.value.cvdDollarS : cvdBuilt.value.cvdCoinS);
 
-const volBuilt = computed(() => buildFuturesSeries(tfVolume.value));
-const volumeSeries = computed(() => volBuilt.value.volS);
+const volumeSeries = computed(() => {
+  // Only recompute if volume TF differs from CVD TF, otherwise reuse
+  if (tfVolume.value === tfCvd.value) return cvdBuilt.value.volS;
+  return buildFuturesSeries(tfVolume.value).volS;
+});
 
 const liqSeries = computed(() => {
   const lim = tfToLimit(tfLiq.value);
@@ -407,6 +418,9 @@ const hasLiq = computed(() => liqRaw.value.length > 0);
 
 <template>
   <div class="dash">
+    <div v-if="backendError" class="backend-err">
+      {{ backendError }}
+    </div>
     <div class="grid">
       <DashCard :title="`${coin} 24h Volume`" :loading="!volData.length && loading">
         <HC :options="chart24hVolume" />
@@ -542,6 +556,17 @@ const hasLiq = computed(() => liqRaw.value.length > 0);
   width: 7px;
   height: 7px;
   border-radius: 50%;
+  flex-shrink: 0;
+}
+.backend-err {
+  background: #2a1515;
+  border: 1px solid #ef4f60;
+  color: #ef4f60;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: .7rem;
+  font-family: monospace;
+  text-align: center;
   flex-shrink: 0;
 }
 </style>

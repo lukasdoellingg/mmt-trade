@@ -1,8 +1,8 @@
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue';
-import { fetchExchanges, fetchSymbols } from '../api.js';
-import { EXCHANGE_IDS, TIMEFRAMES } from '../constants.js';
-import { formatVol } from '../utils/format.js';
+import { fetchExchanges, fetchSymbols } from '../api';
+import { EXCHANGE_IDS, TIMEFRAMES } from '../constants';
+import { formatVol } from '../utils/format';
 
 const emit = defineEmits(['select']);
 const exchanges = ref([]);

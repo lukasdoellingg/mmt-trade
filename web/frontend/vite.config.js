@@ -7,6 +7,24 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': { target: 'http://localhost:3001', changeOrigin: true },
+      '/ws': { target: 'ws://localhost:3001', ws: true },
     },
+    headers: {},
+  },
+  worker: {
+    format: 'es',
+  },
+  assetsInclude: ['**/*.wasm'],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          highcharts: ['highcharts/highstock'],
+        },
+      },
+    },
+  },
+  optimizeDeps: {
+    exclude: ['*.wasm'],
   },
 });

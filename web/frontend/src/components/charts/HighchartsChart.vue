@@ -1,6 +1,6 @@
-<script>
+<script lang="ts">
 import Highcharts from 'highcharts/highstock';
-import { VELO_CHART } from '../../highchartsTheme.js';
+import { VELO_CHART } from '../../highchartsTheme';
 
 const BASE = Object.freeze(structuredClone(VELO_CHART));
 
@@ -30,7 +30,7 @@ function seriesDataEqual(a, b) {
 }
 </script>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue';
 
 const props = defineProps({
@@ -123,7 +123,7 @@ onDeactivated(() => {
   if (resizeRaf) cancelAnimationFrame(resizeRaf);
 });
 
-watch(merged, debouncedRender);
+watch(merged, debouncedRender, { deep: false });
 </script>
 
 <template>
