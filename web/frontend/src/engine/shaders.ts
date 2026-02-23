@@ -10,10 +10,12 @@ layout(location=1) in vec4 a_posSize;
 layout(location=2) in vec4 a_color;
 
 uniform vec2 u_resolution;
+uniform float u_camera_x;
 out vec4 v_color;
 
 void main() {
     vec2 pos = a_posSize.xy + a_corner * a_posSize.zw;
+    pos.x -= u_camera_x;
     vec2 clip = (pos / u_resolution) * 2.0 - 1.0;
     clip.y = -clip.y;
     gl_Position = vec4(clip, 0.0, 1.0);

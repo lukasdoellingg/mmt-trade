@@ -13,7 +13,7 @@ const ITEMS = [
   { id: 'heatmap', label: 'Heatmap' },
 ];
 
-function go(id) {
+function go(id: string) {
   open.value = false;
   emit('navigate', id);
 }

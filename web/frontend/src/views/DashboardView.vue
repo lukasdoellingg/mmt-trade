@@ -62,7 +62,8 @@ async function loadFuturesTickers(signal) {
       if (qv && qv > 0) items.push({ name: EX_LABELS[id], y: qv, color: EX_COLORS[id] });
     }
     volData.value = items;
-  } catch (e: any) {
+  } catch (err: unknown) {
+    const e = err as { name?: string; isBackendDown?: boolean; message?: string };
     if (e.name !== 'AbortError') {
       if (e.isBackendDown || e.message?.includes('Failed to fetch')) {
         backendError.value = 'Backend server not running. Start with: cd web/backend && npm start';
@@ -141,12 +142,16 @@ async function loadAll() {
 }
 
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
+let active = false;
 
 function startRefresh() {
+  if (active) return;
+  active = true;
   loadAll();
   if (!refreshTimer) refreshTimer = setInterval(loadAll, 60_000);
 }
 function stopRefresh() {
+  active = false;
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
 }

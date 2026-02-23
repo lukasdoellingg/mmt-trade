@@ -24,7 +24,7 @@ const timeframe = ref('1h');
 
 const viewComponent = computed(() => VIEW_MAP[view.value] || VIEW_MAP.futures);
 
-function onStart(cfg) {
+function onStart(cfg: { exchange: string; symbol: string; timeframe: string }) {
   selected.value = cfg;
   exchange.value = cfg.exchange;
   symbol.value = cfg.symbol;
@@ -32,7 +32,7 @@ function onStart(cfg) {
   view.value = 'futures';
 }
 
-function onNavigate(v) { view.value = v; }
+function onNavigate(v: string) { view.value = v; }
 </script>
 
 <template>

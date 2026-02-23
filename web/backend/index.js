@@ -25,7 +25,7 @@ const MAX_RETRIES = 2;
 const RETRY_BASE_MS = 1000;
 const OI_RING_CAP = 720;
 
-const PER_EXCHANGE_MS = { binance: 1200, coinbase: 800, bybit: 800, okx: 800, deribit: 800, hyperliquid: 800 };
+const PER_EXCHANGE_MS = { binance: 300, coinbase: 300, bybit: 300, okx: 300, deribit: 400, hyperliquid: 400 };
 const lastRequestByExchange = new Map();
 const cache = new Map();
 const exchangeCache = new Map();
@@ -698,8 +698,16 @@ app.get('/api/orderbooks', async (req, res) => {
 
 // --------------- TradFi Routes ---------------
 
-// Yahoo Finance chart API (public, no key needed)
+// Yahoo Finance — allowed tickers (SSRF prevention)
+const VALID_YAHOO_TICKERS = new Set([
+  'DX-Y.NYB', '^GSPC', 'GC=F', '^TNX', 'BTC=F', 'ETH=F',
+  'GBTC', 'ETHE', 'IBIT', 'FBTC', 'ARKB', 'BITB',
+]);
+
 async function yahooChart(ticker, range = '1y', interval = '1d') {
+  if (!VALID_YAHOO_TICKERS.has(ticker)) throw new Error(`Blocked ticker: ${ticker}`);
+  if (!VALID_YAHOO_RANGES.has(range)) range = '1y';
+  if (!VALID_YAHOO_INTERVALS.has(interval)) interval = '1d';
   const u = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=${range}&interval=${interval}&includePrePost=false`;
   const r = await fetch(u, { headers: { 'User-Agent': 'Mozilla/5.0' } });
   if (!r.ok) throw new Error(`Yahoo ${ticker} HTTP ${r.status}`);
@@ -717,6 +725,7 @@ async function yahooChart(ticker, range = '1y', interval = '1d') {
 }
 
 async function yahooQuote(ticker) {
+  if (!VALID_YAHOO_TICKERS.has(ticker)) throw new Error(`Blocked ticker: ${ticker}`);
   const u = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=5d&interval=1d`;
   const r = await fetch(u, { headers: { 'User-Agent': 'Mozilla/5.0' } });
   if (!r.ok) throw new Error(`Yahoo ${ticker} HTTP ${r.status}`);
@@ -804,11 +813,6 @@ app.get('/api/tradfi/overview', async (req, res) => {
   setCache(ck, out);
   safeSend(res, out);
 });
-
-const VALID_YAHOO_TICKERS = new Set([
-  'DX-Y.NYB', '^GSPC', 'GC=F', '^TNX', 'BTC=F', 'ETH=F',
-  'GBTC', 'ETHE', 'IBIT', 'FBTC', 'ARKB', 'BITB',
-]);
 
 app.get('/api/tradfi/chart', async (req, res) => {
   const ticker = req.query.ticker || 'DX-Y.NYB';

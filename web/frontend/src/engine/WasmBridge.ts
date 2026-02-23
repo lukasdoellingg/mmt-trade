@@ -1,21 +1,15 @@
 // ═══════════════════════════════════════════════════════════════
-//  WasmBridge — Loads engine.wasm and provides typed access
-//  to exported functions and shared memory views.
-//
-//  The WASM module exports its own memory. Float32Array views
-//  point directly into that memory — zero copy to WebGL.
+//  WasmBridge — Loads engine.wasm and exposes typed views into
+//  its shared linear memory. Float32Array views point directly
+//  into WASM memory for zero-copy WebGL upload.
 // ═══════════════════════════════════════════════════════════════
 
-const MAX_INSTANCES = 20_000;
-const CANDLE_FIELDS = 7;
-const MAX_CANDLES = 1500;
-const MAX_BOOK = 1024;
-const LIQ_CAP = 600;
-const LIQ_FIELDS = 4;
-
-// Last data region: ASK_Q at 0xD1860 + 1024*8 = 0xD3860
-// Odin allocates 17 pages (0x110000) which covers everything
-const TARGET_PAGES = 17;
+const MAX_INSTANCES  = 50_000;
+const CANDLE_FIELDS  = 7;
+const MAX_CANDLES    = 5000;
+const LIQ_CAP        = 600;
+const LIQ_FIELDS     = 4;
+const TARGET_PAGES   = 36;  // 2,359,296 B — covers all buffers (50k instances) with headroom
 
 interface WasmExports {
   memory: WebAssembly.Memory;
@@ -26,10 +20,6 @@ interface WasmExports {
   get_ema9_offset(): number;
   get_ema21_offset(): number;
   get_liq_offset(): number;
-  get_bid_p_offset(): number;
-  get_bid_q_offset(): number;
-  get_ask_p_offset(): number;
-  get_ask_q_offset(): number;
 
   get_candle_count(): number;
   get_mid_price(): number;
@@ -37,8 +27,12 @@ interface WasmExports {
   get_out_max(): number;
   get_out_mid(): number;
 
+  get_buf_range_start(): number;
+  get_buf_range_end(): number;
+  get_buf_x_step(): number;
+  get_buf_inst_count(): number;
+
   set_candle_count(n: number): void;
-  set_book_counts(bids: number, asks: number): void;
   set_liq_count(n: number): void;
   set_mid_price(p: number): void;
 
@@ -46,37 +40,34 @@ interface WasmExports {
   recompute_ema(): void;
   update_ema_last(): void;
 
-  update_chart(
+  update_chart_buffered(
+    bufStart: number, bufEnd: number,
     visStart: number, visEnd: number,
     yScale: number, yOffset: number,
     canvasW: number, canvasH: number,
     marginRight: number, marginBottom: number,
     dpr: number, tfMs: number,
+    stride: number,
   ): number;
 }
 
 export interface EngineBridge {
   memory: WebAssembly.Memory;
   exports: WasmExports;
-
   positionsView: Float32Array;
   colorsView: Float32Array;
   candleView: Float64Array;
   ema9View: Float64Array;
   ema21View: Float64Array;
   liqView: Float64Array;
-  bidPView: Float64Array;
-  bidQView: Float64Array;
-  askPView: Float64Array;
-  askQView: Float64Array;
-
   refreshViews(): void;
 }
 
 export async function loadEngine(): Promise<EngineBridge> {
+  const cacheBust = '?v=' + Date.now();
   const wasmUrl = typeof location !== 'undefined'
-    ? new URL('/engine.wasm', location.origin).href
-    : '/engine.wasm';
+    ? new URL('/engine.wasm' + cacheBust, location.origin).href
+    : '/engine.wasm' + cacheBust;
 
   let instance: WebAssembly.Instance;
   try {
@@ -84,42 +75,43 @@ export async function loadEngine(): Promise<EngineBridge> {
     instance = result.instance;
   } catch {
     const resp = await fetch(wasmUrl);
-    const buf = await resp.arrayBuffer();
-    const result = await WebAssembly.instantiate(buf, {});
+    const bytes = await resp.arrayBuffer();
+    const result = await WebAssembly.instantiate(bytes, {});
     instance = result.instance;
   }
 
   const exports = instance.exports as unknown as WasmExports;
   const wasmMem = exports.memory;
-
-  if (!wasmMem) {
-    throw new Error('WASM module did not export memory');
-  }
+  if (!wasmMem) throw new Error('WASM module did not export memory');
 
   const currentPages = wasmMem.buffer.byteLength / 65536;
   if (currentPages < TARGET_PAGES) {
-    const needed = TARGET_PAGES - currentPages;
-    const prev = wasmMem.grow(needed);
-    if (prev < 0) throw new Error(`WASM memory grow failed (was ${currentPages} pages)`);
-  }
-
-  const finalBytes = wasmMem.buffer.byteLength;
-  if (finalBytes < 0x112000) {
-    throw new Error(`WASM memory too small: ${finalBytes} bytes, need at least ${0x112000}`);
+    try { wasmMem.grow(TARGET_PAGES - currentPages); }
+    catch (e) { throw new Error(`WASM memory grow failed: ${e}`); }
   }
 
   exports.init_lut();
 
-  const posOff = exports.get_pos_offset();
-  const colOff = exports.get_col_offset();
+  // Smoke test: call update_chart_buffered with 2 dummy candles
+  // to verify the binary matches the expected 13-param f64 signature.
+  const smokeOff = exports.get_candle_offset();
+  const smokeView = new Float64Array(wasmMem.buffer, smokeOff, 14);
+  smokeView.set([1e12, 100, 101, 99, 100, 10, 1, 1e12+6e4, 100, 102, 98, 101, 20, 1]);
+  exports.set_candle_count(2);
+  try {
+    exports.update_chart_buffered(0, 2, 0, 2, 1, 0, 800, 600, 80, 32, 1, 60000, 1);
+  } catch {
+    throw new Error('WASM smoke test failed — engine.wasm is stale. Clear browser cache and hard-refresh.');
+  }
+  exports.set_candle_count(0);
+  smokeView.fill(0);
+
+  const posOff    = exports.get_pos_offset();
+  const colOff    = exports.get_col_offset();
   const candleOff = exports.get_candle_offset();
-  const ema9Off = exports.get_ema9_offset();
-  const ema21Off = exports.get_ema21_offset();
-  const liqOff = exports.get_liq_offset();
-  const bidPOff = exports.get_bid_p_offset();
-  const bidQOff = exports.get_bid_q_offset();
-  const askPOff = exports.get_ask_p_offset();
-  const askQOff = exports.get_ask_q_offset();
+  const ema9Off   = exports.get_ema9_offset();
+  const ema21Off  = exports.get_ema21_offset();
+  const liqOff    = exports.get_liq_offset();
 
   function makeViews() {
     const b = wasmMem.buffer;
@@ -130,33 +122,20 @@ export async function loadEngine(): Promise<EngineBridge> {
       ema9View:      new Float64Array(b, ema9Off, MAX_CANDLES),
       ema21View:     new Float64Array(b, ema21Off, MAX_CANDLES),
       liqView:       new Float64Array(b, liqOff, LIQ_CAP * LIQ_FIELDS),
-      bidPView:      new Float64Array(b, bidPOff, MAX_BOOK),
-      bidQView:      new Float64Array(b, bidQOff, MAX_BOOK),
-      askPView:      new Float64Array(b, askPOff, MAX_BOOK),
-      askQView:      new Float64Array(b, askQOff, MAX_BOOK),
     };
   }
 
   let views = makeViews();
 
-  const bridge: EngineBridge = {
+  return {
     memory: wasmMem,
     exports,
     get positionsView() { return views.positionsView; },
-    get colorsView() { return views.colorsView; },
-    get candleView() { return views.candleView; },
-    get ema9View() { return views.ema9View; },
-    get ema21View() { return views.ema21View; },
-    get liqView() { return views.liqView; },
-    get bidPView() { return views.bidPView; },
-    get bidQView() { return views.bidQView; },
-    get askPView() { return views.askPView; },
-    get askQView() { return views.askQView; },
-
-    refreshViews() {
-      views = makeViews();
-    },
+    get colorsView()    { return views.colorsView; },
+    get candleView()    { return views.candleView; },
+    get ema9View()      { return views.ema9View; },
+    get ema21View()     { return views.ema21View; },
+    get liqView()       { return views.liqView; },
+    refreshViews()      { views = makeViews(); },
   };
-
-  return bridge;
 }

@@ -9,7 +9,9 @@ export default defineConfig({
       '/api': { target: 'http://localhost:3001', changeOrigin: true },
       '/ws': { target: 'ws://localhost:3001', ws: true },
     },
-    headers: {},
+    headers: {
+      'Cache-Control': 'no-store',
+    },
   },
   worker: {
     format: 'es',

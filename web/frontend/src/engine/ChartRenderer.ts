@@ -1,14 +1,18 @@
 // ═══════════════════════════════════════════════════════════════
 //  ChartRenderer — WebGL2 Instanced Quad Renderer
 //
-//  Draws up to 100,000 instanced quads in a SINGLE draw call.
-//  Zero-GC render(): no `new`, no allocations in the hot path.
+//  Draws up to 50,000 instanced quads in a SINGLE draw call.
+//  Zero-GC hot path: no `new`, no allocations in render methods.
 //  Buffers point directly into WASM linear memory (zero-copy).
+//
+//  uploadAndRender(): uploads pos/col to GPU, draws (buffer recompute)
+//  renderCached():    draws with existing GPU data (pan hot path)
+//  setCameraX():      updates horizontal camera offset uniform
 // ═══════════════════════════════════════════════════════════════
 
 import { VERTEX_SHADER, FRAGMENT_SHADER } from './shaders';
 
-const MAX_INSTANCES = 20_000;
+const MAX_INSTANCES = 50_000;
 
 export class ChartRenderer {
   private gl: WebGL2RenderingContext;
@@ -17,82 +21,72 @@ export class ChartRenderer {
   private posVBO: WebGLBuffer;
   private colVBO: WebGLBuffer;
   private uResolution: WebGLUniformLocation;
+  private uCameraX: WebGLUniformLocation;
   private width = 0;
   private height = 0;
+  private currentCameraX = 0;
+  private uploadedVersion = -1;
 
-  // Pre-allocated sub-views bound to WASM memory (set via bindBuffers)
   private posView: Float32Array | null = null;
   private colView: Float32Array | null = null;
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
 
-    // Compile shaders
     const vs = this.compileShader(gl.VERTEX_SHADER, VERTEX_SHADER);
     const fs = this.compileShader(gl.FRAGMENT_SHADER, FRAGMENT_SHADER);
 
-    // Link program
     const prog = gl.createProgram()!;
     gl.attachShader(prog, vs);
     gl.attachShader(prog, fs);
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-      throw new Error('Program link failed: ' + gl.getProgramInfoLog(prog));
+      throw new Error('Program link: ' + gl.getProgramInfoLog(prog));
     }
     this.program = prog;
     gl.deleteShader(vs);
     gl.deleteShader(fs);
 
     this.uResolution = gl.getUniformLocation(prog, 'u_resolution')!;
+    this.uCameraX = gl.getUniformLocation(prog, 'u_camera_x')!;
 
-    // Create VAO
     this.vao = gl.createVertexArray()!;
     gl.bindVertexArray(this.vao);
 
-    // Unit quad geometry (2 triangles, 6 vertices via index buffer)
-    // Corners: (0,0), (1,0), (1,1), (0,1)
-    const quadVerts = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
-    const quadIndices = new Uint16Array([0, 1, 2, 0, 2, 3]);
-
+    // Unit quad geometry (shared across all instances)
     const quadVBO = gl.createBuffer()!;
     gl.bindBuffer(gl.ARRAY_BUFFER, quadVBO);
-    gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), gl.STATIC_DRAW);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-    gl.vertexAttribDivisor(0, 0); // per vertex
+    gl.vertexAttribDivisor(0, 0);
 
     const ebo = gl.createBuffer()!;
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, quadIndices, gl.STATIC_DRAW);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0, 1, 2, 0, 2, 3]), gl.STATIC_DRAW);
 
-    // Instance position+size buffer (x, y, w, h) — 4 floats per instance
+    // Per-instance position buffer (x, y, w, h)
     this.posVBO = gl.createBuffer()!;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.posVBO);
     gl.bufferData(gl.ARRAY_BUFFER, MAX_INSTANCES * 16, gl.DYNAMIC_DRAW);
     gl.enableVertexAttribArray(1);
     gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 0, 0);
-    gl.vertexAttribDivisor(1, 1); // per instance
+    gl.vertexAttribDivisor(1, 1);
 
-    // Instance color buffer (r, g, b, a) — 4 floats per instance
+    // Per-instance color buffer (r, g, b, a)
     this.colVBO = gl.createBuffer()!;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.colVBO);
     gl.bufferData(gl.ARRAY_BUFFER, MAX_INSTANCES * 16, gl.DYNAMIC_DRAW);
     gl.enableVertexAttribArray(2);
     gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 0, 0);
-    gl.vertexAttribDivisor(2, 1); // per instance
+    gl.vertexAttribDivisor(2, 1);
 
     gl.bindVertexArray(null);
-
-    // GL state that never changes
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.clearColor(0.024, 0.024, 0.043, 1.0); // #06060b
+    gl.clearColor(0.0, 0.0, 0.0, 0.0); // transparent — grid canvas shows through
   }
 
-  /**
-   * Bind WASM memory views. Called once after WASM loads,
-   * and again if WASM memory grows.
-   */
   bindBuffers(positions: Float32Array, colors: Float32Array): void {
     this.posView = positions;
     this.colView = colors;
@@ -104,54 +98,45 @@ export class ChartRenderer {
     this.gl.viewport(0, 0, w, h);
   }
 
+  setCameraX(x: number): void {
+    this.currentCameraX = x;
+  }
+
   clear(): void {
     this.gl.clear(this.gl.COLOR_BUFFER_BIT);
   }
 
-  /**
-   * Zero-GC render: upload WASM buffers to GPU, draw all instances.
-   * No `new`, no allocations, no object creation.
-   */
-  render(instanceCount: number): void {
+  uploadAndRender(instanceCount: number, version: number): void {
     if (instanceCount <= 0 || !this.posView || !this.colView) return;
-
     const gl = this.gl;
-    const count = instanceCount > MAX_INSTANCES ? MAX_INSTANCES : instanceCount;
+    const count = Math.min(instanceCount, MAX_INSTANCES);
+
+    if (version !== this.uploadedVersion) {
+      this.uploadedVersion = version;
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.posVBO);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.posView, 0, count * 4);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.colVBO);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.colView, 0, count * 4);
+    }
 
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(this.program);
     gl.uniform2f(this.uResolution, this.width, this.height);
+    gl.uniform1f(this.uCameraX, this.currentCameraX);
     gl.bindVertexArray(this.vao);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.posVBO);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.posView, 0, count * 4);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.colVBO);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.colView, 0, count * 4);
-
     gl.drawElementsInstanced(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0, count);
   }
 
-  /**
-   * Render from raw JS Float32Arrays (fallback when WASM is not available).
-   */
-  renderRaw(positions: Float32Array, colors: Float32Array, instanceCount: number): void {
+  renderCached(instanceCount: number): void {
     if (instanceCount <= 0) return;
-
     const gl = this.gl;
-    const count = instanceCount > MAX_INSTANCES ? MAX_INSTANCES : instanceCount;
+    const count = Math.min(instanceCount, MAX_INSTANCES);
 
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(this.program);
     gl.uniform2f(this.uResolution, this.width, this.height);
+    gl.uniform1f(this.uCameraX, this.currentCameraX);
     gl.bindVertexArray(this.vao);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.posVBO);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, positions, 0, count * 4);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.colVBO);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, colors, 0, count * 4);
-
     gl.drawElementsInstanced(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0, count);
   }
 
@@ -163,7 +148,7 @@ export class ChartRenderer {
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
       const info = gl.getShaderInfoLog(shader);
       gl.deleteShader(shader);
-      throw new Error('Shader compile failed: ' + info);
+      throw new Error('Shader: ' + info);
     }
     return shader;
   }

@@ -1,687 +1,644 @@
 // ═══════════════════════════════════════════════════════════════
 //  CHART ENGINE — WebGL2 + Odin WASM Worker
 //
-//  Architecture: Sliding-window over Binance klines.
-//  - `candleBuffer` holds up to WASM_CAP (1500) candles for rendering.
-//  - On scroll-left: fetches older candles, drops newest from buffer.
-//  - On scroll-right past live edge: re-fetches newest candles.
-//  - WebSocket feeds live kline + forceOrder data.
+//  Runs entirely in a Web Worker (off main thread).
+//  Architecture:
+//  - 5000-candle sliding window for deep history panning
+//  - Stride-based OHLC aggregation in WASM for zoomed-out views
+//  - Buffer-range rendering: WASM pre-computes padded range,
+//    GPU camera pans within it (zero WASM cost per frame)
+//  - Predictive pre-fetch loads history before the viewport edge
+//  - Zero-GC render hot path: no allocations in render/camera
 // ═══════════════════════════════════════════════════════════════
 
 import { ChartRenderer } from '../engine/ChartRenderer';
 import { loadEngine, type EngineBridge } from '../engine/WasmBridge';
 
-// ── Constants ──
-const WASM_CAP          = 1500;   // Max candles the Odin WASM buffer can hold
-const CANDLE_FIELDS     = 7;      // ts, open, high, low, close, volume, closed
-const LIQUIDATION_CAP   = 600;
-const LIQUIDATION_FIELDS = 4;     // ts, price, qty, side
-const MARGIN_RIGHT      = 80;
-const MARGIN_BOTTOM     = 32;
-const MAX_INSTANCES     = 20_000; // WebGL instanced quads
+// ── Constants ──────────────────────────────────────────────────
+const WASM_CAP       = 5000;
+const CF             = 7;           // fields per candle
+const LIQ_CAP        = 600;
+const LIQ_FIELDS     = 4;
+const MARGIN_RIGHT   = 80;
+const MARGIN_BOTTOM  = 32;
+const BUFFER_PAD     = 0.5;         // extra candles on each side (% of viewport span)
+const RECOMPUTE_THR  = 0.20;        // 20% from buffer edge → recompute
+const Y_DRIFT_THR    = 0.02;        // 2% price drift → recompute
+const SNAP_INTERVAL  = 2000;        // candle snapshot to main thread every 2s
+const PREFETCH_RATIO = 0.30;        // start prefetch when 30% of span from data edge
+const FETCH_COOLDOWN = 600;         // ms between history API calls
+const MIN_CANDLE_PX  = 4;           // min pixel width before stride aggregation kicks in
 
 const BINANCE_INTERVALS: Record<string, string> = {
-  '1m': '1m', '15m': '15m', '30m': '30m',
-  '1h': '1h', '4h': '4h', '1D': '1d', '1W': '1w',
+  '1m': '1m', '15m': '15m', '30m': '30m', '1h': '1h',
+  '4h': '4h', '1D': '1d', '1W': '1w',
 };
-const TIMEFRAME_MS: Record<string, number> = {
-  '1m': 60_000, '15m': 900_000, '30m': 1_800_000,
-  '1h': 3_600_000, '4h': 14_400_000, '1D': 86_400_000, '1W': 604_800_000,
+const TF_MS: Record<string, number> = {
+  '1m': 60e3, '15m': 9e5, '30m': 18e5, '1h': 36e5,
+  '4h': 144e5, '1D': 864e5, '1W': 6048e5,
 };
 
-// ── Candle buffer (flat Float64Array for performance) ──
-const candleBuffer = new Float64Array(WASM_CAP * CANDLE_FIELDS);
+// ── Flat candle buffer (JS-side mirror, copied to WASM on sync) ──
+const candleBuf = new Float64Array(WASM_CAP * CF);
 let candleCount = 0;
 
-function setCandle(index: number, ts: number, open: number, high: number, low: number, close: number, vol: number, closed: number) {
-  const offset = index * CANDLE_FIELDS;
-  candleBuffer[offset]     = ts;
-  candleBuffer[offset + 1] = open;
-  candleBuffer[offset + 2] = high;
-  candleBuffer[offset + 3] = low;
-  candleBuffer[offset + 4] = close;
-  candleBuffer[offset + 5] = vol;
-  candleBuffer[offset + 6] = closed;
+function setCandle(i: number, ts: number, o: number, h: number, l: number, c: number, v: number, closed: number) {
+  const p = i * CF;
+  candleBuf[p] = ts; candleBuf[p+1] = o; candleBuf[p+2] = h;
+  candleBuf[p+3] = l; candleBuf[p+4] = c; candleBuf[p+5] = v; candleBuf[p+6] = closed;
 }
-function getTimestamp(i: number)  { return candleBuffer[i * CANDLE_FIELDS]; }
-function getOpen(i: number)      { return candleBuffer[i * CANDLE_FIELDS + 1]; }
-function getHigh(i: number)      { return candleBuffer[i * CANDLE_FIELDS + 2]; }
-function getLow(i: number)       { return candleBuffer[i * CANDLE_FIELDS + 3]; }
-function getClose(i: number)     { return candleBuffer[i * CANDLE_FIELDS + 4]; }
+function candleTs(i: number)    { return candleBuf[i * CF]; }
+function candleHigh(i: number)  { return candleBuf[i * CF + 2]; }
+function candleLow(i: number)   { return candleBuf[i * CF + 3]; }
+function candleClose(i: number) { return candleBuf[i * CF + 4]; }
 
-// ── Liquidation buffer ──
-const liquidationBuffer = new Float64Array(LIQUIDATION_CAP * LIQUIDATION_FIELDS);
-let liquidationCount = 0;
+const liqBuf = new Float64Array(LIQ_CAP * LIQ_FIELDS);
+let liqCount = 0;
 
-// ── State ──
-let websocket: WebSocket | null = null;
+// ── Core state ────────────────────────────────────────────────
+let socket: WebSocket | null = null;
 let symbol = 'btcusdt';
-let isRunning = false;
-let currentPrice = 0;
+let running = false;
+let lastPrice = 0;
 let timeframe = '1m';
-let timeframeMs = 60_000;
+let timeframeMs = 60e3;
 
-let viewportStart = 0, viewportEnd = 500;
+let visStart = 0, visEnd = 500;
 let yAxisScale = 1.0, yAxisOffset = 0;
 
-let offscreenCanvas: OffscreenCanvas | null = null;
-let chartRenderer: ChartRenderer | null = null;
-let wasmEngine: EngineBridge | null = null;
-let isWasmActive = false;
-let canvasWidth = 0, canvasHeight = 0, devicePixelRatio = 1;
-let animationFrameId = 0;
+let offscreen: OffscreenCanvas | null = null;
+let renderer: ChartRenderer | null = null;
+let engine: EngineBridge | null = null;
+let canvasW = 0, canvasH = 0, devicePR = 1;
+let animId = 0;
 
-let needsRender = true;
-let needsCandleSync = true;
-let needsLiquidationSync = true;
+// Dirty flags — control what work the render loop does
+let fullDirty = true;
+let cameraDirty = false;
+let candleSyncDirty = true;
+let liqSyncDirty = true;
 
-let frameCount = 0, fpsTimestamp = 0, currentFps = 0;
+// FPS counter
+let frameCount = 0, fpsTimestamp = 0;
+// Meta throttle
+let lastMetaTime = 0, lastMetaMin = 0, lastMetaMax = 0;
 
-let jsFallbackPositions: Float32Array | null = null;
-let jsFallbackColors: Float32Array | null = null;
+// ── History fetch state ──
+let isPanning = false;
+let fetchingOlder = false;
+let fetchingNewer = false;
+let noMoreOlder = false;
+let noMoreNewer = false;
+let lastOlderFetchTime = 0;
+let lastNewerFetchTime = 0;
+let liveTimestamp = 0;
 
-let lastMetaPostTime = 0;
-let lastMetaMinPrice = 0, lastMetaMaxPrice = 0;
+// ── Buffer-range state ──
+let bufStart = 0, bufEnd = 0;
+let bufInstCount = 0, bufVersion = 0;
+let bufXStep = 0;
+let bufMinPrice = 0, bufMaxPrice = 0;
+let currentStride = 1;
 
-let isFetchingHistory = false;
-let hasNoMoreOlderHistory = false;
-let hasNoMoreNewerHistory = false;
-const FETCH_COOLDOWN_MS = 800;
-let lastFetchTimestamp = 0;
+// Scratch vars for computeBufferRange (zero-GC)
+let _bufS = 0, _bufE = 0;
 
-// Track the "live edge" — the newest timestamp we've seen from WS
-let liveEdgeTimestamp = 0;
-
-// ── Helper: ensure JS fallback buffers exist ──
-function ensureJsFallbackBuffers() {
-  if (!jsFallbackPositions) jsFallbackPositions = new Float32Array(MAX_INSTANCES * 4);
-  if (!jsFallbackColors)    jsFallbackColors    = new Float32Array(MAX_INSTANCES * 4);
+// ── Helpers ───────────────────────────────────────────────────
+const EMPTY_TRANSFERS: Transferable[] = [];
+function post(msg: unknown, transfers?: Transferable[]) {
+  (self as unknown as Worker).postMessage(msg, transfers ?? EMPTY_TRANSFERS);
 }
 
-// ── Sync candle data from JS buffer to WASM shared memory ──
-function syncCandlesToWasm() {
-  if (!wasmEngine) return;
-  if (needsCandleSync) {
-    needsCandleSync = false;
-    const byteLen = candleCount * CANDLE_FIELDS;
-    if (byteLen > 0) wasmEngine.candleView.set(candleBuffer.subarray(0, byteLen));
-    wasmEngine.exports.set_candle_count(candleCount);
-  }
-  if (needsLiquidationSync) {
-    needsLiquidationSync = false;
-    const byteLen = liquidationCount * LIQUIDATION_FIELDS;
-    if (byteLen > 0) wasmEngine.liqView.set(liquidationBuffer.subarray(0, byteLen));
-    wasmEngine.exports.set_liq_count(liquidationCount);
-  }
-  wasmEngine.exports.set_mid_price(currentPrice);
-}
-
-// ── Throttled meta message to main thread ──
-function postPriceMetadata(mid: number, min: number, max: number) {
-  const now = performance.now();
-  if (now - lastMetaPostTime < 80 && min === lastMetaMinPrice && max === lastMetaMaxPrice) return;
-  lastMetaPostTime = now;
-  lastMetaMinPrice = min;
-  lastMetaMaxPrice = max;
-  postMessage({ type: 'meta', midPrice: mid, minPrice: min, maxPrice: max });
-}
-
-// ── Compute visible price range (JS fallback path) ──
-function computeVisiblePriceRange() {
-  const start = Math.max(0, Math.min(viewportStart, candleCount - 1));
-  const end   = Math.max(start + 1, Math.min(viewportEnd, candleCount));
-  if (end <= start) return { minPrice: 0, maxPrice: 0, midPrice: 0 };
-
-  let highest = getHigh(start), lowest = getLow(start);
-  for (let i = start + 1; i < end; i++) {
-    const h = getHigh(i), l = getLow(i);
-    if (h > highest) highest = h;
-    if (l < lowest)  lowest = l;
-  }
-  const range = highest - lowest || 1;
-  const padding = range * 0.05;
-  const center = (highest + lowest) * 0.5 + yAxisOffset;
-  const halfRange = (range + padding * 2) * 0.5 * yAxisScale;
-  return {
-    minPrice: center - halfRange,
-    maxPrice: center + halfRange,
-    midPrice: getClose(Math.min(end - 1, candleCount - 1)),
-  };
-}
-
-// ── JS fallback renderer ──
-function jsRenderCandles(positions: Float32Array, colors: Float32Array, minP: number, maxP: number): number {
-  if (candleCount < 2) return 0;
-  const plotWidth  = canvasWidth  - MARGIN_RIGHT  * devicePixelRatio;
-  const plotHeight = canvasHeight - MARGIN_BOTTOM * devicePixelRatio;
-  if (plotWidth < 10 || plotHeight < 10) return 0;
-
-  const vs = Math.max(0, viewportStart);
-  const ve = Math.min(viewportEnd, candleCount);
-  const visibleCount = ve - vs;
-  if (visibleCount < 1) return 0;
-
-  const priceRange = maxP - minP;
-  if (priceRange <= 0) return 0;
-  const invPriceRange = plotHeight / priceRange;
-  const xStep = plotWidth / visibleCount;
-
-  let candleWidth = xStep * 0.75;
-  if (candleWidth < 1) candleWidth = 1;
-  if (candleWidth > 20 * devicePixelRatio) candleWidth = 20 * devicePixelRatio;
-  const halfCandle = candleWidth * 0.5;
-  const wickWidth = Math.max(1, devicePixelRatio);
-
-  let instanceCount = 0;
-  const maxCount = MAX_INSTANCES - 10;
-
-  // Pass 1: wicks
-  for (let i = vs; i < ve && instanceCount < maxCount; i++) {
-    const ci = i - vs;
-    const xCenter = ci * xStep + xStep * 0.5;
-    const high = getHigh(i), low = getLow(i);
-    const yHigh = (maxP - high) * invPriceRange;
-    const yLow  = (maxP - low)  * invPriceRange;
-    const isBullish = getClose(i) >= getOpen(i);
-    const off = instanceCount * 4;
-    positions[off] = xCenter - wickWidth * 0.5;
-    positions[off + 1] = yHigh;
-    positions[off + 2] = wickWidth;
-    positions[off + 3] = Math.max(1, yLow - yHigh);
-    if (isBullish) { colors[off] = 0.239; colors[off+1] = 0.788; colors[off+2] = 0.522; colors[off+3] = 0.7; }
-    else           { colors[off] = 0.937; colors[off+1] = 0.310; colors[off+2] = 0.376; colors[off+3] = 0.7; }
-    instanceCount++;
-  }
-
-  // Pass 2: bodies
-  for (let i = vs; i < ve && instanceCount < maxCount; i++) {
-    const ci = i - vs;
-    const xCenter = ci * xStep + xStep * 0.5;
-    const open = getOpen(i), close = getClose(i);
-    const isBullish = close >= open;
-    const yTop = isBullish ? (maxP - close) * invPriceRange : (maxP - open) * invPriceRange;
-    const yBot = isBullish ? (maxP - open)  * invPriceRange : (maxP - close) * invPriceRange;
-    const off = instanceCount * 4;
-    positions[off] = xCenter - halfCandle;
-    positions[off + 1] = yTop;
-    positions[off + 2] = candleWidth;
-    positions[off + 3] = Math.max(1, yBot - yTop);
-    if (isBullish) { colors[off] = 0.239; colors[off+1] = 0.788; colors[off+2] = 0.522; colors[off+3] = 1.0; }
-    else           { colors[off] = 0.937; colors[off+1] = 0.310; colors[off+2] = 0.376; colors[off+3] = 1.0; }
-    instanceCount++;
-  }
-
-  return instanceCount;
-}
-
-// ── Main render function ──
-function render() {
-  if (!chartRenderer) return;
-  let count = 0;
-
-  if (isWasmActive && wasmEngine) {
-    try {
-      syncCandlesToWasm();
-      count = wasmEngine.exports.update_chart(
-        viewportStart, viewportEnd, yAxisScale, yAxisOffset,
-        canvasWidth, canvasHeight, MARGIN_RIGHT, MARGIN_BOTTOM,
-        devicePixelRatio, timeframeMs,
-      );
-      if (count > 0) {
-        chartRenderer.render(count);
-        postPriceMetadata(
-          wasmEngine.exports.get_out_mid(),
-          wasmEngine.exports.get_out_min(),
-          wasmEngine.exports.get_out_max(),
-        );
-      } else {
-        chartRenderer.clear();
-      }
-    } catch (err) {
-      postMessage({ type: 'error', msg: 'WASM crash, falling back to JS: ' + (err instanceof Error ? err.message : String(err)) });
-      isWasmActive = false;
-      ensureJsFallbackBuffers();
-      chartRenderer.bindBuffers(jsFallbackPositions!, jsFallbackColors!);
-      return;
-    }
-  } else {
-    ensureJsFallbackBuffers();
-    const { minPrice, maxPrice, midPrice } = computeVisiblePriceRange();
-    if (minPrice > 0 && maxPrice > 0) postPriceMetadata(midPrice, minPrice, maxPrice);
-    count = jsRenderCandles(jsFallbackPositions!, jsFallbackColors!, minPrice, maxPrice);
-    if (count > 0) chartRenderer.renderRaw(jsFallbackPositions!, jsFallbackColors!, count);
-    else chartRenderer.clear();
-  }
-
-  needsRender = false;
-  frameCount++;
-  const now = performance.now();
-  if (now - fpsTimestamp >= 1000) {
-    currentFps = frameCount;
-    frameCount = 0;
-    fpsTimestamp = now;
-    postMessage({ type: 'fps', fps: currentFps });
-  }
-}
-
-function renderLoop() {
-  if (!isRunning) return;
-  animationFrameId = requestAnimationFrame(renderLoop);
-  if (needsRender) render();
-}
-
-// ── Worker → Main thread message helper ──
-function postMessage(msg: any, transfer?: Transferable[]) {
-  (self as unknown as Worker).postMessage(msg, transfer || []);
-}
-
-function getBinanceInterval(): string {
+function binanceInterval(): string {
   return BINANCE_INTERVALS[timeframe] || '1m';
 }
 
-// ── Transfer candle snapshot to main thread (for crosshair lookups) ──
-let transferBuffer: Float64Array | null = null;
-
-function emitCandleSnapshot() {
-  if (!candleCount) return;
-  const elementCount = candleCount * CANDLE_FIELDS;
-  if (!transferBuffer || transferBuffer.length < elementCount) {
-    transferBuffer = new Float64Array(WASM_CAP * CANDLE_FIELDS);
-  }
-  transferBuffer.set(candleBuffer.subarray(0, elementCount));
-  const copy = new Float64Array(transferBuffer.buffer.slice(0, elementCount * 8));
-  postMessage(
-    { type: 'candles', buf: copy, count: candleCount, fields: CANDLE_FIELDS },
-    [copy.buffer] as unknown as Transferable[],
-  );
+function resetBuffer() {
+  bufStart = bufEnd = bufInstCount = 0;
+  bufMinPrice = bufMaxPrice = 0;
+  bufVersion++;
 }
 
-// ── Load initial candles (latest 1500) ──
+function computeStride(): number {
+  const span = visEnd - visStart;
+  if (span <= 0) return 1;
+  const plotW = canvasW - MARGIN_RIGHT * devicePR;
+  if (plotW <= 0) return 1;
+  const pxPerCandle = plotW / span;
+  if (pxPerCandle >= MIN_CANDLE_PX) return 1;
+  const raw = Math.ceil(MIN_CANDLE_PX / pxPerCandle);
+  if (raw <= 1) return 1;
+  // Snap to power-of-2 for clean aggregation boundaries
+  if (raw <= 2) return 2;
+  if (raw <= 4) return 4;
+  if (raw <= 8) return 8;
+  if (raw <= 16) return 16;
+  if (raw <= 32) return 32;
+  if (raw <= 64) return 64;
+  if (raw <= 128) return 128;
+  return 256;
+}
+
+function historyFetchLimit(): number {
+  return currentStride > 1 ? 1000 : 500;
+}
+
+function syncToWasm() {
+  if (!engine) return;
+  if (candleSyncDirty) {
+    candleSyncDirty = false;
+    const n = candleCount * CF;
+    if (n > 0) engine.candleView.set(candleBuf.subarray(0, n));
+    engine.exports.set_candle_count(candleCount);
+  }
+  if (liqSyncDirty) {
+    liqSyncDirty = false;
+    const n = liqCount * LIQ_FIELDS;
+    if (n > 0) engine.liqView.set(liqBuf.subarray(0, n));
+    engine.exports.set_liq_count(liqCount);
+  }
+  engine.exports.set_mid_price(lastPrice);
+}
+
+function postMeta(mid: number, lo: number, hi: number) {
+  const now = performance.now();
+  if (now - lastMetaTime < 80 && lo === lastMetaMin && hi === lastMetaMax) return;
+  lastMetaTime = now; lastMetaMin = lo; lastMetaMax = hi;
+  post({ type: 'meta', midPrice: mid, minPrice: lo, maxPrice: hi });
+}
+
+// ── Buffer-range logic ────────────────────────────────────────
+function computeBufferRange() {
+  const span = visEnd - visStart;
+  const pad = Math.max(10, Math.round(span * BUFFER_PAD));
+  _bufS = Math.max(0, visStart - pad);
+  _bufE = Math.min(candleCount, visEnd + pad);
+}
+
+function needsBufferRecompute(): boolean {
+  if (bufInstCount === 0) return true;
+  const span = visEnd - visStart;
+  const margin = Math.max(3, Math.round(span * RECOMPUTE_THR));
+
+  // X-axis: approaching buffer edges
+  if (visStart - bufStart < margin && bufStart > 0) return true;
+  if (bufEnd - visEnd < margin && bufEnd < candleCount) return true;
+
+  // Y-axis: visible price range drifted outside buffered range
+  if (bufMaxPrice > bufMinPrice) {
+    const s = Math.max(0, Math.min(visStart, candleCount - 1));
+    const e = Math.max(s + 1, Math.min(visEnd, candleCount));
+    if (e > s) {
+      let hi = candleHigh(s), lo = candleLow(s);
+      for (let i = s + 1; i < e; i++) {
+        const h = candleHigh(i), l = candleLow(i);
+        if (h > hi) hi = h;
+        if (l < lo) lo = l;
+      }
+      const range = bufMaxPrice - bufMinPrice;
+      if (hi > bufMaxPrice + range * Y_DRIFT_THR || lo < bufMinPrice - range * Y_DRIFT_THR) return true;
+    }
+  }
+  return false;
+}
+
+function recomputeBuffer() {
+  if (!renderer || !engine) return;
+  syncToWasm();
+  if (candleCount < 2) { renderer.clear(); return; }
+
+  computeBufferRange();
+  currentStride = computeStride();
+
+  const maxIdx = candleCount - 1;
+  const safeBS = Math.max(0, Math.min(_bufS, maxIdx));
+  const safeBE = Math.max(safeBS + 1, Math.min(_bufE, candleCount));
+  const safeVS = Math.max(0, Math.min(visStart, maxIdx));
+  const safeVE = Math.max(safeVS + 1, Math.min(visEnd, candleCount));
+
+  if (safeBE <= safeBS || safeVE <= safeVS) { renderer.clear(); return; }
+
+  let count: number;
+  try {
+    count = engine.exports.update_chart_buffered(
+      safeBS, safeBE, safeVS, safeVE,
+      yAxisScale, yAxisOffset, canvasW, canvasH,
+      MARGIN_RIGHT, MARGIN_BOTTOM, devicePR, timeframeMs, currentStride,
+    );
+  } catch (err) {
+    post({ type: 'error', msg: 'WASM render: ' + (err instanceof Error ? err.message : String(err)) });
+    renderer.clear();
+    return;
+  }
+
+  bufStart     = engine.exports.get_buf_range_start();
+  bufEnd       = engine.exports.get_buf_range_end();
+  bufXStep     = engine.exports.get_buf_x_step();
+  bufInstCount = count;
+  bufVersion++;
+  bufMinPrice  = engine.exports.get_out_min();
+  bufMaxPrice  = engine.exports.get_out_max();
+
+  if (count > 0) {
+    const aggOff = (visStart - bufStart) / currentStride;
+    renderer.setCameraX(aggOff * bufXStep);
+    renderer.uploadAndRender(count, bufVersion);
+    postMeta(engine.exports.get_out_mid(), bufMinPrice, bufMaxPrice);
+  } else {
+    renderer.clear();
+  }
+  post({ type: 'bufferReady', bufStart, bufEnd, bufXStep, bufInstCount, bufVersion });
+}
+
+function renderCamera() {
+  if (!renderer || bufInstCount <= 0) return;
+  const aggOff = (visStart - bufStart) / currentStride;
+  renderer.setCameraX(aggOff * bufXStep);
+  renderer.renderCached(bufInstCount);
+  if (bufMinPrice > 0 && bufMaxPrice > bufMinPrice) {
+    const ei = Math.min(visEnd, candleCount);
+    const mid = ei > 0 ? candleClose(Math.min(ei - 1, candleCount - 1)) : lastPrice;
+    postMeta(mid, bufMinPrice, bufMaxPrice);
+  }
+}
+
+// ── Predictive pre-fetch ──────────────────────────────────────
+function predictivePrefetch() {
+  if (candleCount === 0 || isPanning) return;
+  const now = performance.now();
+  const span = visEnd - visStart;
+  const dist = Math.max(5, Math.round(span * PREFETCH_RATIO));
+
+  // ── LEFT edge → load older history ──
+  if (!fetchingOlder && !noMoreOlder && visStart < dist && now - lastOlderFetchTime >= FETCH_COOLDOWN) {
+    fetchOlder(candleTs(0) - 1);
+  }
+
+  // ── RIGHT edge → load newer data ──
+  // Reset noMoreNewer if buffer tail is behind live
+  if (noMoreNewer && liveTimestamp > 0 && candleCount > 0) {
+    if (candleTs(candleCount - 1) < liveTimestamp - timeframeMs * 1.5) {
+      noMoreNewer = false;
+    }
+  }
+  const rightDist = candleCount - visEnd;
+  if (!fetchingNewer && !noMoreNewer && rightDist < dist && now - lastNewerFetchTime >= FETCH_COOLDOWN) {
+    fetchNewer(candleTs(candleCount - 1) + 1);
+  }
+}
+
+// ── Main render loop ──────────────────────────────────────────
+function render() {
+  if (!renderer || !engine) return;
+
+  if (fullDirty) {
+    recomputeBuffer();
+    fullDirty = false;
+    cameraDirty = false;
+  } else if (cameraDirty) {
+    cameraDirty = false;
+    if (needsBufferRecompute()) {
+      recomputeBuffer();
+    } else {
+      renderCamera();
+    }
+  }
+
+  predictivePrefetch();
+
+  frameCount++;
+  const now = performance.now();
+  if (now - fpsTimestamp >= 1000) {
+    post({ type: 'fps', fps: frameCount });
+    frameCount = 0; fpsTimestamp = now;
+  }
+}
+
+function loop() {
+  if (!running) return;
+  animId = requestAnimationFrame(loop);
+  render();
+}
+
+// ── Candle snapshot (transferred to main thread for overlay axes) ──
+let lastSnapTime = 0;
+let snapTimer: ReturnType<typeof setInterval> | null = null;
+
+function emitSnapshot() {
+  if (!candleCount) return;
+  const now = performance.now();
+  if (now - lastSnapTime < SNAP_INTERVAL) return;
+  lastSnapTime = now;
+  const n = candleCount * CF;
+  const copy = new Float64Array(n);
+  copy.set(candleBuf.subarray(0, n));
+  post({ type: 'candles', buf: copy, count: candleCount, fields: CF }, [copy.buffer]);
+}
+
+function startSnap() { if (!snapTimer) snapTimer = setInterval(emitSnapshot, 500); }
+function stopSnap()  { if (snapTimer) { clearInterval(snapTimer); snapTimer = null; } }
+
+// ── Initial data load ─────────────────────────────────────────
 async function loadInitialCandles() {
   try {
-    const interval = getBinanceInterval();
-    const response = await fetch(
-      `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&limit=1500`,
-    );
-    if (!response.ok) return;
-    const klines: number[][] = await response.json();
+    const limit = 1500;
+    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol.toUpperCase()}&interval=${binanceInterval()}&limit=${limit}`;
+    const resp = await fetch(url);
+    if (!resp.ok) { post({ type: 'error', msg: `Klines HTTP ${resp.status}` }); return; }
+    const klines: number[][] = await resp.json();
 
     candleCount = 0;
     for (let i = 0; i < klines.length && candleCount < WASM_CAP; i++) {
       const k = klines[i];
       setCandle(candleCount++, k[0], +k[1], +k[2], +k[3], +k[4], +k[5], 1);
     }
-
-    needsCandleSync = true;
-    if (isWasmActive && wasmEngine) { syncCandlesToWasm(); wasmEngine.exports.recompute_ema(); }
+    candleSyncDirty = true;
+    if (engine) { syncToWasm(); engine.exports.recompute_ema(); }
     if (candleCount > 0) {
-      currentPrice = getClose(candleCount - 1);
-      liveEdgeTimestamp = getTimestamp(candleCount - 1);
+      lastPrice = candleClose(candleCount - 1);
+      liveTimestamp = candleTs(candleCount - 1);
     }
 
-    const defaultVisible = Math.min(120, candleCount);
-    viewportStart = candleCount - defaultVisible;
-    viewportEnd   = candleCount;
+    const vis = Math.min(120, candleCount);
+    visStart = candleCount - vis; visEnd = candleCount;
+    fetchingOlder = fetchingNewer = false;
+    noMoreOlder = false; noMoreNewer = true;
+    resetBuffer();
 
-    isFetchingHistory = false;
-    hasNoMoreOlderHistory = false;
-    hasNoMoreNewerHistory = true; // We just loaded the latest data
-
-    postMessage({ type: 'viewport', visStart: viewportStart, visEnd: viewportEnd, total: candleCount });
-    emitCandleSnapshot();
-    needsRender = true;
+    post({ type: 'viewport', visStart, visEnd, total: candleCount });
+    lastSnapTime = 0; emitSnapshot();
+    fullDirty = true;
   } catch (err) {
-    postMessage({ type: 'error', msg: 'Klines fetch failed: ' + (err instanceof Error ? err.message : String(err)) });
+    post({ type: 'error', msg: 'Klines: ' + (err instanceof Error ? err.message : String(err)) });
   }
 }
 
-// ── Handle live kline from WebSocket ──
-function handleLiveKline(data: any) {
-  const k = data.k;
-  if (!k) return;
-  const ts = k.t, open = +k.o, high = +k.h, low = +k.l, close = +k.c, vol = +k.v, closed = k.x ? 1 : 0;
+// ── WebSocket handlers ────────────────────────────────────────
+function handleKline(data: { k?: { t: number; o: string; h: string; l: string; c: string; v: string; x: boolean } }) {
+  const k = data.k; if (!k) return;
+  const ts = k.t, o = +k.o, h = +k.h, l = +k.l, c = +k.c, v = +k.v, closed = k.x ? 1 : 0;
+  if (ts > liveTimestamp) liveTimestamp = ts;
+  if (c > 0) lastPrice = c;
 
-  if (ts > liveEdgeTimestamp) liveEdgeTimestamp = ts;
-
-  if (candleCount > 0 && getTimestamp(candleCount - 1) === ts) {
-    // Update existing candle
-    setCandle(candleCount - 1, ts, open, high, low, close, vol, closed);
-  } else if (candleCount < WASM_CAP) {
-    // Append new candle
-    const span = viewportEnd - viewportStart;
-    const wasAtLiveEdge = viewportEnd >= candleCount;
-    setCandle(candleCount++, ts, open, high, low, close, vol, closed);
-    if (wasAtLiveEdge) {
-      viewportEnd = candleCount;
-      viewportStart = viewportEnd - span;
+  // If buffer's newest candle is far from live, don't append — it would create a gap.
+  // Only update the last candle if its timestamp matches, otherwise just track liveTimestamp/lastPrice.
+  if (candleCount > 0) {
+    const newestTs = candleTs(candleCount - 1);
+    if (newestTs === ts) {
+      // Update current candle in-place
+      setCandle(candleCount - 1, ts, o, h, l, c, v, closed);
+      candleSyncDirty = fullDirty = true;
+      if (engine) { syncToWasm(); engine.exports.update_ema_last(); }
+      return;
     }
-  } else {
-    // Buffer full: shift left, append at end
-    candleBuffer.copyWithin(0, CANDLE_FIELDS, candleCount * CANDLE_FIELDS);
-    setCandle(candleCount - 1, ts, open, high, low, close, vol, closed);
-    if (viewportStart > 0) { viewportStart--; viewportEnd--; }
+    // Gap detection: if the new kline is more than 2 intervals ahead of buffer tail, skip appending
+    if (ts > newestTs + timeframeMs * 2) return;
   }
 
-  if (close > 0) currentPrice = close;
-  needsCandleSync = true;
-  if (isWasmActive && wasmEngine) { syncCandlesToWasm(); wasmEngine.exports.update_ema_last(); }
-  needsRender = true;
+  // Normal append (buffer is near live)
+  if (candleCount < WASM_CAP) {
+    const span = visEnd - visStart;
+    const atEdge = visEnd >= candleCount;
+    setCandle(candleCount++, ts, o, h, l, c, v, closed);
+    if (atEdge) { visEnd = candleCount; visStart = visEnd - span; }
+  } else {
+    candleBuf.copyWithin(0, CF, candleCount * CF);
+    setCandle(candleCount - 1, ts, o, h, l, c, v, closed);
+    if (visStart > 0) { visStart--; visEnd--; }
+    if (bufStart > 0) { bufStart--; bufEnd--; }
+  }
+  candleSyncDirty = fullDirty = true;
+  if (engine) { syncToWasm(); engine.exports.update_ema_last(); }
 }
 
-// ── Handle liquidation from WebSocket ──
-function handleLiquidation(data: any) {
-  const order = data.o;
-  if (!order) return;
+function handleLiquidation(data: { o?: { T?: number; p: string; q: string; S: string }; E?: number }) {
+  const order = data.o; if (!order) return;
   const ts = order.T || data.E || Date.now();
   const price = +order.p, qty = +order.q, side = order.S === 'SELL' ? 1 : 0;
-
-  if (liquidationCount >= LIQUIDATION_CAP) {
-    liquidationBuffer.copyWithin(0, LIQUIDATION_FIELDS, LIQUIDATION_CAP * LIQUIDATION_FIELDS);
-    liquidationCount = LIQUIDATION_CAP - 1;
-  }
-  const offset = liquidationCount * LIQUIDATION_FIELDS;
-  liquidationBuffer[offset]     = ts;
-  liquidationBuffer[offset + 1] = price;
-  liquidationBuffer[offset + 2] = qty;
-  liquidationBuffer[offset + 3] = side;
-  liquidationCount++;
-  needsLiquidationSync = true;
-  needsRender = true;
+  if (liqCount >= LIQ_CAP) { liqBuf.copyWithin(0, LIQ_FIELDS, LIQ_CAP * LIQ_FIELDS); liqCount = LIQ_CAP - 1; }
+  const off = liqCount * LIQ_FIELDS;
+  liqBuf[off] = ts; liqBuf[off+1] = price; liqBuf[off+2] = qty; liqBuf[off+3] = side;
+  liqCount++; liqSyncDirty = fullDirty = true;
 }
 
-// ── Periodic snapshot emit ──
-let snapshotTimer: ReturnType<typeof setInterval> | null = null;
-let snapshotTick = 0;
-function startSnapshotLoop() {
-  if (snapshotTimer) return;
-  snapshotTimer = setInterval(() => {
-    if (++snapshotTick >= 5) { snapshotTick = 0; emitCandleSnapshot(); }
-  }, 200);
-}
-function stopSnapshotLoop() {
-  if (snapshotTimer) { clearInterval(snapshotTimer); snapshotTimer = null; }
+function closeSocket() {
+  if (!socket) return;
+  socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null;
+  try { socket.close(); } catch { /* ignore */ }
+  socket = null;
 }
 
-// ── WebSocket management ──
-function closeWebSocket() {
-  if (!websocket) return;
-  websocket.onopen = null;
-  websocket.onmessage = null;
-  websocket.onclose = null;
-  websocket.onerror = null;
-  try { websocket.close(); } catch { /* ignore */ }
-  websocket = null;
-}
-
-function connectWebSocket() {
-  if (!isRunning) return;
-  closeWebSocket();
-  const sym = symbol.toLowerCase();
-  const interval = getBinanceInterval();
-  const ws = new WebSocket(`wss://fstream.binance.com/stream?streams=${sym}@kline_${interval}/${sym}@forceOrder`);
-  websocket = ws;
-
-  ws.onopen    = () => { if (websocket !== ws) return; postMessage({ type: 'wsConnected' }); };
+function openSocket() {
+  if (!running) return;
+  closeSocket();
+  const s = symbol.toLowerCase(), iv = binanceInterval();
+  const ws = new WebSocket(`wss://fstream.binance.com/stream?streams=${s}@kline_${iv}/${s}@forceOrder`);
+  socket = ws;
+  ws.onopen = () => { if (socket !== ws) return; post({ type: 'wsConnected' }); };
   ws.onmessage = (ev: MessageEvent) => {
-    if (websocket !== ws) return;
+    if (socket !== ws) return;
     const raw = ev.data as string;
-    if (raw.includes('"kline"'))      { try { handleLiveKline(JSON.parse(raw).data); } catch { /* skip */ } }
-    else if (raw.includes('"forceOrder"')) { try { handleLiquidation(JSON.parse(raw).data); } catch { /* skip */ } }
+    try {
+      if (raw.includes('"kline"'))           handleKline(JSON.parse(raw).data);
+      else if (raw.includes('"forceOrder"')) handleLiquidation(JSON.parse(raw).data);
+    } catch { /* malformed frame */ }
   };
-  ws.onclose = () => { if (websocket === ws && isRunning) setTimeout(connectWebSocket, 2000); };
-  ws.onerror = () => { if (websocket === ws) postMessage({ type: 'error', msg: 'WebSocket error — reconnecting...' }); };
+  ws.onclose = () => { if (socket === ws && running) setTimeout(openSocket, 2000); };
+  ws.onerror = () => { if (socket === ws) post({ type: 'error', msg: 'WS error — reconnecting' }); };
 }
 
-// ── Fetch OLDER candles (scroll-left) ──
-async function fetchOlderCandles(endTime: number) {
+// ── History sliding-window fetch ──────────────────────────────
+async function fetchOlder(endTime: number) {
   const now = performance.now();
-  if (isFetchingHistory || hasNoMoreOlderHistory || now - lastFetchTimestamp < FETCH_COOLDOWN_MS) return;
-  isFetchingHistory = true;
-  lastFetchTimestamp = now;
+  if (fetchingOlder || noMoreOlder || now - lastOlderFetchTime < FETCH_COOLDOWN) return;
+  fetchingOlder = true; lastOlderFetchTime = now;
   try {
-    const interval = getBinanceInterval();
-    const response = await fetch(
-      `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&endTime=${endTime}&limit=500`,
-    );
-    if (!response.ok) { isFetchingHistory = false; return; }
-    const klines: number[][] = await response.json();
-    if (!klines.length) {
-      hasNoMoreOlderHistory = true;
-      isFetchingHistory = false;
-      postMessage({ type: 'historyLoaded', count: 0, total: candleCount, direction: 'older' });
-      return;
-    }
+    const limit = historyFetchLimit();
+    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol.toUpperCase()}&interval=${binanceInterval()}&endTime=${endTime}&limit=${limit}`;
+    const resp = await fetch(url);
+    if (!resp.ok) return;
+    const klines: number[][] = await resp.json();
+    if (!klines.length) { noMoreOlder = true; post({ type: 'historyLoaded', count: 0, total: candleCount, direction: 'older' }); return; }
 
-    // Filter out duplicates
-    const oldestExistingTs = candleCount > 0 ? getTimestamp(0) : Infinity;
-    const newCandles = klines.filter(k => k[0] < oldestExistingTs);
-    if (newCandles.length === 0) {
-      hasNoMoreOlderHistory = true;
-      isFetchingHistory = false;
-      postMessage({ type: 'historyLoaded', count: 0, total: candleCount, direction: 'older' });
-      return;
-    }
+    const oldestTs = candleCount > 0 ? candleTs(0) : Infinity;
+    const fresh = klines.filter(k => k[0] < oldestTs);
+    if (!fresh.length) { noMoreOlder = true; post({ type: 'historyLoaded', count: 0, total: candleCount, direction: 'older' }); return; }
 
-    // Sliding window: insert at front, drop from end if needed
-    const insertCount = Math.min(newCandles.length, WASM_CAP);
-    const totalAfterInsert = candleCount + insertCount;
-    const dropFromEnd = totalAfterInsert > WASM_CAP ? totalAfterInsert - WASM_CAP : 0;
-    const keptFromExisting = candleCount - dropFromEnd;
+    const ins = Math.min(fresh.length, WASM_CAP);
+    const drop = Math.max(0, candleCount + ins - WASM_CAP);
+    const kept = candleCount - drop;
 
-    // Shift existing candles right
-    if (keptFromExisting > 0) {
-      candleBuffer.copyWithin(insertCount * CANDLE_FIELDS, 0, keptFromExisting * CANDLE_FIELDS);
-    }
+    // Shift existing candles right to make room at the front
+    if (kept > 0) candleBuf.copyWithin(ins * CF, 0, kept * CF);
 
-    // Write new candles at front
-    const startIdx = newCandles.length - insertCount;
-    for (let i = 0; i < insertCount; i++) {
-      const k = newCandles[startIdx + i];
+    const startIdx = fresh.length - ins;
+    for (let i = 0; i < ins; i++) {
+      const k = fresh[startIdx + i];
       setCandle(i, k[0], +k[1], +k[2], +k[3], +k[4], +k[5], 1);
     }
-    candleCount = Math.min(keptFromExisting + insertCount, WASM_CAP);
+    candleCount = Math.min(kept + ins, WASM_CAP);
+    visStart += ins; visEnd += ins;
+    if (visEnd > candleCount) visEnd = candleCount;
+    if (visStart < 0) visStart = 0;
+    if (drop > 0) noMoreNewer = false;
 
-    // Viewport shift
-    viewportStart += insertCount;
-    viewportEnd   += insertCount;
-    if (viewportEnd > candleCount) { viewportEnd = candleCount; }
-    if (viewportStart < 0) viewportStart = 0;
-
-    // If we dropped candles from the end, we're no longer at live edge
-    if (dropFromEnd > 0) hasNoMoreNewerHistory = false;
-
-    needsCandleSync = true;
-    if (isWasmActive && wasmEngine) { syncCandlesToWasm(); wasmEngine.exports.recompute_ema(); }
-    emitCandleSnapshot();
-    needsRender = true;
-    postMessage({ type: 'historyLoaded', count: insertCount, total: candleCount, direction: 'older' });
-  } catch {
-    /* ignore */
-  } finally {
-    isFetchingHistory = false;
+    resetBuffer();
+    candleSyncDirty = fullDirty = true;
+    if (engine) { syncToWasm(); engine.exports.recompute_ema(); }
+    lastSnapTime = 0; emitSnapshot();
+    post({ type: 'historyLoaded', count: ins, total: candleCount, direction: 'older' });
+    post({ type: 'viewport', visStart, visEnd, total: candleCount });
+  } catch { /* network error */ } finally {
+    fetchingOlder = false;
+    // Chain: if more data might be needed, schedule immediate re-check
+    if (!noMoreOlder && !isPanning) {
+      lastOlderFetchTime = performance.now() - FETCH_COOLDOWN + 80;
+      setTimeout(predictivePrefetch, 80);
+    }
   }
 }
 
-// ── Fetch NEWER candles (scroll-right back to live) ──
-async function fetchNewerCandles(startTime: number) {
+async function fetchNewer(startTime: number) {
   const now = performance.now();
-  if (isFetchingHistory || hasNoMoreNewerHistory || now - lastFetchTimestamp < FETCH_COOLDOWN_MS) return;
-  isFetchingHistory = true;
-  lastFetchTimestamp = now;
+  if (fetchingNewer || noMoreNewer || now - lastNewerFetchTime < FETCH_COOLDOWN) return;
+  fetchingNewer = true; lastNewerFetchTime = now;
   try {
-    const interval = getBinanceInterval();
-    const response = await fetch(
-      `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&startTime=${startTime}&limit=500`,
-    );
-    if (!response.ok) { isFetchingHistory = false; return; }
-    const klines: number[][] = await response.json();
-    if (!klines.length) {
-      hasNoMoreNewerHistory = true;
-      isFetchingHistory = false;
-      postMessage({ type: 'historyLoaded', count: 0, total: candleCount, direction: 'newer' });
-      return;
+    const limit = historyFetchLimit();
+    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol.toUpperCase()}&interval=${binanceInterval()}&startTime=${startTime}&limit=${limit}`;
+    const resp = await fetch(url);
+    if (!resp.ok) return;
+    const klines: number[][] = await resp.json();
+    if (!klines.length) { noMoreNewer = true; post({ type: 'historyLoaded', count: 0, total: candleCount, direction: 'newer' }); return; }
+
+    const newestTs = candleCount > 0 ? candleTs(candleCount - 1) : -Infinity;
+    const fresh = klines.filter(k => k[0] > newestTs);
+    if (!fresh.length) { noMoreNewer = true; post({ type: 'historyLoaded', count: 0, total: candleCount, direction: 'newer' }); return; }
+
+    const app = Math.min(fresh.length, WASM_CAP);
+    const drop = Math.max(0, candleCount + app - WASM_CAP);
+
+    // Drop oldest candles to make room at the end
+    if (drop > 0) {
+      candleBuf.copyWithin(0, drop * CF, candleCount * CF);
+      candleCount -= drop; visStart -= drop; visEnd -= drop;
+      if (visStart < 0) visStart = 0;
+      noMoreOlder = false; // dropped old data → can fetch it again later
     }
-
-    // Filter out duplicates
-    const newestExistingTs = candleCount > 0 ? getTimestamp(candleCount - 1) : -Infinity;
-    const newCandles = klines.filter(k => k[0] > newestExistingTs);
-    if (newCandles.length === 0) {
-      hasNoMoreNewerHistory = true;
-      isFetchingHistory = false;
-      postMessage({ type: 'historyLoaded', count: 0, total: candleCount, direction: 'newer' });
-      return;
-    }
-
-    // Sliding window: append at end, drop from front if needed
-    const appendCount = Math.min(newCandles.length, WASM_CAP);
-    const totalAfterAppend = candleCount + appendCount;
-    const dropFromFront = totalAfterAppend > WASM_CAP ? totalAfterAppend - WASM_CAP : 0;
-
-    // Shift existing candles left to make room
-    if (dropFromFront > 0) {
-      candleBuffer.copyWithin(0, dropFromFront * CANDLE_FIELDS, candleCount * CANDLE_FIELDS);
-      candleCount -= dropFromFront;
-      viewportStart -= dropFromFront;
-      viewportEnd   -= dropFromFront;
-      if (viewportStart < 0) viewportStart = 0;
-    }
-
-    // Append new candles at end
-    for (let i = 0; i < appendCount && candleCount < WASM_CAP; i++) {
-      const k = newCandles[i];
+    for (let i = 0; i < app && candleCount < WASM_CAP; i++) {
+      const k = fresh[i];
       setCandle(candleCount++, k[0], +k[1], +k[2], +k[3], +k[4], +k[5], 1);
     }
+    if (candleCount > 0 && candleTs(candleCount - 1) >= liveTimestamp) noMoreNewer = true;
 
-    // Check if we've reached the live edge
-    if (candleCount > 0 && getTimestamp(candleCount - 1) >= liveEdgeTimestamp) {
-      hasNoMoreNewerHistory = true;
+    resetBuffer();
+    candleSyncDirty = fullDirty = true;
+    if (engine) { syncToWasm(); engine.exports.recompute_ema(); }
+    lastSnapTime = 0; emitSnapshot();
+    post({ type: 'historyLoaded', count: app, total: candleCount, direction: 'newer' });
+    post({ type: 'viewport', visStart, visEnd, total: candleCount });
+  } catch { /* network error */ } finally {
+    fetchingNewer = false;
+    // Chain: if more data might be needed, schedule immediate re-check
+    if (!noMoreNewer && !isPanning) {
+      lastNewerFetchTime = performance.now() - FETCH_COOLDOWN + 80;
+      setTimeout(predictivePrefetch, 80);
     }
-
-    needsCandleSync = true;
-    if (isWasmActive && wasmEngine) { syncCandlesToWasm(); wasmEngine.exports.recompute_ema(); }
-    emitCandleSnapshot();
-    needsRender = true;
-    postMessage({ type: 'historyLoaded', count: appendCount, total: candleCount, direction: 'newer' });
-  } catch {
-    /* ignore */
-  } finally {
-    isFetchingHistory = false;
   }
 }
 
-// ── WebGL + WASM initialization ──
-async function initializeRenderer(canvas: OffscreenCanvas) {
-  offscreenCanvas = canvas;
+// ── WebGL2 + WASM init ────────────────────────────────────────
+async function initRenderer(canvas: OffscreenCanvas) {
+  offscreen = canvas;
   const gl = canvas.getContext('webgl2', {
-    alpha: false, antialias: false, depth: false, stencil: false,
+    alpha: true, antialias: false, depth: false, stencil: false,
     premultipliedAlpha: false, preserveDrawingBuffer: false, powerPreference: 'high-performance',
   }) as WebGL2RenderingContext | null;
 
-  if (!gl) { postMessage({ type: 'error', msg: 'WebGL2 not available' }); return false; }
+  if (!gl) { post({ type: 'fatal', msg: 'WebGL2 is not supported by your browser.' }); return false; }
 
   try {
-    chartRenderer = new ChartRenderer(gl);
-    chartRenderer.resize(canvasWidth, canvasHeight);
+    renderer = new ChartRenderer(gl);
+    renderer.resize(canvasW, canvasH);
   } catch (err) {
-    postMessage({ type: 'error', msg: 'WebGL2 init: ' + (err instanceof Error ? err.message : String(err)) });
+    post({ type: 'fatal', msg: 'WebGL2 init failed: ' + (err instanceof Error ? err.message : String(err)) });
     return false;
   }
 
   try {
-    wasmEngine = await loadEngine();
-    chartRenderer.bindBuffers(wasmEngine.positionsView, wasmEngine.colorsView);
-    isWasmActive = true;
-    postMessage({ type: 'engineReady' });
+    engine = await loadEngine();
+    renderer.bindBuffers(engine.positionsView, engine.colorsView);
+    post({ type: 'engineReady' });
   } catch (err) {
-    postMessage({ type: 'wasmFailed', msg: err instanceof Error ? err.message : String(err) });
-    ensureJsFallbackBuffers();
-    chartRenderer.bindBuffers(jsFallbackPositions!, jsFallbackColors!);
-    isWasmActive = false;
+    post({ type: 'fatal', msg: 'WASM engine failed: ' + (err instanceof Error ? err.message : String(err)) });
+    return false;
   }
   return true;
 }
 
-// ── Message handler ──
+// ── Message handler ───────────────────────────────────────────
 self.onmessage = async (ev: MessageEvent) => {
   const msg = ev.data;
   switch (msg.type) {
     case 'init': {
       symbol = (msg.symbol || 'btcusdt').toLowerCase();
-      devicePixelRatio = msg.dpr || 1;
-      canvasWidth = msg.w || 800;
-      canvasHeight = msg.h || 600;
-      timeframe = msg.tf || '1h';
-      timeframeMs = TIMEFRAME_MS[timeframe] || 3_600_000;
-      isRunning = true;
-      fpsTimestamp = performance.now();
+      devicePR = msg.dpr || 1; canvasW = msg.w || 800; canvasH = msg.h || 600;
+      timeframe = msg.tf || '1h'; timeframeMs = TF_MS[timeframe] || 36e5;
+      running = true; fpsTimestamp = performance.now();
       if (msg.canvas) {
-        const canvas = msg.canvas as OffscreenCanvas;
-        canvas.width = canvasWidth;
-        canvas.height = canvasHeight;
-        await initializeRenderer(canvas);
+        const cv = msg.canvas as OffscreenCanvas;
+        cv.width = canvasW; cv.height = canvasH;
+        if (!(await initRenderer(cv))) return;
       }
-      loadInitialCandles();
-      connectWebSocket();
-      startSnapshotLoop();
-      renderLoop();
+      loadInitialCandles(); openSocket(); startSnap(); loop();
       break;
     }
     case 'setTimeframe': {
-      const newTf = msg.tf as string;
-      if (newTf === timeframe) break;
-      timeframe = newTf;
-      timeframeMs = TIMEFRAME_MS[timeframe] || 60_000;
-      candleCount = 0;
-      liquidationCount = 0;
-      currentPrice = 0;
-      yAxisOffset = 0;
-      yAxisScale = 1.0;
-      isFetchingHistory = false;
-      hasNoMoreOlderHistory = false;
-      hasNoMoreNewerHistory = false;
-      liveEdgeTimestamp = 0;
-      needsCandleSync = true;
-      needsLiquidationSync = true;
-      needsRender = true;
-      if (chartRenderer) chartRenderer.clear();
-      closeWebSocket();
-      await loadInitialCandles();
-      connectWebSocket();
+      const tf = msg.tf as string;
+      if (tf === timeframe) break;
+      timeframe = tf; timeframeMs = TF_MS[tf] || 6e4;
+      candleCount = 0; liqCount = 0; lastPrice = 0; yAxisOffset = 0; yAxisScale = 1;
+      fetchingOlder = fetchingNewer = false;
+      noMoreOlder = noMoreNewer = false;
+      liveTimestamp = 0; candleSyncDirty = liqSyncDirty = fullDirty = true;
+      currentStride = 1;
+      resetBuffer();
+      if (renderer) renderer.clear();
+      closeSocket(); await loadInitialCandles(); openSocket();
       break;
     }
-    case 'setViewport':
-      viewportStart = msg.visStart;
-      viewportEnd   = msg.visEnd;
-      needsRender = true;
+    case 'setCamera':
+      visStart = msg.visStart | 0; visEnd = msg.visEnd | 0;
+      cameraDirty = true;
       break;
+    case 'setViewport':
+      visStart = msg.visStart | 0; visEnd = msg.visEnd | 0;
+      fullDirty = true;
+      break;
+    case 'setPanning': {
+      const wasPanning = isPanning;
+      isPanning = !!msg.panning;
+      if (wasPanning && !isPanning) {
+        // Panning ended → immediate prefetch check (skip cooldown once)
+        lastOlderFetchTime = 0;
+        lastNewerFetchTime = 0;
+        predictivePrefetch();
+      }
+      break;
+    }
     case 'setYScale':
-      yAxisScale  = msg.yScale;
-      yAxisOffset = msg.yOffset;
-      needsRender = true;
+      yAxisScale = msg.yScale; yAxisOffset = msg.yOffset;
+      fullDirty = true;
       break;
     case 'resize':
-      canvasWidth      = msg.w || canvasWidth;
-      canvasHeight     = msg.h || canvasHeight;
-      devicePixelRatio = msg.dpr || devicePixelRatio;
-      if (offscreenCanvas) { offscreenCanvas.width = canvasWidth; offscreenCanvas.height = canvasHeight; }
-      if (chartRenderer) chartRenderer.resize(canvasWidth, canvasHeight);
-      needsRender = true;
+      canvasW = msg.w || canvasW; canvasH = msg.h || canvasH; devicePR = msg.dpr || devicePR;
+      if (offscreen) { offscreen.width = canvasW; offscreen.height = canvasH; }
+      if (renderer) renderer.resize(canvasW, canvasH);
+      fullDirty = true;
       break;
-    case 'fetchOlder': {
-      const endT = msg.endTime || (candleCount > 0 ? getTimestamp(0) - 1 : Date.now());
-      fetchOlderCandles(endT);
-      break;
-    }
-    case 'fetchNewer': {
-      const startT = msg.startTime || (candleCount > 0 ? getTimestamp(candleCount - 1) + 1 : Date.now());
-      fetchNewerCandles(startT);
-      break;
-    }
     case 'stop':
-      isRunning = false;
-      stopSnapshotLoop();
-      if (animationFrameId) { cancelAnimationFrame(animationFrameId); animationFrameId = 0; }
-      closeWebSocket();
+      running = false; stopSnap();
+      if (animId) { cancelAnimationFrame(animId); animId = 0; }
+      closeSocket();
       break;
   }
 };
