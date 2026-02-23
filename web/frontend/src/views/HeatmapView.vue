@@ -28,26 +28,48 @@ let xCtx: CanvasRenderingContext2D | null = null;
 let PW = 0, PH = 0;
 const MR = 80, MB = 32;
 
-// Zoom limits (TradingView-like)
-const MIN_VISIBLE   = 5;
-const MIN_CANDLE_PX = 2;
+// ── TradingView-identical TimeScale model ──
+// Viewport = f(barSpacing, rightOffset, width). Nothing else.
+const MIN_BAR_SPACING = 0.5;
+const MIN_VISIBLE_BARS = 2;
+
+const _isWinChrome = /Windows/.test(navigator.userAgent) && /Chrome/.test(navigator.userAgent) && !/Edge|Edg/.test(navigator.userAgent);
 
 let gridDirty = true, crossDirty = true;
 let midP = 0;
-let tgtMinP = 0, tgtMaxP = 0;   // target values from worker
-let dispMinP = 0, dispMaxP = 0;  // smoothly interpolated display values
-const Y_LERP = 0.12;             // 0→1, higher = faster snap
+let tgtMinP = 0, tgtMaxP = 0;
+let dispMinP = 0, dispMaxP = 0;
+const Y_LERP = 0.12;
 
 const CF = 7;
 let cSnap: Float64Array = new Float64Array(0);
 let cSnapLen = 0;
 let bufTotal = 0;
 
-let visS = 0, visE = 120;
-let yScale = 1.0, yOff = 0;
+// The two scalars that define the viewport (TradingView model)
+let _barSpacing = 1.5;
+let _rightOffset = 0;           // bars from right edge to baseIndex (=bufTotal-1). 0 = last bar flush right.
 
-let panning = false, panX0 = 0, panVisS0 = 0, panVisE0 = 0;
+// Scroll state (3-phase: start→move→end)
+let _scrollStartX: number | null = null;
+let _scrollStartRightOffset = 0;
+
+// Y-axis
+let yScale = 1.0, yOff = 0;
 let yDragging = false, yDragY0 = 0, yDragScale0 = 1.0;
+
+// Kinetic scroll
+let _kineticAnim: { startOffset: number; startTime: number; speed: number; duration: number } | null = null;
+const K_MIN_SPEED = 0.2;
+const K_MAX_SPEED = 7;
+const K_DAMPING   = 0.997;
+const K_MIN_MOVE  = 15;
+const K_EPSILON   = 1;
+const K_MAX_DELAY = 50;
+// Ring buffer of last 4 samples for velocity calculation
+let _kSamples: { pos: number; time: number }[] = [];
+
+let visS = 0, visE = 750;
 
 let crossOn = false, crossMX = 0, crossMY = 0;
 let crossPLabel = '', crossTLabel = '';
@@ -116,21 +138,193 @@ function fmtCrossT(ms: number): string {
   return _pad(d.getMonth()+1)+'/'+_pad(d.getDate())+' '+_pad(d.getHours())+':'+_pad(d.getMinutes())+':'+_pad(d.getSeconds());
 }
 
-function clampVp() {
-  const span = visE - visS;
-  if (span < MIN_VISIBLE) visE = visS + MIN_VISIBLE;
-  // Allow slight undershoot so worker sees proximity to left edge and prefetches
-  if (visS < -2) { visS = -2; visE = visS + span; }
-  // Allow slight overshoot past buffer end
-  if (visE > bufTotal + 50) { visE = bufTotal + 50; visS = Math.max(-2, visE - span); }
+// ── TradingView TimeScale core ──
+function chartW(): number { return PW / DPR; }
+
+function baseIndex(): number { return Math.max(0, bufTotal - 1); }
+
+function maxBarSpacing(): number { return Math.max(chartW() * 0.5, 20); }
+function minBarSpacing(): number { return MIN_BAR_SPACING; }
+
+function correctBarSpacing() {
+  const clamped = Math.max(minBarSpacing(), Math.min(maxBarSpacing(), _barSpacing));
+  if (clamped !== _barSpacing) _barSpacing = clamped;
 }
+
+function minRightOffset(): number {
+  if (bufTotal === 0) return 0;
+  const barsVisible = Math.min(MIN_VISIBLE_BARS, bufTotal);
+  return -baseIndex() - 1 + barsVisible;
+}
+
+function maxRightOffset(): number {
+  return 0; // fixRightEdge: last bar can't go past right edge
+}
+
+function correctOffset() {
+  const lo = minRightOffset();
+  if (_rightOffset < lo) _rightOffset = lo;
+  const hi = maxRightOffset();
+  if (_rightOffset > hi) _rightOffset = hi;
+}
+
+function setBarSpacing(bs: number) {
+  _barSpacing = bs;
+  correctBarSpacing();
+  correctOffset();
+}
+
+function setRightOffset(off: number) {
+  _rightOffset = off;
+  correctOffset();
+}
+
+// TradingView coordinate transforms
+function coordToFloatIndex(x: number): number {
+  const deltaFromRight = (chartW() - 1 - x) / _barSpacing;
+  return Math.round((baseIndex() + _rightOffset - deltaFromRight) * 1e6) / 1e6;
+}
+
+function indexToCoord(index: number): number {
+  const deltaFromRight = baseIndex() + _rightOffset - index;
+  return chartW() - (deltaFromRight + 0.5) * _barSpacing - 1;
+}
+
+// Derive integer visS/visE from the two scalars (for worker communication)
+function syncVis() {
+  const w = chartW();
+  if (w <= 0 || _barSpacing <= 0) return;
+  const barsVisible = w / _barSpacing;
+  const rightBorder = baseIndex() + _rightOffset;
+  const leftBorder = rightBorder - barsVisible + 1;
+  visS = Math.round(leftBorder);
+  visE = Math.round(rightBorder);
+  atLiveEdge = _rightOffset >= -0.5;
+}
+
+// TradingView zoom: anchor bar under cursor
+function zoom(pointX: number, scale: number) {
+  if (bufTotal === 0 || scale === 0) return;
+  const w = chartW();
+  const px = Math.max(1, Math.min(pointX, w));
+  const floatIdx = coordToFloatIndex(px);
+  const newBS = _barSpacing + scale * (_barSpacing / 10);
+  setBarSpacing(newBS);
+  setRightOffset(_rightOffset + (floatIdx - coordToFloatIndex(px)));
+  syncVis();
+  vpDirty = gridDirty = true;
+}
+
+// TradingView scroll: start/move/end
+function startScroll(x: number) {
+  if (_scrollStartX !== null) return;
+  stopKinetic();
+  _scrollStartX = x;
+  _scrollStartRightOffset = _rightOffset;
+  _kSamples = [];
+  kineticAddSample(_rightOffset, performance.now());
+}
+
+function scrollTo(x: number) {
+  if (_scrollStartX === null) return;
+  const shift = (_scrollStartX - x) / _barSpacing;
+  _rightOffset = _scrollStartRightOffset + shift;
+  correctOffset();
+  syncVis();
+  cameraDirty = gridDirty = true;
+  kineticAddSample(_rightOffset, performance.now());
+}
+
+function endScroll() {
+  if (_scrollStartX === null) return;
+  _scrollStartX = null;
+  startKinetic();
+}
+
+// TradingView one-shot scroll (for horizontal wheel / trackpad)
+function scrollChart(deltaPx: number) {
+  startScroll(0);
+  scrollTo(deltaPx);
+  _kSamples = []; // no kinetic for wheel
+  endScroll();
+}
+
+// TradingView deltaMode normalization
+function wheelAdj(ev: WheelEvent): number {
+  switch (ev.deltaMode) {
+    case ev.DOM_DELTA_PAGE: return 120;
+    case ev.DOM_DELTA_LINE: return 32;
+  }
+  return _isWinChrome ? (1 / window.devicePixelRatio) : 1;
+}
+
+// ── Kinetic scroll (exponential decay, identical to TradingView) ──
+function kineticAddSample(pos: number, time: number) {
+  if (_kSamples.length > 0) {
+    const last = _kSamples[_kSamples.length - 1];
+    if (last.time === time) { last.pos = pos; return; }
+    if (Math.abs(last.pos - pos) < K_MIN_MOVE / _barSpacing) return;
+  }
+  _kSamples.push({ pos, time });
+  if (_kSamples.length > 4) _kSamples.shift();
+}
+
+function startKinetic() {
+  _kineticAnim = null;
+  if (_kSamples.length < 2) return;
+  const s = _kSamples;
+  const now = performance.now();
+  if (now - s[s.length - 1].time > K_MAX_DELAY) return;
+
+  let totalDist = 0;
+  const speeds: number[] = [];
+  const dists: number[] = [];
+  for (let i = s.length - 1; i > 0; i--) {
+    const dt = s[i].time - s[i - 1].time;
+    if (dt === 0) continue;
+    let spd = (s[i].pos - s[i - 1].pos) / dt;
+    spd = Math.sign(spd) * Math.min(Math.abs(spd), K_MAX_SPEED / _barSpacing);
+    if (speeds.length > 0 && Math.sign(spd) !== Math.sign(speeds[0])) break;
+    const d = Math.abs(s[i].pos - s[i - 1].pos);
+    speeds.push(spd);
+    dists.push(d);
+    totalDist += d;
+  }
+  if (totalDist === 0) return;
+
+  let resultSpeed = 0;
+  for (let i = 0; i < speeds.length; i++) resultSpeed += (dists[i] / totalDist) * speeds[i];
+  if (Math.abs(resultSpeed) < K_MIN_SPEED / _barSpacing) return;
+
+  const lnD = Math.log(K_DAMPING);
+  const dur = Math.log((K_EPSILON * lnD) / -Math.abs(resultSpeed)) / lnD;
+  if (dur <= 0) return;
+
+  _kineticAnim = { startOffset: _rightOffset, startTime: now, speed: resultSpeed, duration: dur };
+}
+
+function tickKinetic(now: number): boolean {
+  if (!_kineticAnim) return false;
+  const elapsed = now - _kineticAnim.startTime;
+  if (elapsed >= _kineticAnim.duration) { _kineticAnim = null; return false; }
+  const lnD = Math.log(K_DAMPING);
+  const pos = _kineticAnim.startOffset + _kineticAnim.speed * (Math.pow(K_DAMPING, elapsed) - 1) / lnD;
+  setRightOffset(pos);
+  syncVis();
+  cameraDirty = gridDirty = true;
+  return true;
+}
+
+function stopKinetic() { _kineticAnim = null; }
 
 function selectTf(t: string) {
   if (t === activeTf.value) return;
   activeTf.value = t;
-  visS = 0; visE = 120; yScale = 1.0; yOff = 0;
+  _barSpacing = 1.5; _rightOffset = 0;
+  visS = 0; visE = 750; yScale = 1.0; yOff = 0;
   cSnapLen = 0; bufTotal = 0; tgtMinP = tgtMaxP = dispMinP = dispMaxP = midP = 0;
   atLiveEdge = true; gridDirty = true;
+  stopKinetic();
   worker?.postMessage({ type: 'setTimeframe', tf: t });
 }
 
@@ -157,11 +351,16 @@ function startWorker() {
         cSnapLen = m.count;
         break;
       case 'viewport': {
-        const dS = m.visStart - visS;
         visS = m.visStart; visE = m.visEnd; bufTotal = m.total;
         atLiveEdge = visE >= m.total;
-        // If panning, rebase pan origin so the mouse-to-viewport mapping stays stable
-        if (panning && dS !== 0) { panVisS0 += dS; panVisE0 += dS; }
+        const span = visE - visS;
+        const w = chartW();
+        if (span > 0 && w > 0) {
+          _barSpacing = w / span;
+          correctBarSpacing();
+          _rightOffset = visE - baseIndex();
+          correctOffset();
+        }
         gridDirty = true;
         break;
       }
@@ -376,6 +575,8 @@ function drawCross() {
 function frame() {
   animFrameId = requestAnimationFrame(frame);
 
+  tickKinetic(performance.now());
+
   if (vpDirty) {
     vpDirty = false; cameraDirty = false;
     worker?.postMessage({ type: 'setViewport', visStart: visS, visEnd: visE });
@@ -393,7 +594,7 @@ function frame() {
     const dMin = tgtMinP - dispMinP;
     const dMax = tgtMaxP - dispMaxP;
     const range = tgtMaxP - tgtMinP;
-    const eps = range * 0.0005; // snap threshold: 0.05% of range
+    const eps = range * 0.0005;
     if (Math.abs(dMin) > eps || Math.abs(dMax) > eps) {
       dispMinP += dMin * Y_LERP;
       dispMaxP += dMax * Y_LERP;
@@ -408,7 +609,9 @@ function frame() {
   if (crossDirty || crossMX !== drawnCX || crossMY !== drawnCY) drawCross();
 }
 
-// ── Input handlers ──
+// ── Input handlers (TradingView 3-phase) ──
+let _panning = false;
+
 function onMove(ev: MouseEvent) {
   const rect = getRect(); if (!rect) return;
   const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
@@ -420,15 +623,8 @@ function onMove(ev: MouseEvent) {
     return;
   }
 
-  if (panning) {
-    const span = panVisE0 - panVisS0;
-    const dx = ev.clientX - panX0;
-    const chartPxW = PW / DPR;
-    const dc = Math.round(-dx * span / chartPxW);
-    visS = panVisS0 + dc;
-    visE = panVisE0 + dc;
-    clampVp();
-    cameraDirty = gridDirty = true;
+  if (_panning) {
+    scrollTo(ev.clientX);
     return;
   }
 
@@ -439,7 +635,7 @@ function onMove(ev: MouseEvent) {
     crossPLabel = (dispMinP > 0 && dispMaxP > dispMinP) ? fmtPrice(y2p(my * DPR)) : '';
     const vLen = visE - visS;
     if (vLen > 0 && cSnapLen > 0) {
-      const xStep = (PW / DPR) / vLen;
+      const xStep = chartW() / vLen;
       const di = visS + Math.floor(mx / xStep);
       crossTLabel = (di >= 0 && di < cSnapLen) ? fmtCrossT(cSnap[di * CF]) : '';
     } else crossTLabel = '';
@@ -459,55 +655,78 @@ function onDown(ev: MouseEvent) {
     yDragging = true; yDragY0 = ev.clientY; yDragScale0 = yScale;
     return;
   }
-  panning = true; panX0 = ev.clientX; panVisS0 = visS; panVisE0 = visE;
+  _panning = true;
+  startScroll(ev.clientX);
   worker?.postMessage({ type: 'setPanning', panning: true });
 }
 
 function onUp() {
-  if (panning) worker?.postMessage({ type: 'setPanning', panning: false });
-  panning = false; yDragging = false;
+  if (_panning) {
+    endScroll();
+    worker?.postMessage({ type: 'setPanning', panning: false });
+    vpDirty = true;
+  }
+  _panning = false; yDragging = false;
 }
+
 function onLeave() {
-  if (panning) worker?.postMessage({ type: 'setPanning', panning: false });
-  crossOn = false; crossDirty = true; panning = false; yDragging = false;
+  if (_panning) {
+    endScroll();
+    worker?.postMessage({ type: 'setPanning', panning: false });
+    vpDirty = true;
+  }
+  crossOn = false; crossDirty = true; _panning = false; yDragging = false;
 }
 
 function onWheel(ev: WheelEvent) {
   ev.preventDefault();
   const rect = getRect(); if (!rect) return;
   const mx = ev.clientX - rect.left;
+  const my = ev.clientY - rect.top;
+  const cW = rect.width - MR;
+  const cH = rect.height - MB;
 
-  // Y-axis zoom
-  if (mx > rect.width - MR) {
-    yScale = Math.max(0.1, Math.min(10, yScale * (ev.deltaY > 0 ? 1.08 : 0.93)));
+  if (my >= cH) return; // time-axis strip — ignore
+
+  const adj = wheelAdj(ev);
+
+  // Y-axis zoom (cursor over price axis)
+  if (mx > cW) {
+    const normDY = -(adj * ev.deltaY / 100);
+    if (normDY === 0) return;
+    const s = Math.sign(normDY) * Math.min(1, Math.abs(normDY));
+    yScale = Math.max(0.1, Math.min(10, yScale + s * (yScale / 10)));
     yDirty = gridDirty = true;
     return;
   }
 
-  const span = visE - visS;
-  const chartPxW = rect.width - MR;
-  const maxVisible = Math.floor(chartPxW / MIN_CANDLE_PX);
-  const zoomOut = ev.deltaY > 0;
+  // Horizontal scroll (trackpad deltaX or Shift+wheel)
+  const dxRaw = ev.shiftKey ? ev.deltaY : ev.deltaX;
+  if (Math.abs(dxRaw) > Math.abs(ev.deltaY) && Math.abs(dxRaw) > 0) {
+    scrollChart(-(adj * dxRaw));
+    return;
+  }
 
-  if (zoomOut && span >= maxVisible) return;
-  if (!zoomOut && span <= MIN_VISIBLE) return;
-
-  const factor = zoomOut ? 1.12 : 0.89;
-  const ns = Math.max(MIN_VISIBLE, Math.min(maxVisible, Math.round(span * factor)));
-  if (ns === span) return;
-
-  const ratio = mx / chartPxW;
-  const delta = ns - span;
-  visS -= Math.round(delta * ratio);
-  visE = visS + ns;
-  clampVp();
-  vpDirty = gridDirty = true;
+  // Vertical wheel = zoom anchored at cursor
+  const normDY = -(adj * ev.deltaY / 100);
+  if (normDY === 0) return;
+  const anchorX = Math.max(0, Math.min(mx, cW));
+  const scale = Math.sign(normDY) * Math.min(1, Math.abs(normDY));
+  zoom(anchorX, scale);
 }
 
 function onDbl(ev: MouseEvent) {
   const rect = getRect(); if (!rect) return;
   if (ev.clientX - rect.left > rect.width - MR) {
     yScale = 1.0; yOff = 0; yDirty = gridDirty = true;
+  } else {
+    stopKinetic();
+    _barSpacing = 1.5;
+    _rightOffset = 0;
+    correctBarSpacing();
+    correctOffset();
+    syncVis();
+    vpDirty = gridDirty = true;
   }
 }
 

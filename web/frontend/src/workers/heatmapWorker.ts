@@ -359,7 +359,7 @@ async function loadInitialCandles() {
       liveTimestamp = candleTs(candleCount - 1);
     }
 
-    const vis = Math.min(120, candleCount);
+    const vis = Math.min(Math.round(candleCount * 0.5), candleCount);
     visStart = candleCount - vis; visEnd = candleCount;
     fetchingOlder = fetchingNewer = false;
     noMoreOlder = false; noMoreNewer = true;
