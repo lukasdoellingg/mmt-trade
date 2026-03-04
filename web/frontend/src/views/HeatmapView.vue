@@ -15,6 +15,33 @@ const fatalError   = ref('');
 const TIMEFRAMES = ['1m', '15m', '30m', '1h', '4h', '1D', '1W'] as const;
 const activeTf   = ref<string>('1h');
 
+type ToolId =
+  | 'cursor'
+  | 'cross'
+  | 'trend'
+  | 'hline'
+  | 'vline'
+  | 'brush'
+  | 'rect'
+  | 'text'
+  | 'long'
+  | 'short';
+
+const activeTool = ref<ToolId>('cursor');
+
+const TOOLS: { id: ToolId; icon: string; label: string; cursor: string }[] = [
+  { id: 'cursor', icon: '⟐', label: 'Arrow / Select',      cursor: 'default' },
+  { id: 'cross',  icon: '✚', label: 'Crosshair',            cursor: 'crosshair' },
+  { id: 'trend',  icon: '╲', label: 'Trend line',           cursor: 'crosshair' },
+  { id: 'hline',  icon: '━', label: 'Horizontal line',      cursor: 'row-resize' },
+  { id: 'vline',  icon: '┃', label: 'Vertical line',        cursor: 'col-resize' },
+  { id: 'brush',  icon: '✎', label: 'Brush',                cursor: 'crosshair' },
+  { id: 'rect',   icon: '▭', label: 'Rectangle',            cursor: 'crosshair' },
+  { id: 'text',   icon: 'T', label: 'Text',                 cursor: 'text' },
+  { id: 'long',   icon: 'L', label: 'Long position',        cursor: 'crosshair' },
+  { id: 'short',  icon: 'S', label: 'Short position',       cursor: 'crosshair' },
+];
+
 let worker: Worker | null = null;
 let animFrameId = 0;
 let resizeObs: ResizeObserver | null = null;
@@ -45,6 +72,18 @@ const CF = 7;
 let cSnap: Float64Array = new Float64Array(0);
 let cSnapLen = 0;
 let bufTotal = 0;
+
+// VWAP Suite (anchored VWAP: daily, weekly, monthly)
+const showVwapD = ref(true);
+const showVwapW = ref(true);
+const showVwapM = ref(true);
+let vwapD: Float64Array = new Float64Array(0);
+let vwapW: Float64Array = new Float64Array(0);
+let vwapM: Float64Array = new Float64Array(0);
+let vwapLen = 0;
+const VWAP_D_COLOR = '#f0c040';   // gold
+const VWAP_W_COLOR = '#40a0f0';   // blue
+const VWAP_M_COLOR = '#e060f0';   // magenta
 
 // The two scalars that define the viewport (TradingView model)
 let _barSpacing = 1.5;
@@ -138,6 +177,23 @@ function fmtCrossT(ms: number): string {
   return _pad(d.getMonth()+1)+'/'+_pad(d.getDate())+' '+_pad(d.getHours())+':'+_pad(d.getMinutes())+':'+_pad(d.getSeconds());
 }
 
+function toolCursor(inYAxis: boolean, inChart: boolean): string {
+  if (inYAxis) return 'ns-resize';
+  if (!inChart) return 'default';
+  switch (activeTool.value) {
+    case 'cursor': return 'default';
+    case 'cross':  return 'crosshair';
+    case 'trend':  return 'crosshair';
+    case 'hline':  return 'row-resize';
+    case 'vline':  return 'col-resize';
+    case 'brush':  return 'crosshair';
+    case 'rect':   return 'crosshair';
+    case 'text':   return 'text';
+    case 'long':
+    case 'short':  return 'crosshair';
+  }
+}
+
 // ── TradingView TimeScale core ──
 function chartW(): number { return PW / DPR; }
 
@@ -190,15 +246,25 @@ function indexToCoord(index: number): number {
   return chartW() - (deltaFromRight + 0.5) * _barSpacing - 1;
 }
 
-// Derive integer visS/visE from the two scalars (for worker communication)
+// Derive integer visS/visE (start inclusive, end exclusive) from the two scalars
 function syncVis() {
   const w = chartW();
-  if (w <= 0 || _barSpacing <= 0) return;
+  if (w <= 0 || _barSpacing <= 0 || bufTotal <= 0) return;
+
   const barsVisible = w / _barSpacing;
-  const rightBorder = baseIndex() + _rightOffset;
-  const leftBorder = rightBorder - barsVisible + 1;
-  visS = Math.round(leftBorder);
-  visE = Math.round(rightBorder);
+  const rightIndex = baseIndex() + _rightOffset;   // float index of last visible bar (center)
+  const leftIndex  = rightIndex - barsVisible;     // float index of first visible bar (center)
+
+  let s = Math.floor(leftIndex);
+  let e = Math.ceil(rightIndex) + 1;               // end-exclusive
+
+  if (s < 0) s = 0;
+  if (e > bufTotal) e = bufTotal;
+  if (e <= s) e = Math.min(bufTotal, s + 1);
+
+  visS = s;
+  visE = e;
+
   atLiveEdge = _rightOffset >= -0.5;
 }
 
@@ -349,17 +415,21 @@ function startWorker() {
       case 'candles':
         cSnap = m.buf instanceof Float64Array ? m.buf : new Float64Array(m.buf);
         cSnapLen = m.count;
+        if (m.vwapD instanceof Float64Array) { vwapD = m.vwapD; vwapW = m.vwapW; vwapM = m.vwapM; vwapLen = m.count; gridDirty = true; }
         break;
       case 'viewport': {
         visS = m.visStart; visE = m.visEnd; bufTotal = m.total;
         atLiveEdge = visE >= m.total;
-        const span = visE - visS;
+        const span = Math.max(1, visE - visS);
         const w = chartW();
-        if (span > 0 && w > 0) {
+        if (w > 0 && bufTotal > 0) {
           _barSpacing = w / span;
           correctBarSpacing();
-          _rightOffset = visE - baseIndex();
+          const rightIndex = visE - 1;          // last visible bar index (inclusive)
+          _rightOffset = rightIndex - baseIndex();
           correctOffset();
+          // Re-sync visS/visE after clamping barSpacing/offset so worker & UI stay aligned
+          syncVis();
         }
         gridDirty = true;
         break;
@@ -517,6 +587,39 @@ function drawGrid() {
       ctx.fillText(fmtAxisT(cSnap[di * CF]), x, PH + 16 * DPR);
     }
   }
+
+  // VWAP Suite overlay lines
+  if (vwapLen > 0 && vLen > 0 && dispMaxP > dispMinP) {
+    const xStep = PW / vLen;
+    const lines: { arr: Float64Array; color: string; on: boolean }[] = [
+      { arr: vwapD, color: VWAP_D_COLOR, on: showVwapD.value },
+      { arr: vwapW, color: VWAP_W_COLOR, on: showVwapW.value },
+      { arr: vwapM, color: VWAP_M_COLOR, on: showVwapM.value },
+    ];
+    ctx.lineWidth = 1.5 * DPR;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, PW, PH);
+    ctx.clip();
+    for (const ln of lines) {
+      if (!ln.on || ln.arr.length < vwapLen) continue;
+      ctx.strokeStyle = ln.color;
+      ctx.beginPath();
+      let started = false;
+      for (let ci = 0; ci < vLen; ci++) {
+        const di = visS + ci;
+        if (di < 0 || di >= vwapLen) continue;
+        const val = ln.arr[di];
+        if (val <= 0) { started = false; continue; }
+        const x = ci * xStep + xStep * 0.5;
+        const y = p2y(val);
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
 }
 
 function drawCross() {
@@ -616,6 +719,7 @@ function onMove(ev: MouseEvent) {
   const rect = getRect(); if (!rect) return;
   const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
   const inYAxis = mx > rect.width - MR;
+  const inChart = mx >= 0 && mx <= rect.width - MR && my >= 0 && my < rect.height - MB;
 
   if (yDragging) {
     yScale = Math.max(0.1, Math.min(10, yDragScale0 * Math.pow(1.005, ev.clientY - yDragY0)));
@@ -642,8 +746,20 @@ function onMove(ev: MouseEvent) {
   } else { crossPLabel = ''; crossTLabel = ''; }
 
   const wrap = wrapEl.value;
-  if (wrap) wrap.style.cursor = inYAxis ? 'ns-resize' : (my < rect.height - MB ? 'crosshair' : 'default');
+  if (wrap) wrap.style.cursor = toolCursor(inYAxis, inChart);
   crossDirty = true;
+}
+
+function selectTool(id: ToolId) {
+  activeTool.value = id;
+  const rect = getRect();
+  const wrap = wrapEl.value;
+  if (!rect || !wrap) return;
+  const mx = rect.width * 0.5;
+  const my = (rect.height - MB) * 0.5;
+  const inYAxis = mx > rect.width - MR;
+  const inChart = mx >= 0 && mx <= rect.width - MR && my >= 0 && my < rect.height - MB;
+  wrap.style.cursor = toolCursor(inYAxis, inChart);
 }
 
 function onDown(ev: MouseEvent) {
@@ -765,22 +881,46 @@ onDeactivated(() => { active = false; pause(); });
         <span class="l cb">&#9679; Bull</span>
         <span class="l cr">&#9679; Bear</span>
       </div>
+      <div class="vwap-toggles">
+        <button :class="['vwap-btn', { active: showVwapD }]" @click="showVwapD = !showVwapD; gridDirty = true">
+          <span class="vwap-dot" style="background:#f0c040"></span>D-VWAP
+        </button>
+        <button :class="['vwap-btn', { active: showVwapW }]" @click="showVwapW = !showVwapW; gridDirty = true">
+          <span class="vwap-dot" style="background:#40a0f0"></span>W-VWAP
+        </button>
+        <button :class="['vwap-btn', { active: showVwapM }]" @click="showVwapM = !showVwapM; gridDirty = true">
+          <span class="vwap-dot" style="background:#e060f0"></span>M-VWAP
+        </button>
+      </div>
       <span class="hm-fps" :class="{ good: fps >= 55 }">{{ fps }} FPS</span>
       <span class="hm-sub">{{ engineStatus }}</span>
     </div>
-    <div ref="wrapEl" class="hm-wrap"
-      @mousemove="onMove" @mouseleave="onLeave"
-      @mousedown="onDown" @mouseup="onUp"
-      @dblclick="onDbl">
-      <canvas ref="gridCanvas" class="hm-layer"></canvas>
-      <canvas ref="mainCanvas" class="hm-layer"></canvas>
-      <canvas ref="crossCanvas" class="hm-layer"></canvas>
-      <div v-if="fatalError" class="hm-fatal">
-        <div class="hm-fatal-box">
-          <div class="hm-fatal-icon">!</div>
-          <div class="hm-fatal-title">Engine Error</div>
-          <div class="hm-fatal-msg">{{ fatalError }}</div>
-          <div class="hm-fatal-hint">Try refreshing the page or use a browser that supports WebGL2.</div>
+    <div class="hm-main">
+      <div class="hm-vbar">
+        <button
+          v-for="t in TOOLS"
+          :key="t.id"
+          :title="t.label"
+          :class="['hm-vbtn', { active: activeTool === t.id }]"
+          @click="selectTool(t.id)"
+        >
+          {{ t.icon }}
+        </button>
+      </div>
+      <div ref="wrapEl" class="hm-wrap"
+        @mousemove="onMove" @mouseleave="onLeave"
+        @mousedown="onDown" @mouseup="onUp"
+        @dblclick="onDbl">
+        <canvas ref="gridCanvas" class="hm-layer"></canvas>
+        <canvas ref="mainCanvas" class="hm-layer"></canvas>
+        <canvas ref="crossCanvas" class="hm-layer"></canvas>
+        <div v-if="fatalError" class="hm-fatal">
+          <div class="hm-fatal-box">
+            <div class="hm-fatal-icon">!</div>
+            <div class="hm-fatal-title">Engine Error</div>
+            <div class="hm-fatal-msg">{{ fatalError }}</div>
+            <div class="hm-fatal-hint">Try refreshing the page or use a browser that supports WebGL2.</div>
+          </div>
         </div>
       </div>
     </div>
@@ -799,9 +939,19 @@ onDeactivated(() => { active = false; pause(); });
 .hm-legend{display:flex;align-items:center;gap:8px;margin-left:8px}
 .l{font-size:.5rem;letter-spacing:.3px}
 .cb{color:#3dc985}.cr{color:#ef4f60}
+.vwap-toggles{display:flex;gap:2px;margin-left:8px;background:#111118;border-radius:4px;overflow:hidden}
+.vwap-btn{display:flex;align-items:center;gap:3px;background:transparent;border:none;color:#4a5a6a;font:inherit;font-size:.55rem;padding:3px 7px;cursor:pointer;letter-spacing:.3px;transition:background .12s,color .12s}
+.vwap-btn:hover{color:#a0b0c0;background:#1a1a28}
+.vwap-btn.active{background:#1a1a28;color:#d0e0f0;font-weight:600}
+.vwap-dot{width:6px;height:6px;border-radius:50%;display:inline-block;flex-shrink:0}
 .hm-fps{font-size:.55rem;color:#ef4f60;font-variant-numeric:tabular-nums;font-weight:700;margin-left:auto}
 .hm-fps.good{color:#3dc985}
 .hm-sub{font-size:.55rem;color:#4a5a6a}
+.hm-main{flex:1;display:flex;min-height:0}
+.hm-vbar{width:32px;background:#06060b;border-right:1px solid #12121c;display:flex;flex-direction:column;align-items:center;padding:6px 2px;gap:4px}
+.hm-vbtn{width:26px;height:26px;border-radius:4px;border:none;background:#090912;color:#7a8a9a;font-size:.7rem;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;transition:background .12s,color .12s,transform .05s}
+.hm-vbtn:hover{background:#151526;color:#d0e0f0;transform:translateY(-1px)}
+.hm-vbtn.active{background:#2a2a40;color:#f0f4ff}
 .hm-wrap{flex:1;position:relative;min-height:0;cursor:crosshair;background:#06060b;user-select:none}
 .hm-layer{position:absolute;top:0;left:0;display:block}
 .hm-fatal{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(6,6,11,0.92);z-index:10}

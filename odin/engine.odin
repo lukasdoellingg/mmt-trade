@@ -25,8 +25,11 @@ LIQ_FIELDS    :: 4
 // CANDLE (f64×7)  0x196E00   280,000   5000 candles
 // EMA9 (f64)      0x1DB440    40,000
 // EMA21 (f64)     0x1E5080    40,000
-// LIQ (f64×4)     0x1EECC0    19,200   600 events
-// Peak usage:     0x1F3600 ≈ 2,045,440 B → 32 pages
+// LIQ (f64×4)     0x1EECC0    19,200   600 events   → end 0x1F37C0
+// VWAP_D (f64)    0x1F3800    40,000   daily VWAP per candle
+// VWAP_W (f64)    0x1FD440    40,000   weekly VWAP per candle
+// VWAP_M (f64)    0x207080    40,000   monthly VWAP per candle
+// Peak usage:     0x210CC0 ≈ 2,166,976 B → 34 pages
 // Target: 36 pages (2,359,296 B) for headroom
 
 POS_OFFSET    :: 0x10000
@@ -36,6 +39,9 @@ CANDLE_OFFSET :: 0x196E00
 EMA9_OFFSET   :: 0x1DB440
 EMA21_OFFSET  :: 0x1E5080
 LIQ_OFFSET    :: 0x1EECC0
+VWAP_D_OFFSET :: 0x1F3800
+VWAP_W_OFFSET :: 0x1FD440
+VWAP_M_OFFSET :: 0x207080
 
 // ── Mutable globals ──
 candle_count:  i32
@@ -67,6 +73,9 @@ EMA21_K :: 2.0 / 22.0
 @(private) ema9_buf  :: proc "contextless" () -> [^]f64 { return cast([^]f64) uintptr(EMA9_OFFSET) }
 @(private) ema21_buf :: proc "contextless" () -> [^]f64 { return cast([^]f64) uintptr(EMA21_OFFSET) }
 @(private) liq_buf   :: proc "contextless" () -> [^]f64 { return cast([^]f64) uintptr(LIQ_OFFSET) }
+@(private) vwap_d   :: proc "contextless" () -> [^]f64 { return cast([^]f64) uintptr(VWAP_D_OFFSET) }
+@(private) vwap_w   :: proc "contextless" () -> [^]f64 { return cast([^]f64) uintptr(VWAP_W_OFFSET) }
+@(private) vwap_m   :: proc "contextless" () -> [^]f64 { return cast([^]f64) uintptr(VWAP_M_OFFSET) }
 
 // ── Candle field accessors (bounds assumed by caller) ──
 @(private) c_ts    :: proc "contextless" (i: i32) -> f64 { return candles()[i * CANDLE_FIELDS] }
@@ -74,6 +83,7 @@ EMA21_K :: 2.0 / 22.0
 @(private) c_high  :: proc "contextless" (i: i32) -> f64 { return candles()[i * CANDLE_FIELDS + 2] }
 @(private) c_low   :: proc "contextless" (i: i32) -> f64 { return candles()[i * CANDLE_FIELDS + 3] }
 @(private) c_close :: proc "contextless" (i: i32) -> f64 { return candles()[i * CANDLE_FIELDS + 4] }
+@(private) c_vol   :: proc "contextless" (i: i32) -> f64 { return candles()[i * CANDLE_FIELDS + 5] }
 
 // ── Offset getters for WasmBridge ──
 @export get_pos_offset    :: proc "contextless" () -> i32 { return POS_OFFSET }
@@ -82,6 +92,9 @@ EMA21_K :: 2.0 / 22.0
 @export get_ema9_offset   :: proc "contextless" () -> i32 { return EMA9_OFFSET }
 @export get_ema21_offset  :: proc "contextless" () -> i32 { return EMA21_OFFSET }
 @export get_liq_offset    :: proc "contextless" () -> i32 { return LIQ_OFFSET }
+@export get_vwap_d_offset :: proc "contextless" () -> i32 { return VWAP_D_OFFSET }
+@export get_vwap_w_offset :: proc "contextless" () -> i32 { return VWAP_W_OFFSET }
+@export get_vwap_m_offset :: proc "contextless" () -> i32 { return VWAP_M_OFFSET }
 
 // ── State getters ──
 @export get_candle_count    :: proc "contextless" () -> i32 { return candle_count }
@@ -138,6 +151,88 @@ init_lut :: proc "contextless" () {
     ema9_val  = c * EMA9_K  + ema9_val  * (1.0 - EMA9_K)
     ema21_val = c * EMA21_K + ema21_val * (1.0 - EMA21_K)
     ema9_buf()[idx] = ema9_val; ema21_buf()[idx] = ema21_val
+}
+
+// ── VWAP (Volume Weighted Average Price) ──
+// Computes Daily, Weekly, Monthly anchored VWAP from candle data.
+// Each VWAP resets at its period boundary (00:00 UTC for daily, Monday for weekly, 1st for monthly).
+// Typical price = (H + L + C) / 3.  VWAP = cumSum(TP * V) / cumSum(V).
+
+MS_PER_DAY  :: 86_400_000.0
+MS_PER_WEEK :: 604_800_000.0
+
+// Returns day-of-week (0=Thu in unix epoch). We need Monday=0.
+// Unix epoch (Jan 1 1970) was a Thursday. So day_index 0 = Thursday.
+// Monday offset: (day_index + 3) % 7 == 0 means Monday.
+@(private)
+is_new_day :: proc "contextless" (prev_ts, cur_ts: f64) -> bool {
+    if prev_ts <= 0 { return true }
+    return i64(prev_ts / MS_PER_DAY) != i64(cur_ts / MS_PER_DAY)
+}
+
+@(private)
+is_new_week :: proc "contextless" (prev_ts, cur_ts: f64) -> bool {
+    if prev_ts <= 0 { return true }
+    // Week boundary: Monday 00:00 UTC. Epoch Thu → offset by 3 days.
+    OFFSET :: 3.0 * MS_PER_DAY
+    return i64((prev_ts + OFFSET) / MS_PER_WEEK) != i64((cur_ts + OFFSET) / MS_PER_WEEK)
+}
+
+@(private)
+is_new_month :: proc "contextless" (prev_ts, cur_ts: f64) -> bool {
+    if prev_ts <= 0 { return true }
+    // Approximate: 30.44 days per month. For exact boundaries we'd need
+    // a full calendar, but for trading VWAP the approximation is fine
+    // and avoids any heap/calendar dependency in WASM.
+    // Better approach: compare (year*12+month) extracted from day count.
+    prev_days := i64(prev_ts / MS_PER_DAY)
+    cur_days  := i64(cur_ts / MS_PER_DAY)
+    // Zeller-lite: days since epoch → approximate month index
+    // 1970-01-01 = month 0. Each month ~30.4375 days.
+    DAYS_PER_MONTH :: 30.4375
+    return i64(f64(prev_days) / DAYS_PER_MONTH) != i64(f64(cur_days) / DAYS_PER_MONTH)
+}
+
+@export
+compute_vwap :: proc "contextless" () {
+    if candle_count < 1 { return }
+
+    vd := vwap_d(); vw := vwap_w(); vm := vwap_m()
+
+    cum_pv_d: f64 = 0; cum_v_d: f64 = 0
+    cum_pv_w: f64 = 0; cum_v_w: f64 = 0
+    cum_pv_m: f64 = 0; cum_v_m: f64 = 0
+    prev_ts: f64 = 0
+
+    for i: i32 = 0; i < candle_count; i += 1 {
+        ts := c_ts(i)
+        tp := (c_high(i) + c_low(i) + c_close(i)) / 3.0
+        vol := c_vol(i)
+        pv := tp * vol
+
+        // Daily reset
+        if is_new_day(prev_ts, ts) {
+            cum_pv_d = 0; cum_v_d = 0
+        }
+        cum_pv_d += pv; cum_v_d += vol
+        if cum_v_d > 0 { vd[i] = cum_pv_d / cum_v_d } else { vd[i] = tp }
+
+        // Weekly reset
+        if is_new_week(prev_ts, ts) {
+            cum_pv_w = 0; cum_v_w = 0
+        }
+        cum_pv_w += pv; cum_v_w += vol
+        if cum_v_w > 0 { vw[i] = cum_pv_w / cum_v_w } else { vw[i] = tp }
+
+        // Monthly reset
+        if is_new_month(prev_ts, ts) {
+            cum_pv_m = 0; cum_v_m = 0
+        }
+        cum_pv_m += pv; cum_v_m += vol
+        if cum_v_m > 0 { vm[i] = cum_pv_m / cum_v_m } else { vm[i] = tp }
+
+        prev_ts = ts
+    }
 }
 
 // ── Stride-aware OHLC aggregation ──

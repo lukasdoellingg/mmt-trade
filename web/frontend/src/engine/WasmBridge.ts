@@ -20,6 +20,9 @@ interface WasmExports {
   get_ema9_offset(): number;
   get_ema21_offset(): number;
   get_liq_offset(): number;
+  get_vwap_d_offset(): number;
+  get_vwap_w_offset(): number;
+  get_vwap_m_offset(): number;
 
   get_candle_count(): number;
   get_mid_price(): number;
@@ -39,6 +42,7 @@ interface WasmExports {
   init_lut(): void;
   recompute_ema(): void;
   update_ema_last(): void;
+  compute_vwap(): void;
 
   update_chart_buffered(
     bufStart: number, bufEnd: number,
@@ -60,6 +64,9 @@ export interface EngineBridge {
   ema9View: Float64Array;
   ema21View: Float64Array;
   liqView: Float64Array;
+  vwapDView: Float64Array;
+  vwapWView: Float64Array;
+  vwapMView: Float64Array;
   refreshViews(): void;
 }
 
@@ -112,6 +119,9 @@ export async function loadEngine(): Promise<EngineBridge> {
   const ema9Off   = exports.get_ema9_offset();
   const ema21Off  = exports.get_ema21_offset();
   const liqOff    = exports.get_liq_offset();
+  const vwapDOff  = exports.get_vwap_d_offset();
+  const vwapWOff  = exports.get_vwap_w_offset();
+  const vwapMOff  = exports.get_vwap_m_offset();
 
   function makeViews() {
     const b = wasmMem.buffer;
@@ -122,6 +132,9 @@ export async function loadEngine(): Promise<EngineBridge> {
       ema9View:      new Float64Array(b, ema9Off, MAX_CANDLES),
       ema21View:     new Float64Array(b, ema21Off, MAX_CANDLES),
       liqView:       new Float64Array(b, liqOff, LIQ_CAP * LIQ_FIELDS),
+      vwapDView:     new Float64Array(b, vwapDOff, MAX_CANDLES),
+      vwapWView:     new Float64Array(b, vwapWOff, MAX_CANDLES),
+      vwapMView:     new Float64Array(b, vwapMOff, MAX_CANDLES),
     };
   }
 
@@ -136,6 +149,9 @@ export async function loadEngine(): Promise<EngineBridge> {
     get ema9View()      { return views.ema9View; },
     get ema21View()     { return views.ema21View; },
     get liqView()       { return views.liqView; },
+    get vwapDView()     { return views.vwapDView; },
+    get vwapWView()     { return views.vwapWView; },
+    get vwapMView()     { return views.vwapMView; },
     refreshViews()      { views = makeViews(); },
   };
 }

@@ -325,14 +325,25 @@ let lastSnapTime = 0;
 let snapTimer: ReturnType<typeof setInterval> | null = null;
 
 function emitSnapshot() {
-  if (!candleCount) return;
+  if (!candleCount || !engine) return;
   const now = performance.now();
   if (now - lastSnapTime < SNAP_INTERVAL) return;
   lastSnapTime = now;
   const n = candleCount * CF;
   const copy = new Float64Array(n);
   copy.set(candleBuf.subarray(0, n));
-  post({ type: 'candles', buf: copy, count: candleCount, fields: CF }, [copy.buffer]);
+
+  const vd = new Float64Array(candleCount);
+  const vw = new Float64Array(candleCount);
+  const vm = new Float64Array(candleCount);
+  vd.set(engine.vwapDView.subarray(0, candleCount));
+  vw.set(engine.vwapWView.subarray(0, candleCount));
+  vm.set(engine.vwapMView.subarray(0, candleCount));
+
+  post(
+    { type: 'candles', buf: copy, count: candleCount, fields: CF, vwapD: vd, vwapW: vw, vwapM: vm },
+    [copy.buffer, vd.buffer, vw.buffer, vm.buffer],
+  );
 }
 
 function startSnap() { if (!snapTimer) snapTimer = setInterval(emitSnapshot, 500); }
@@ -353,7 +364,7 @@ async function loadInitialCandles() {
       setCandle(candleCount++, k[0], +k[1], +k[2], +k[3], +k[4], +k[5], 1);
     }
     candleSyncDirty = true;
-    if (engine) { syncToWasm(); engine.exports.recompute_ema(); }
+    if (engine) { syncToWasm(); engine.exports.recompute_ema(); engine.exports.compute_vwap(); }
     if (candleCount > 0) {
       lastPrice = candleClose(candleCount - 1);
       liveTimestamp = candleTs(candleCount - 1);
@@ -388,7 +399,7 @@ function handleKline(data: { k?: { t: number; o: string; h: string; l: string; c
       // Update current candle in-place
       setCandle(candleCount - 1, ts, o, h, l, c, v, closed);
       candleSyncDirty = fullDirty = true;
-      if (engine) { syncToWasm(); engine.exports.update_ema_last(); }
+      if (engine) { syncToWasm(); engine.exports.update_ema_last(); engine.exports.compute_vwap(); }
       return;
     }
     // Gap detection: if the new kline is more than 2 intervals ahead of buffer tail, skip appending
@@ -408,7 +419,7 @@ function handleKline(data: { k?: { t: number; o: string; h: string; l: string; c
     if (bufStart > 0) { bufStart--; bufEnd--; }
   }
   candleSyncDirty = fullDirty = true;
-  if (engine) { syncToWasm(); engine.exports.update_ema_last(); }
+  if (engine) { syncToWasm(); engine.exports.update_ema_last(); engine.exports.compute_vwap(); }
 }
 
 function handleLiquidation(data: { o?: { T?: number; p: string; q: string; S: string }; E?: number }) {
@@ -484,7 +495,7 @@ async function fetchOlder(endTime: number) {
 
     resetBuffer();
     candleSyncDirty = fullDirty = true;
-    if (engine) { syncToWasm(); engine.exports.recompute_ema(); }
+    if (engine) { syncToWasm(); engine.exports.recompute_ema(); engine.exports.compute_vwap(); }
     lastSnapTime = 0; emitSnapshot();
     post({ type: 'historyLoaded', count: ins, total: candleCount, direction: 'older' });
     post({ type: 'viewport', visStart, visEnd, total: candleCount });
@@ -532,7 +543,7 @@ async function fetchNewer(startTime: number) {
 
     resetBuffer();
     candleSyncDirty = fullDirty = true;
-    if (engine) { syncToWasm(); engine.exports.recompute_ema(); }
+    if (engine) { syncToWasm(); engine.exports.recompute_ema(); engine.exports.compute_vwap(); }
     lastSnapTime = 0; emitSnapshot();
     post({ type: 'historyLoaded', count: app, total: candleCount, direction: 'newer' });
     post({ type: 'viewport', visStart, visEnd, total: candleCount });
