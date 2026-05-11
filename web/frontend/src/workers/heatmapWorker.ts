@@ -1,14 +1,16 @@
 // ═══════════════════════════════════════════════════════════════
-//  CHART ENGINE — WebGL2 + Odin WASM Worker
+//  HEATMAP ENGINE WORKER — WebGL2 + Odin WASM
 //
-//  Runs entirely in a Web Worker (off main thread).
-//  Architecture:
-//  - 5000-candle sliding window for deep history panning
-//  - Stride-based OHLC aggregation in WASM for zoomed-out views
-//  - Buffer-range rendering: WASM pre-computes padded range,
-//    GPU camera pans within it (zero WASM cost per frame)
-//  - Predictive pre-fetch loads history before the viewport edge
-//  - Zero-GC render hot path: no allocations in render/camera
+//  All numeric compute lives in Odin WASM. JS in this worker
+//  only handles: I/O (REST + WS), buffer management, mailbox-style
+//  message routing to the main thread.
+//
+//  Pipelines:
+//   • Klines REST → candle buf → Odin (EMA / VWAP / KeyLevels)
+//   • aggTrade (perp + spot) → per-bar CVD delta arrays
+//   • forceOrder → liquidation markers (rendered by Odin)
+//   • Volume Profile: on-demand from main thread (Odin compute,
+//     result transferred back)
 // ═══════════════════════════════════════════════════════════════
 
 import { ChartRenderer } from '../engine/ChartRenderer';
@@ -16,18 +18,21 @@ import { loadEngine, type EngineBridge } from '../engine/WasmBridge';
 
 // ── Constants ──────────────────────────────────────────────────
 const WASM_CAP       = 5000;
-const CF             = 7;           // fields per candle
+const CF             = 7;
 const LIQ_CAP        = 600;
 const LIQ_FIELDS     = 4;
 const MARGIN_RIGHT   = 80;
 const MARGIN_BOTTOM  = 32;
-const BUFFER_PAD     = 0.5;         // extra candles on each side (% of viewport span)
-const RECOMPUTE_THR  = 0.20;        // 20% from buffer edge → recompute
-const Y_DRIFT_THR    = 0.02;        // 2% price drift → recompute
-const SNAP_INTERVAL  = 2000;        // candle snapshot to main thread every 2s
-const PREFETCH_RATIO = 0.30;        // start prefetch when 30% of span from data edge
-const FETCH_COOLDOWN = 600;         // ms between history API calls
-const MIN_CANDLE_PX  = 4;           // min pixel width before stride aggregation kicks in
+const BUFFER_PAD     = 0.5;
+const RECOMPUTE_THR  = 0.20;
+const Y_DRIFT_THR    = 0.02;
+const PREFETCH_RATIO = 0.30;
+const FETCH_COOLDOWN = 600;
+const MIN_CANDLE_PX  = 4;
+
+const VWAP_WIN_D = 24 * 3600 * 1000;
+const VWAP_WIN_W = 7 * 24 * 3600 * 1000;
+const VWAP_WIN_M = 30 * 24 * 3600 * 1000;
 
 const BINANCE_INTERVALS: Record<string, string> = {
   '1m': '1m', '15m': '15m', '30m': '30m', '1h': '1h',
@@ -55,8 +60,76 @@ function candleClose(i: number) { return candleBuf[i * CF + 4]; }
 const liqBuf = new Float64Array(LIQ_CAP * LIQ_FIELDS);
 let liqCount = 0;
 
+// ── CVD: per-bar signed Δ (perps vs spot) ──
+// ── Footprint: per-bar total volume (always positive). Together with cvd
+//    buffers above this gives V (total) + D (delta) per candle for the
+//    Footprint Cluster indicator on the main thread.
+const cvdPerpBuf = new Float64Array(WASM_CAP);
+const cvdSpotBuf = new Float64Array(WASM_CAP);
+const volPerpBuf = new Float64Array(WASM_CAP);
+const volSpotBuf = new Float64Array(WASM_CAP);
+const CVD_RING_CAP = 8192;
+const cvdRingT = new Float64Array(CVD_RING_CAP);
+const cvdRingQ = new Float64Array(CVD_RING_CAP);
+const cvdRingF = new Uint8Array(CVD_RING_CAP);
+let cvdRingW = 0, cvdRingR = 0;
+let wantCvd = true;
+function zeroCvdBuffers() {
+  cvdPerpBuf.fill(0); cvdSpotBuf.fill(0);
+  volPerpBuf.fill(0); volSpotBuf.fill(0);
+}
+
+function candleIndexForTs(ts: number): number {
+  if (candleCount <= 0) return -1;
+  if (ts < candleTs(0)) return -1;
+  let lo = 0, hi = candleCount - 1, ans = hi;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const t = candleTs(mid);
+    if (t <= ts) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return ans;
+}
+
+function enqueueCvdTrade(ts: number, qty: number, m: boolean, isPerp: boolean) {
+  if (!wantCvd || !(qty > 0)) return;
+  const i = cvdRingW;
+  cvdRingT[i] = ts; cvdRingQ[i] = qty;
+  cvdRingF[i] = (m ? 1 : 0) | (isPerp ? 2 : 0);
+  const n = (i + 1) % CVD_RING_CAP;
+  if (n === cvdRingR) cvdRingR = (cvdRingR + 1) % CVD_RING_CAP;
+  cvdRingW = n;
+}
+
+function drainCvdRing() {
+  if (!wantCvd) return;
+  let budget = 8192;
+  while (cvdRingR !== cvdRingW && budget-- > 0) {
+    const ts = cvdRingT[cvdRingR];
+    const qty = cvdRingQ[cvdRingR];
+    const f = cvdRingF[cvdRingR];
+    cvdRingR = (cvdRingR + 1) % CVD_RING_CAP;
+    const signed = (f & 1) !== 0 ? -qty : qty;
+    const idx = candleIndexForTs(ts);
+    if (idx >= 0) {
+      const perp = (f & 2) !== 0;
+      if (perp) { cvdPerpBuf[idx] += signed; volPerpBuf[idx] += qty; }
+      else      { cvdSpotBuf[idx] += signed; volSpotBuf[idx] += qty; }
+    }
+  }
+}
+
+interface AggTradeMsg { e?: string; T?: number; E?: number; q?: string; m?: boolean }
+function handleAggTrade(data: AggTradeMsg, isPerp: boolean) {
+  const ts = +(data.T ?? data.E ?? 0);
+  const qty = +((data.q as string) || 0);
+  if (!(ts > 0) || !(qty > 0)) return;
+  enqueueCvdTrade(ts, qty, !!data.m, isPerp);
+}
+
 // ── Core state ────────────────────────────────────────────────
 let socket: WebSocket | null = null;
+let spotSocket: WebSocket | null = null;
 let symbol = 'btcusdt';
 let running = false;
 let lastPrice = 0;
@@ -72,46 +145,38 @@ let engine: EngineBridge | null = null;
 let canvasW = 0, canvasH = 0, devicePR = 1;
 let animId = 0;
 
-// Dirty flags — control what work the render loop does
 let fullDirty = true;
 let cameraDirty = false;
 let candleSyncDirty = true;
 let liqSyncDirty = true;
 
-// FPS counter
 let frameCount = 0, fpsTimestamp = 0;
-// Meta throttle
 let lastMetaTime = 0, lastMetaMin = 0, lastMetaMax = 0;
 
-// ── History fetch state ──
 let isPanning = false;
-let fetchingOlder = false;
-let fetchingNewer = false;
-let noMoreOlder = false;
-let noMoreNewer = false;
-let lastOlderFetchTime = 0;
-let lastNewerFetchTime = 0;
+let fetchingOlder = false, fetchingNewer = false;
+let noMoreOlder = false, noMoreNewer = false;
+let lastOlderFetchTime = 0, lastNewerFetchTime = 0;
 let liveTimestamp = 0;
 
-// ── Buffer-range state ──
+// Indicator-flag bitset (synced from main on toggle changes):
+//   bit 0 → VWAP D, 1 → VWAP W, 2 → VWAP M, 3 → Keys, 4 → Vol Profile bars
+let indicatorFlags = 0x1F;
+let vpStripWidth   = 110;
+
 let bufStart = 0, bufEnd = 0;
 let bufInstCount = 0, bufVersion = 0;
 let bufXStep = 0;
 let bufMinPrice = 0, bufMaxPrice = 0;
 let currentStride = 1;
-
-// Scratch vars for computeBufferRange (zero-GC)
 let _bufS = 0, _bufE = 0;
 
-// ── Helpers ───────────────────────────────────────────────────
 const EMPTY_TRANSFERS: Transferable[] = [];
 function post(msg: unknown, transfers?: Transferable[]) {
   (self as unknown as Worker).postMessage(msg, transfers ?? EMPTY_TRANSFERS);
 }
 
-function binanceInterval(): string {
-  return BINANCE_INTERVALS[timeframe] || '1m';
-}
+function binanceInterval(): string { return BINANCE_INTERVALS[timeframe] || '1m'; }
 
 function resetBuffer() {
   bufStart = bufEnd = bufInstCount = 0;
@@ -127,21 +192,18 @@ function computeStride(): number {
   const pxPerCandle = plotW / span;
   if (pxPerCandle >= MIN_CANDLE_PX) return 1;
   const raw = Math.ceil(MIN_CANDLE_PX / pxPerCandle);
-  if (raw <= 1) return 1;
-  // Snap to power-of-2 for clean aggregation boundaries
-  if (raw <= 2) return 2;
-  if (raw <= 4) return 4;
-  if (raw <= 8) return 8;
-  if (raw <= 16) return 16;
-  if (raw <= 32) return 32;
-  if (raw <= 64) return 64;
+  if (raw <= 1)   return 1;
+  if (raw <= 2)   return 2;
+  if (raw <= 4)   return 4;
+  if (raw <= 8)   return 8;
+  if (raw <= 16)  return 16;
+  if (raw <= 32)  return 32;
+  if (raw <= 64)  return 64;
   if (raw <= 128) return 128;
   return 256;
 }
 
-function historyFetchLimit(): number {
-  return currentStride > 1 ? 1000 : 500;
-}
+function historyFetchLimit(): number { return currentStride > 1 ? 1000 : 500; }
 
 function syncToWasm() {
   if (!engine) return;
@@ -158,6 +220,13 @@ function syncToWasm() {
     engine.exports.set_liq_count(liqCount);
   }
   engine.exports.set_mid_price(lastPrice);
+}
+
+function recomputeOdinIndicators() {
+  if (!engine) return;
+  engine.exports.recompute_ema();
+  engine.exports.compute_vwap_rolling(VWAP_WIN_D, VWAP_WIN_W, VWAP_WIN_M);
+  engine.exports.compute_key_levels();
 }
 
 function postMeta(mid: number, lo: number, hi: number) {
@@ -179,12 +248,8 @@ function needsBufferRecompute(): boolean {
   if (bufInstCount === 0) return true;
   const span = visEnd - visStart;
   const margin = Math.max(3, Math.round(span * RECOMPUTE_THR));
-
-  // X-axis: approaching buffer edges
   if (visStart - bufStart < margin && bufStart > 0) return true;
   if (bufEnd - visEnd < margin && bufEnd < candleCount) return true;
-
-  // Y-axis: visible price range drifted outside buffered range
   if (bufMaxPrice > bufMinPrice) {
     const s = Math.max(0, Math.min(visStart, candleCount - 1));
     const e = Math.max(s + 1, Math.min(visEnd, candleCount));
@@ -214,14 +279,15 @@ function recomputeBuffer() {
   const safeBS = Math.max(0, Math.min(_bufS, maxIdx));
   const safeBE = Math.max(safeBS + 1, Math.min(_bufE, candleCount));
   const safeVS = Math.max(0, Math.min(visStart, maxIdx));
-  const safeVE = Math.max(safeVS + 1, Math.min(visEnd, candleCount));
-
-  if (safeBE <= safeBS || safeVE <= safeVS) { renderer.clear(); return; }
+  // Pass the RAW visEnd to Odin — engine handles the right-pan empty space
+  // by separating clamped Y-fit range from raw x-step range internally.
+  const rawVE = Math.max(safeVS + 1, visEnd);
+  if (safeBE <= safeBS || rawVE <= safeVS) { renderer.clear(); return; }
 
   let count: number;
   try {
     count = engine.exports.update_chart_buffered(
-      safeBS, safeBE, safeVS, safeVE,
+      safeBS, safeBE, safeVS, rawVE,
       yAxisScale, yAxisOffset, canvasW, canvasH,
       MARGIN_RIGHT, MARGIN_BOTTOM, devicePR, timeframeMs, currentStride,
     );
@@ -240,6 +306,8 @@ function recomputeBuffer() {
   bufMaxPrice  = engine.exports.get_out_max();
 
   if (count > 0) {
+    // Camera offset works in *visible* coords: empty space to the right of live
+    // is simply (visEnd - candleCount) bars of negative camera shift.
     const aggOff = (visStart - bufStart) / currentStride;
     renderer.setCameraX(aggOff * bufXStep);
     renderer.uploadAndRender(count, bufVersion);
@@ -247,7 +315,8 @@ function recomputeBuffer() {
   } else {
     renderer.clear();
   }
-  post({ type: 'bufferReady', bufStart, bufEnd, bufXStep, bufInstCount, bufVersion });
+  // (Removed: a 60 Hz bufferReady post the main thread silently dropped.
+  //  Saving ~60 messages/sec of structured-clone overhead per worker.)
 }
 
 function renderCamera() {
@@ -262,24 +331,16 @@ function renderCamera() {
   }
 }
 
-// ── Predictive pre-fetch ──────────────────────────────────────
 function predictivePrefetch() {
   if (candleCount === 0 || isPanning) return;
   const now = performance.now();
   const span = visEnd - visStart;
   const dist = Math.max(5, Math.round(span * PREFETCH_RATIO));
-
-  // ── LEFT edge → load older history ──
   if (!fetchingOlder && !noMoreOlder && visStart < dist && now - lastOlderFetchTime >= FETCH_COOLDOWN) {
     fetchOlder(candleTs(0) - 1);
   }
-
-  // ── RIGHT edge → load newer data ──
-  // Reset noMoreNewer if buffer tail is behind live
   if (noMoreNewer && liveTimestamp > 0 && candleCount > 0) {
-    if (candleTs(candleCount - 1) < liveTimestamp - timeframeMs * 1.5) {
-      noMoreNewer = false;
-    }
+    if (candleTs(candleCount - 1) < liveTimestamp - timeframeMs * 1.5) noMoreNewer = false;
   }
   const rightDist = candleCount - visEnd;
   if (!fetchingNewer && !noMoreNewer && rightDist < dist && now - lastNewerFetchTime >= FETCH_COOLDOWN) {
@@ -287,25 +348,22 @@ function predictivePrefetch() {
   }
 }
 
-// ── Main render loop ──────────────────────────────────────────
 function render() {
   if (!renderer || !engine) return;
-
+  drainCvdRing();
   if (fullDirty) {
     recomputeBuffer();
-    fullDirty = false;
-    cameraDirty = false;
+    fullDirty = false; cameraDirty = false;
   } else if (cameraDirty) {
     cameraDirty = false;
-    if (needsBufferRecompute()) {
-      recomputeBuffer();
-    } else {
-      renderCamera();
-    }
+    if (needsBufferRecompute()) recomputeBuffer();
+    else renderCamera();
   }
-
   predictivePrefetch();
-
+  // Flush any pending throttled snapshots (e.g. burst of klines hits throttle).
+  if (snapDirty && performance.now() - lastSnapTime >= SNAP_THROTTLE_MS) {
+    emitSnapshot();
+  }
   frameCount++;
   const now = performance.now();
   if (now - fpsTimestamp >= 1000) {
@@ -317,18 +375,39 @@ function render() {
 function loop() {
   if (!running) return;
   animId = requestAnimationFrame(loop);
-  render();
+  // Hardened: a thrown render() (e.g. transient WASM trap on memory.grow,
+  // a bad GL state, an out-of-bounds read) must never break the rAF chain
+  // or the chart would freeze until reload. Surface the error to main but
+  // continue ticking.
+  try { render(); }
+  catch (err) {
+    post({ type: 'error', msg: 'render: ' + (err instanceof Error ? err.message : String(err)) });
+  }
 }
 
-// ── Candle snapshot (transferred to main thread for overlay axes) ──
+// ── Snapshot (transferred to main for overlays / HUD / CVD pane) ──
+//
+// Event-driven: snapshots fire on kline updates / history loads / symbol or
+// timeframe switches. The previous setInterval(emitSnapshot, 500) was
+// wasteful — it kept ticking even when nothing changed.
+// Live candle / HUD snapshots: throttle structured-clone to main, but keep
+// the interval short so the chart feels continuously updated during active ticks.
+const SNAP_THROTTLE_MS = 80;
 let lastSnapTime = 0;
-let snapTimer: ReturnType<typeof setInterval> | null = null;
+let snapDirty = false;
+
+function maybeEmitSnapshot() {
+  snapDirty = true;
+  const now = performance.now();
+  if (now - lastSnapTime < SNAP_THROTTLE_MS) return;
+  emitSnapshot();
+}
 
 function emitSnapshot() {
   if (!candleCount || !engine) return;
-  const now = performance.now();
-  if (now - lastSnapTime < SNAP_INTERVAL) return;
-  lastSnapTime = now;
+  lastSnapTime = performance.now();
+  snapDirty = false;
+
   const n = candleCount * CF;
   const copy = new Float64Array(n);
   copy.set(candleBuf.subarray(0, n));
@@ -340,14 +419,42 @@ function emitSnapshot() {
   vw.set(engine.vwapWView.subarray(0, candleCount));
   vm.set(engine.vwapMView.subarray(0, candleCount));
 
-  post(
-    { type: 'candles', buf: copy, count: candleCount, fields: CF, vwapD: vd, vwapW: vw, vwapM: vm },
-    [copy.buffer, vd.buffer, vw.buffer, vm.buffer],
-  );
+  // Pack key levels: [price, kind, price, kind, …]
+  const klCount = engine.exports.get_key_levels_count();
+  const kl = new Float64Array(klCount * 2);
+  const klF64 = engine.keyLevelsF64;
+  const klI32 = engine.keyLevelsI32;
+  for (let i = 0; i < klCount; i++) {
+    kl[i * 2]     = klF64[i * 2];
+    kl[i * 2 + 1] = klI32[i * 4 + 2];
+  }
+
+  const transfers: Transferable[] = [copy.buffer, vd.buffer, vw.buffer, vm.buffer, kl.buffer];
+  const payload: Record<string, unknown> = {
+    type: 'candles', buf: copy, count: candleCount, fields: CF,
+    vwapD: vd, vwapW: vw, vwapM: vm,
+    keyLevels: kl, keyLevelsCount: klCount,
+    liveTs: liveTimestamp,
+  };
+
+  if (wantCvd) {
+    const cp = new Float64Array(candleCount);
+    const cs = new Float64Array(candleCount);
+    const vp = new Float64Array(candleCount);
+    const vs = new Float64Array(candleCount);
+    cp.set(cvdPerpBuf.subarray(0, candleCount));
+    cs.set(cvdSpotBuf.subarray(0, candleCount));
+    vp.set(volPerpBuf.subarray(0, candleCount));
+    vs.set(volSpotBuf.subarray(0, candleCount));
+    payload.cvdPerp = cp; payload.cvdSpot = cs;
+    payload.volPerp = vp; payload.volSpot = vs;
+    transfers.push(cp.buffer, cs.buffer, vp.buffer, vs.buffer);
+  }
+
+  post(payload, transfers);
 }
 
-function startSnap() { if (!snapTimer) snapTimer = setInterval(emitSnapshot, 500); }
-function stopSnap()  { if (snapTimer) { clearInterval(snapTimer); snapTimer = null; } }
+// (legacy snapshot timer removed — snapshots are now event-driven via maybeEmitSnapshot)
 
 // ── Initial data load ─────────────────────────────────────────
 async function loadInitialCandles() {
@@ -359,12 +466,13 @@ async function loadInitialCandles() {
     const klines: number[][] = await resp.json();
 
     candleCount = 0;
+    zeroCvdBuffers();
     for (let i = 0; i < klines.length && candleCount < WASM_CAP; i++) {
       const k = klines[i];
       setCandle(candleCount++, k[0], +k[1], +k[2], +k[3], +k[4], +k[5], 1);
     }
     candleSyncDirty = true;
-    if (engine) { syncToWasm(); engine.exports.recompute_ema(); engine.exports.compute_vwap(); }
+    if (engine) { syncToWasm(); recomputeOdinIndicators(); }
     if (candleCount > 0) {
       lastPrice = candleClose(candleCount - 1);
       liveTimestamp = candleTs(candleCount - 1);
@@ -391,35 +499,58 @@ function handleKline(data: { k?: { t: number; o: string; h: string; l: string; c
   if (ts > liveTimestamp) liveTimestamp = ts;
   if (c > 0) lastPrice = c;
 
-  // If buffer's newest candle is far from live, don't append — it would create a gap.
-  // Only update the last candle if its timestamp matches, otherwise just track liveTimestamp/lastPrice.
   if (candleCount > 0) {
     const newestTs = candleTs(candleCount - 1);
     if (newestTs === ts) {
-      // Update current candle in-place
+      // Same-bar live tick: only OHLCV mutated. Use incremental VWAP +
+      // EMA paths (O(1)) — skip key-level + key-level recomputes which
+      // only meaningfully change on bar transitions.
       setCandle(candleCount - 1, ts, o, h, l, c, v, closed);
       candleSyncDirty = fullDirty = true;
-      if (engine) { syncToWasm(); engine.exports.update_ema_last(); engine.exports.compute_vwap(); }
+      if (engine) {
+        syncToWasm();
+        engine.exports.update_ema_last();
+        engine.exports.update_vwap_last(VWAP_WIN_D, VWAP_WIN_W, VWAP_WIN_M);
+      }
+      maybeEmitSnapshot();
       return;
     }
-    // Gap detection: if the new kline is more than 2 intervals ahead of buffer tail, skip appending
     if (ts > newestTs + timeframeMs * 2) return;
   }
 
-  // Normal append (buffer is near live)
   if (candleCount < WASM_CAP) {
     const span = visEnd - visStart;
     const atEdge = visEnd >= candleCount;
     setCandle(candleCount++, ts, o, h, l, c, v, closed);
+    cvdPerpBuf[candleCount - 1] = 0;
+    cvdSpotBuf[candleCount - 1] = 0;
+    volPerpBuf[candleCount - 1] = 0;
+    volSpotBuf[candleCount - 1] = 0;
     if (atEdge) { visEnd = candleCount; visStart = visEnd - span; }
   } else {
     candleBuf.copyWithin(0, CF, candleCount * CF);
+    cvdPerpBuf.copyWithin(0, 1, candleCount);
+    cvdSpotBuf.copyWithin(0, 1, candleCount);
+    volPerpBuf.copyWithin(0, 1, candleCount);
+    volSpotBuf.copyWithin(0, 1, candleCount);
     setCandle(candleCount - 1, ts, o, h, l, c, v, closed);
+    cvdPerpBuf[candleCount - 1] = 0;
+    cvdSpotBuf[candleCount - 1] = 0;
+    volPerpBuf[candleCount - 1] = 0;
+    volSpotBuf[candleCount - 1] = 0;
     if (visStart > 0) { visStart--; visEnd--; }
     if (bufStart > 0) { bufStart--; bufEnd--; }
   }
   candleSyncDirty = fullDirty = true;
-  if (engine) { syncToWasm(); engine.exports.update_ema_last(); engine.exports.compute_vwap(); }
+  if (engine) {
+    // New-bar transition: full O(n) sweep is needed once per bar to update the
+    // sliding-window state Odin caches for incremental ticks.
+    syncToWasm();
+    engine.exports.update_ema_last();
+    engine.exports.compute_vwap_rolling(VWAP_WIN_D, VWAP_WIN_W, VWAP_WIN_M);
+    engine.exports.compute_key_levels();
+  }
+  maybeEmitSnapshot();
 }
 
 function handleLiquidation(data: { o?: { T?: number; p: string; q: string; S: string }; E?: number }) {
@@ -432,33 +563,91 @@ function handleLiquidation(data: { o?: { T?: number; p: string; q: string; S: st
   liqCount++; liqSyncDirty = fullDirty = true;
 }
 
+function closeSpotSocket() {
+  if (!spotSocket) return;
+  spotSocket.onopen = spotSocket.onmessage = spotSocket.onclose = spotSocket.onerror = null;
+  try { spotSocket.close(); } catch { /* ignore */ }
+  spotSocket = null;
+}
 function closeSocket() {
-  if (!socket) return;
-  socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null;
-  try { socket.close(); } catch { /* ignore */ }
-  socket = null;
+  if (socket) {
+    socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null;
+    try { socket.close(); } catch { /* ignore */ }
+    socket = null;
+  }
+  closeSpotSocket();
+}
+
+// Exponential back-off with jitter — caps at 30s. Both perp + spot reconnect
+// paths share this so a flaky exchange doesn't hammer us with reconnects.
+let perpRetries = 0, spotRetries = 0;
+function backoffMs(retries: number): number {
+  const base = Math.min(30_000, 1000 * Math.pow(2, retries));
+  return base * (0.75 + Math.random() * 0.5);
+}
+
+function openSpotSocket() {
+  if (!running || !wantCvd) return;
+  closeSpotSocket();
+  const s = symbol.toLowerCase();
+  const ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${s}@aggTrade`);
+  spotSocket = ws;
+  ws.onopen = () => { if (spotSocket === ws) spotRetries = 0; };
+  ws.onmessage = (ev: MessageEvent) => {
+    if (spotSocket !== ws) return;
+    try {
+      const j = JSON.parse(ev.data as string) as { data?: AggTradeMsg };
+      const d = j.data;
+      if (d && d.e === 'aggTrade') handleAggTrade(d, false);
+    } catch { /* malformed */ }
+  };
+  ws.onclose = () => {
+    if (spotSocket === ws && running && wantCvd) {
+      spotRetries++;
+      setTimeout(openSpotSocket, backoffMs(spotRetries));
+    }
+  };
+  ws.onerror = () => { /* reconnect via onclose */ };
 }
 
 function openSocket() {
   if (!running) return;
   closeSocket();
   const s = symbol.toLowerCase(), iv = binanceInterval();
-  const ws = new WebSocket(`wss://fstream.binance.com/stream?streams=${s}@kline_${iv}/${s}@forceOrder`);
+  const streams = `${s}@kline_${iv}/${s}@forceOrder` + (wantCvd ? `/${s}@aggTrade` : '');
+  const ws = new WebSocket(`wss://fstream.binance.com/stream?streams=${streams}`);
   socket = ws;
-  ws.onopen = () => { if (socket !== ws) return; post({ type: 'wsConnected' }); };
+  ws.onopen = () => {
+    if (socket !== ws) return;
+    perpRetries = 0;
+    post({ type: 'wsConnected' });
+    if (wantCvd) openSpotSocket();
+  };
   ws.onmessage = (ev: MessageEvent) => {
     if (socket !== ws) return;
-    const raw = ev.data as string;
     try {
-      if (raw.includes('"kline"'))           handleKline(JSON.parse(raw).data);
-      else if (raw.includes('"forceOrder"')) handleLiquidation(JSON.parse(raw).data);
-    } catch { /* malformed frame */ }
+      const j = JSON.parse(ev.data as string) as { data?: {
+        e?: string;
+        k?: { t: number; o: string; h: string; l: string; c: string; v: string; x: boolean };
+        o?: { T?: number; p: string; q: string; S: string };
+        E?: number; T?: number; q?: string; m?: boolean;
+      } };
+      const d = j.data;
+      if (!d || !d.e) return;
+      if (d.e === 'kline' && d.k)      handleKline(d as { k: { t: number; o: string; h: string; l: string; c: string; v: string; x: boolean } });
+      else if (d.e === 'forceOrder')   handleLiquidation(d as { o?: { T?: number; p: string; q: string; S: string }; E?: number });
+      else if (d.e === 'aggTrade')     handleAggTrade(d, true);
+    } catch { /* malformed */ }
   };
-  ws.onclose = () => { if (socket === ws && running) setTimeout(openSocket, 2000); };
+  ws.onclose = () => {
+    if (socket === ws && running) {
+      perpRetries++;
+      setTimeout(openSocket, backoffMs(perpRetries));
+    }
+  };
   ws.onerror = () => { if (socket === ws) post({ type: 'error', msg: 'WS error — reconnecting' }); };
 }
 
-// ── History sliding-window fetch ──────────────────────────────
 async function fetchOlder(endTime: number) {
   const now = performance.now();
   if (fetchingOlder || noMoreOlder || now - lastOlderFetchTime < FETCH_COOLDOWN) return;
@@ -470,7 +659,6 @@ async function fetchOlder(endTime: number) {
     if (!resp.ok) return;
     const klines: number[][] = await resp.json();
     if (!klines.length) { noMoreOlder = true; post({ type: 'historyLoaded', count: 0, total: candleCount, direction: 'older' }); return; }
-
     const oldestTs = candleCount > 0 ? candleTs(0) : Infinity;
     const fresh = klines.filter(k => k[0] < oldestTs);
     if (!fresh.length) { noMoreOlder = true; post({ type: 'historyLoaded', count: 0, total: candleCount, direction: 'older' }); return; }
@@ -479,8 +667,17 @@ async function fetchOlder(endTime: number) {
     const drop = Math.max(0, candleCount + ins - WASM_CAP);
     const kept = candleCount - drop;
 
-    // Shift existing candles right to make room at the front
-    if (kept > 0) candleBuf.copyWithin(ins * CF, 0, kept * CF);
+    if (kept > 0) {
+      candleBuf.copyWithin(ins * CF, 0, kept * CF);
+      cvdPerpBuf.copyWithin(ins, 0, kept);
+      cvdSpotBuf.copyWithin(ins, 0, kept);
+      volPerpBuf.copyWithin(ins, 0, kept);
+      volSpotBuf.copyWithin(ins, 0, kept);
+    }
+    for (let u = 0; u < ins; u++) {
+      cvdPerpBuf[u] = 0; cvdSpotBuf[u] = 0;
+      volPerpBuf[u] = 0; volSpotBuf[u] = 0;
+    }
 
     const startIdx = fresh.length - ins;
     for (let i = 0; i < ins; i++) {
@@ -495,13 +692,12 @@ async function fetchOlder(endTime: number) {
 
     resetBuffer();
     candleSyncDirty = fullDirty = true;
-    if (engine) { syncToWasm(); engine.exports.recompute_ema(); engine.exports.compute_vwap(); }
+    if (engine) { syncToWasm(); recomputeOdinIndicators(); }
     lastSnapTime = 0; emitSnapshot();
     post({ type: 'historyLoaded', count: ins, total: candleCount, direction: 'older' });
     post({ type: 'viewport', visStart, visEnd, total: candleCount });
-  } catch { /* network error */ } finally {
+  } catch { /* network */ } finally {
     fetchingOlder = false;
-    // Chain: if more data might be needed, schedule immediate re-check
     if (!noMoreOlder && !isPanning) {
       lastOlderFetchTime = performance.now() - FETCH_COOLDOWN + 80;
       setTimeout(predictivePrefetch, 80);
@@ -520,36 +716,41 @@ async function fetchNewer(startTime: number) {
     if (!resp.ok) return;
     const klines: number[][] = await resp.json();
     if (!klines.length) { noMoreNewer = true; post({ type: 'historyLoaded', count: 0, total: candleCount, direction: 'newer' }); return; }
-
     const newestTs = candleCount > 0 ? candleTs(candleCount - 1) : -Infinity;
     const fresh = klines.filter(k => k[0] > newestTs);
     if (!fresh.length) { noMoreNewer = true; post({ type: 'historyLoaded', count: 0, total: candleCount, direction: 'newer' }); return; }
 
     const app = Math.min(fresh.length, WASM_CAP);
     const drop = Math.max(0, candleCount + app - WASM_CAP);
-
-    // Drop oldest candles to make room at the end
     if (drop > 0) {
-      candleBuf.copyWithin(0, drop * CF, candleCount * CF);
+      const oldN = candleCount;
+      candleBuf.copyWithin(0, drop * CF, oldN * CF);
+      cvdPerpBuf.copyWithin(0, drop, oldN);
+      cvdSpotBuf.copyWithin(0, drop, oldN);
+      volPerpBuf.copyWithin(0, drop, oldN);
+      volSpotBuf.copyWithin(0, drop, oldN);
       candleCount -= drop; visStart -= drop; visEnd -= drop;
       if (visStart < 0) visStart = 0;
-      noMoreOlder = false; // dropped old data → can fetch it again later
+      noMoreOlder = false;
     }
     for (let i = 0; i < app && candleCount < WASM_CAP; i++) {
       const k = fresh[i];
       setCandle(candleCount++, k[0], +k[1], +k[2], +k[3], +k[4], +k[5], 1);
+      cvdPerpBuf[candleCount - 1] = 0;
+      cvdSpotBuf[candleCount - 1] = 0;
+      volPerpBuf[candleCount - 1] = 0;
+      volSpotBuf[candleCount - 1] = 0;
     }
     if (candleCount > 0 && candleTs(candleCount - 1) >= liveTimestamp) noMoreNewer = true;
 
     resetBuffer();
     candleSyncDirty = fullDirty = true;
-    if (engine) { syncToWasm(); engine.exports.recompute_ema(); engine.exports.compute_vwap(); }
+    if (engine) { syncToWasm(); recomputeOdinIndicators(); }
     lastSnapTime = 0; emitSnapshot();
     post({ type: 'historyLoaded', count: app, total: candleCount, direction: 'newer' });
     post({ type: 'viewport', visStart, visEnd, total: candleCount });
-  } catch { /* network error */ } finally {
+  } catch { /* network */ } finally {
     fetchingNewer = false;
-    // Chain: if more data might be needed, schedule immediate re-check
     if (!noMoreNewer && !isPanning) {
       lastNewerFetchTime = performance.now() - FETCH_COOLDOWN + 80;
       setTimeout(predictivePrefetch, 80);
@@ -557,16 +758,13 @@ async function fetchNewer(startTime: number) {
   }
 }
 
-// ── WebGL2 + WASM init ────────────────────────────────────────
 async function initRenderer(canvas: OffscreenCanvas) {
   offscreen = canvas;
   const gl = canvas.getContext('webgl2', {
     alpha: true, antialias: false, depth: false, stencil: false,
     premultipliedAlpha: false, preserveDrawingBuffer: false, powerPreference: 'high-performance',
   }) as WebGL2RenderingContext | null;
-
-  if (!gl) { post({ type: 'fatal', msg: 'WebGL2 is not supported by your browser.' }); return false; }
-
+  if (!gl) { post({ type: 'fatal', msg: 'WebGL2 not supported.' }); return false; }
   try {
     renderer = new ChartRenderer(gl);
     renderer.resize(canvasW, canvasH);
@@ -574,16 +772,43 @@ async function initRenderer(canvas: OffscreenCanvas) {
     post({ type: 'fatal', msg: 'WebGL2 init failed: ' + (err instanceof Error ? err.message : String(err)) });
     return false;
   }
-
   try {
     engine = await loadEngine();
     renderer.bindBuffers(engine.positionsView, engine.colorsView);
+    engine.exports.set_indicator_flags(indicatorFlags);
+    engine.exports.set_vp_strip_w(vpStripWidth);
     post({ type: 'engineReady' });
   } catch (err) {
     post({ type: 'fatal', msg: 'WASM engine failed: ' + (err instanceof Error ? err.message : String(err)) });
     return false;
   }
   return true;
+}
+
+// ── Volume profile (on-demand) ────────────────────────────────
+function handleComputeVolProfile(msg: { visS: number; visE: number; priceLo: number; priceHi: number; nBins: number }) {
+  if (!engine) return;
+  const visS = Math.max(0, msg.visS | 0);
+  const visE = Math.max(visS + 1, Math.min(msg.visE | 0, candleCount));
+  if (msg.priceHi <= msg.priceLo || visE <= visS) return;
+  engine.exports.compute_vol_profile(visS, visE, msg.priceLo, msg.priceHi, msg.nBins);
+  const count = engine.exports.get_vp_bins_count();
+  if (count <= 0) return;
+  const out = new Float32Array(count);
+  out.set(engine.volProfileBins.subarray(0, count));
+  // Re-emit GPU bars next frame (they depend on freshly computed bins).
+  fullDirty = true;
+  post({
+    type: 'volProfile',
+    bins: out,
+    nBins: count,
+    maxVol: engine.exports.get_vp_max_vol(),
+    poc:    engine.exports.get_vp_poc(),
+    vah:    engine.exports.get_vp_vah(),
+    val:    engine.exports.get_vp_val(),
+    priceLo: engine.exports.get_vp_lo(),
+    priceHi: engine.exports.get_vp_hi(),
+  }, [out.buffer]);
 }
 
 // ── Message handler ───────────────────────────────────────────
@@ -594,13 +819,14 @@ self.onmessage = async (ev: MessageEvent) => {
       symbol = (msg.symbol || 'btcusdt').toLowerCase();
       devicePR = msg.dpr || 1; canvasW = msg.w || 800; canvasH = msg.h || 600;
       timeframe = msg.tf || '1h'; timeframeMs = TF_MS[timeframe] || 36e5;
+      wantCvd = msg.wantCvd !== false;
       running = true; fpsTimestamp = performance.now();
       if (msg.canvas) {
         const cv = msg.canvas as OffscreenCanvas;
         cv.width = canvasW; cv.height = canvasH;
         if (!(await initRenderer(cv))) return;
       }
-      loadInitialCandles(); openSocket(); startSnap(); loop();
+      loadInitialCandles(); openSocket(); loop();
       break;
     }
     case 'setTimeframe': {
@@ -612,6 +838,20 @@ self.onmessage = async (ev: MessageEvent) => {
       noMoreOlder = noMoreNewer = false;
       liveTimestamp = 0; candleSyncDirty = liqSyncDirty = fullDirty = true;
       currentStride = 1;
+      cvdRingW = cvdRingR = 0;
+      zeroCvdBuffers();
+      resetBuffer();
+      if (renderer) renderer.clear();
+      closeSocket(); await loadInitialCandles(); openSocket();
+      break;
+    }
+    case 'setSymbol': {
+      const sym = (msg.symbol as string || '').toLowerCase();
+      if (!sym || sym === symbol) break;
+      symbol = sym;
+      candleCount = 0; liqCount = 0; lastPrice = 0;
+      cvdRingW = cvdRingR = 0;
+      zeroCvdBuffers();
       resetBuffer();
       if (renderer) renderer.clear();
       closeSocket(); await loadInitialCandles(); openSocket();
@@ -629,9 +869,7 @@ self.onmessage = async (ev: MessageEvent) => {
       const wasPanning = isPanning;
       isPanning = !!msg.panning;
       if (wasPanning && !isPanning) {
-        // Panning ended → immediate prefetch check (skip cooldown once)
-        lastOlderFetchTime = 0;
-        lastNewerFetchTime = 0;
+        lastOlderFetchTime = 0; lastNewerFetchTime = 0;
         predictivePrefetch();
       }
       break;
@@ -640,6 +878,33 @@ self.onmessage = async (ev: MessageEvent) => {
       yAxisScale = msg.yScale; yAxisOffset = msg.yOffset;
       fullDirty = true;
       break;
+    case 'setCvd': {
+      const on = !!msg.on;
+      if (on === wantCvd) break;
+      wantCvd = on;
+      cvdRingW = cvdRingR = 0;
+      if (!wantCvd) zeroCvdBuffers();
+      closeSocket();
+      if (running) openSocket();
+      lastSnapTime = 0;
+      emitSnapshot();
+      break;
+    }
+    case 'setIndicatorFlags': {
+      indicatorFlags = (msg.flags | 0) & 0xFFFF;
+      if (engine) {
+        engine.exports.set_indicator_flags(indicatorFlags);
+        if (typeof msg.vpStripW === 'number') {
+          vpStripWidth = msg.vpStripW;
+          engine.exports.set_vp_strip_w(vpStripWidth);
+        }
+      }
+      fullDirty = true;
+      break;
+    }
+    case 'computeVolProfile':
+      handleComputeVolProfile(msg);
+      break;
     case 'resize':
       canvasW = msg.w || canvasW; canvasH = msg.h || canvasH; devicePR = msg.dpr || devicePR;
       if (offscreen) { offscreen.width = canvasW; offscreen.height = canvasH; }
@@ -647,7 +912,7 @@ self.onmessage = async (ev: MessageEvent) => {
       fullDirty = true;
       break;
     case 'stop':
-      running = false; stopSnap();
+      running = false;
       if (animId) { cancelAnimationFrame(animId); animId = 0; }
       closeSocket();
       break;
