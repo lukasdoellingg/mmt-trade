@@ -1,0 +1,31 @@
+---
+description: Odin/WASM selbst neu bauen — nicht den Nutzer bitten, Builds auszuführen
+alwaysApply: true
+---
+
+# Odin → WASM: Build selbst ausführen
+
+Wenn nach Änderungen an **Odin-Quellen** (`odin/**/*.odin`) oder an der **TS/WASM-Bridge** ein **frischer WASM-Build** nötig ist (Layout/Symbole geändert, neues Export, Build-Fehler im Frontend), **führt der Agent den Build selbst im Terminal aus** — nicht nur beschreiben oder den Nutzer darum bitten.
+
+## Wann bauen
+
+- Nach Edits unter `odin/` die `engine.wasm` oder `orderbook_engine.wasm` betreffen.
+- Wenn das Frontend eine veraltete `engine.wasm` / `orderbook_engine.wasm` vermuten lässt (z. B. Speicher-Layout, fehlende Symbole).
+
+## Wie bauen (dieses Repo)
+
+**Chart-Engine (`web/frontend/public/engine.wasm`):**
+
+- Windows (Repo-Root): `powershell -ExecutionPolicy Bypass -File .\odin\build_engine.ps1`
+- Git Bash/WSL: `cd odin && ./build_engine.sh`
+
+**Orderbook-WASM (`web/frontend/public/orderbook_engine.wasm`):**
+
+- Windows: `powershell -ExecutionPolicy Bypass -File .\odin\orderbook\build_orderbook.ps1`
+
+Falls Odin nicht gefunden wird: in den jeweiligen `.ps1`-Skripten **`ODIN_ROOT`** anpassen oder `odin` in den **PATH** legen (siehe `odin/BUILD.md`), dann erneut ausführen.
+
+## Verhalten
+
+- Build-Befehl **einmal ausführen** und Exit-Code prüfen; bei Fehler Diagnose, nicht aufgeben, ohne es versucht zu haben.
+- Keine „bitte führe lokal aus“-Absätze statt echten Build-Läufen, solange Shell-Zugriff möglich ist.

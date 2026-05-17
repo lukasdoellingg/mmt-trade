@@ -29,6 +29,7 @@ const Y_DRIFT_THR    = 0.02;
 const PREFETCH_RATIO = 0.30;
 const FETCH_COOLDOWN = 600;
 const MIN_CANDLE_PX  = 4;
+const SNAP_INTERVAL  = 2000;        // candle snapshot to main thread (41d5baf)
 
 const VWAP_WIN_D = 24 * 3600 * 1000;
 const VWAP_WIN_W = 7 * 24 * 3600 * 1000;
@@ -103,7 +104,7 @@ function enqueueCvdTrade(ts: number, qty: number, m: boolean, isPerp: boolean) {
 
 function drainCvdRing() {
   if (!wantCvd) return;
-  let budget = 8192;
+  let budget = 4096;
   while (cvdRingR !== cvdRingW && budget-- > 0) {
     const ts = cvdRingT[cvdRingR];
     const qty = cvdRingQ[cvdRingR];
@@ -152,6 +153,8 @@ let liqSyncDirty = true;
 
 let frameCount = 0, fpsTimestamp = 0;
 let lastMetaTime = 0, lastMetaMin = 0, lastMetaMax = 0;
+let lastSnapTime = 0;
+let snapTimer: ReturnType<typeof setInterval> | null = null;
 
 let isPanning = false;
 let fetchingOlder = false, fetchingNewer = false;
@@ -360,10 +363,7 @@ function render() {
     else renderCamera();
   }
   predictivePrefetch();
-  // Flush any pending throttled snapshots (e.g. burst of klines hits throttle).
-  if (snapDirty && performance.now() - lastSnapTime >= SNAP_THROTTLE_MS) {
-    emitSnapshot();
-  }
+
   frameCount++;
   const now = performance.now();
   if (now - fpsTimestamp >= 1000) {
@@ -375,86 +375,23 @@ function render() {
 function loop() {
   if (!running) return;
   animId = requestAnimationFrame(loop);
-  // Hardened: a thrown render() (e.g. transient WASM trap on memory.grow,
-  // a bad GL state, an out-of-bounds read) must never break the rAF chain
-  // or the chart would freeze until reload. Surface the error to main but
-  // continue ticking.
-  try { render(); }
-  catch (err) {
-    post({ type: 'error', msg: 'render: ' + (err instanceof Error ? err.message : String(err)) });
-  }
+  render();
 }
 
-// ── Snapshot (transferred to main for overlays / HUD / CVD pane) ──
-//
-// Event-driven: snapshots fire on kline updates / history loads / symbol or
-// timeframe switches. The previous setInterval(emitSnapshot, 500) was
-// wasteful — it kept ticking even when nothing changed.
-// Live candle / HUD snapshots: throttle structured-clone to main, but keep
-// the interval short so the chart feels continuously updated during active ticks.
-const SNAP_THROTTLE_MS = 80;
-let lastSnapTime = 0;
-let snapDirty = false;
-
-function maybeEmitSnapshot() {
-  snapDirty = true;
-  const now = performance.now();
-  if (now - lastSnapTime < SNAP_THROTTLE_MS) return;
-  emitSnapshot();
-}
-
+// ── Candle snapshot (transferred to main thread for overlay axes) — 41d5baf ──
 function emitSnapshot() {
-  if (!candleCount || !engine) return;
-  lastSnapTime = performance.now();
-  snapDirty = false;
-
+  if (!candleCount) return;
+  const now = performance.now();
+  if (now - lastSnapTime < SNAP_INTERVAL) return;
+  lastSnapTime = now;
   const n = candleCount * CF;
   const copy = new Float64Array(n);
   copy.set(candleBuf.subarray(0, n));
-
-  const vd = new Float64Array(candleCount);
-  const vw = new Float64Array(candleCount);
-  const vm = new Float64Array(candleCount);
-  vd.set(engine.vwapDView.subarray(0, candleCount));
-  vw.set(engine.vwapWView.subarray(0, candleCount));
-  vm.set(engine.vwapMView.subarray(0, candleCount));
-
-  // Pack key levels: [price, kind, price, kind, …]
-  const klCount = engine.exports.get_key_levels_count();
-  const kl = new Float64Array(klCount * 2);
-  const klF64 = engine.keyLevelsF64;
-  const klI32 = engine.keyLevelsI32;
-  for (let i = 0; i < klCount; i++) {
-    kl[i * 2]     = klF64[i * 2];
-    kl[i * 2 + 1] = klI32[i * 4 + 2];
-  }
-
-  const transfers: Transferable[] = [copy.buffer, vd.buffer, vw.buffer, vm.buffer, kl.buffer];
-  const payload: Record<string, unknown> = {
-    type: 'candles', buf: copy, count: candleCount, fields: CF,
-    vwapD: vd, vwapW: vw, vwapM: vm,
-    keyLevels: kl, keyLevelsCount: klCount,
-    liveTs: liveTimestamp,
-  };
-
-  if (wantCvd) {
-    const cp = new Float64Array(candleCount);
-    const cs = new Float64Array(candleCount);
-    const vp = new Float64Array(candleCount);
-    const vs = new Float64Array(candleCount);
-    cp.set(cvdPerpBuf.subarray(0, candleCount));
-    cs.set(cvdSpotBuf.subarray(0, candleCount));
-    vp.set(volPerpBuf.subarray(0, candleCount));
-    vs.set(volSpotBuf.subarray(0, candleCount));
-    payload.cvdPerp = cp; payload.cvdSpot = cs;
-    payload.volPerp = vp; payload.volSpot = vs;
-    transfers.push(cp.buffer, cs.buffer, vp.buffer, vs.buffer);
-  }
-
-  post(payload, transfers);
+  post({ type: 'candles', buf: copy, count: candleCount, fields: CF }, [copy.buffer]);
 }
 
-// (legacy snapshot timer removed — snapshots are now event-driven via maybeEmitSnapshot)
+function startSnap() { if (!snapTimer) snapTimer = setInterval(emitSnapshot, 500); }
+function stopSnap()  { if (snapTimer) { clearInterval(snapTimer); snapTimer = null; } }
 
 // ── Initial data load ─────────────────────────────────────────
 async function loadInitialCandles() {
@@ -502,17 +439,9 @@ function handleKline(data: { k?: { t: number; o: string; h: string; l: string; c
   if (candleCount > 0) {
     const newestTs = candleTs(candleCount - 1);
     if (newestTs === ts) {
-      // Same-bar live tick: only OHLCV mutated. Use incremental VWAP +
-      // EMA paths (O(1)) — skip key-level + key-level recomputes which
-      // only meaningfully change on bar transitions.
       setCandle(candleCount - 1, ts, o, h, l, c, v, closed);
       candleSyncDirty = fullDirty = true;
-      if (engine) {
-        syncToWasm();
-        engine.exports.update_ema_last();
-        engine.exports.update_vwap_last(VWAP_WIN_D, VWAP_WIN_W, VWAP_WIN_M);
-      }
-      maybeEmitSnapshot();
+      if (engine) { syncToWasm(); engine.exports.update_ema_last(); }
       return;
     }
     if (ts > newestTs + timeframeMs * 2) return;
@@ -542,15 +471,7 @@ function handleKline(data: { k?: { t: number; o: string; h: string; l: string; c
     if (bufStart > 0) { bufStart--; bufEnd--; }
   }
   candleSyncDirty = fullDirty = true;
-  if (engine) {
-    // New-bar transition: full O(n) sweep is needed once per bar to update the
-    // sliding-window state Odin caches for incremental ticks.
-    syncToWasm();
-    engine.exports.update_ema_last();
-    engine.exports.compute_vwap_rolling(VWAP_WIN_D, VWAP_WIN_W, VWAP_WIN_M);
-    engine.exports.compute_key_levels();
-  }
-  maybeEmitSnapshot();
+  if (engine) { syncToWasm(); engine.exports.update_ema_last(); }
 }
 
 function handleLiquidation(data: { o?: { T?: number; p: string; q: string; S: string }; E?: number }) {
@@ -625,19 +546,12 @@ function openSocket() {
   };
   ws.onmessage = (ev: MessageEvent) => {
     if (socket !== ws) return;
+    const raw = ev.data as string;
     try {
-      const j = JSON.parse(ev.data as string) as { data?: {
-        e?: string;
-        k?: { t: number; o: string; h: string; l: string; c: string; v: string; x: boolean };
-        o?: { T?: number; p: string; q: string; S: string };
-        E?: number; T?: number; q?: string; m?: boolean;
-      } };
-      const d = j.data;
-      if (!d || !d.e) return;
-      if (d.e === 'kline' && d.k)      handleKline(d as { k: { t: number; o: string; h: string; l: string; c: string; v: string; x: boolean } });
-      else if (d.e === 'forceOrder')   handleLiquidation(d as { o?: { T?: number; p: string; q: string; S: string }; E?: number });
-      else if (d.e === 'aggTrade')     handleAggTrade(d, true);
-    } catch { /* malformed */ }
+      if (raw.includes('"kline"'))           handleKline(JSON.parse(raw).data);
+      else if (raw.includes('"forceOrder"')) handleLiquidation(JSON.parse(raw).data);
+      else if (raw.includes('"aggTrade"'))   handleAggTrade(JSON.parse(raw).data, true);
+    } catch { /* malformed frame */ }
   };
   ws.onclose = () => {
     if (socket === ws && running) {
@@ -826,7 +740,7 @@ self.onmessage = async (ev: MessageEvent) => {
         cv.width = canvasW; cv.height = canvasH;
         if (!(await initRenderer(cv))) return;
       }
-      loadInitialCandles(); openSocket(); loop();
+      loadInitialCandles(); openSocket(); startSnap(); loop();
       break;
     }
     case 'setTimeframe': {
@@ -913,6 +827,7 @@ self.onmessage = async (ev: MessageEvent) => {
       break;
     case 'stop':
       running = false;
+      stopSnap();
       if (animId) { cancelAnimationFrame(animId); animId = 0; }
       closeSocket();
       break;

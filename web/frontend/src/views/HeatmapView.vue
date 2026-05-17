@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, onActivated, onDeactivated, markRaw } from 'vue';
-import OrderBookGl from '../components/OrderBookGl.vue';
-import { subscribeOrderbook, setOrderbookSymbol, type OrderbookMsg } from '../composables/orderbookFeed';
+import { ref, shallowRef, computed, watch, onMounted, onUnmounted, onActivated, onDeactivated, markRaw } from 'vue';
+import OrderBookInstancedGl from '../components/OrderBookInstancedGl.vue';
+import { createAllOrderbooksWs, type DepthBook } from '../orderbookWs';
+import { ALL_EXCHANGES, EXCHANGE_IDS } from '../constants';
+import { fetchOhlcv } from '../api';
+import { getLastVwapAll } from '../composables/useChartData';
 import { useDrawings, type DrawingAnchor, type DrawingType } from '../composables/useDrawings';
 import {
   ChartTimeScaleViewport,
@@ -15,6 +18,9 @@ import {
 } from '../chart';
 
 const props = defineProps<{ symbol?: string; exchange?: string; timeframe?: string }>();
+
+/** Set false in `pause` / `onDeactivated` so depth WS does not run in background. */
+let active = true;
 
 // ── DOM refs ──────────────────────────────────────────────────
 const chartStackEl = ref<HTMLDivElement | null>(null);
@@ -170,7 +176,6 @@ const hudM = ref('—');
 const hudDelta = ref('—');
 
 const obiImbalance = ref(0);
-let obiCleanup: (() => void) | null = null;
 let obiHudText = '';
 let obiHudSig = -999;
 let obiHudTfKey = '';
@@ -478,10 +483,43 @@ function startWorker() {
           cvdPerp = m.cvdPerp; cvdSpot = m.cvdSpot; cvdLen = m.count;
           if (m.volPerp instanceof Float64Array) { volPerp = m.volPerp; volSpot = m.volSpot; }
         } else { cvdLen = 0; }
+        if (cSnapLen > 0) {
+          midP = cSnap[(cSnapLen - 1) * CF + CANDLE_FIELD.close];
+        }
         updateHud();
         requestVolProfile();
-        gridDirty = cvdDirty = true;
+        gridDirty = cvdDirty = crossDirty = true;
         break;
+      case 'candleTick': {
+        const idx = m.idx as number;
+        const tick = m.tick as Float64Array | undefined;
+        if (tick && tick.length >= 7 && idx >= 0) {
+          if (idx < cSnapLen) {
+            const o = idx * CF;
+            for (let k = 0; k < 7; k++) cSnap[o + k] = tick[k]!;
+          }
+          // Worker always posts the last bar (idx = candleCount - 1). If a full
+          // `candles` snapshot is briefly behind, idx can be >= cSnapLen; still
+          // move the last-price line / HUD close from the tick until sync.
+          if (cSnapLen === 0 || idx >= cSnapLen - 1) midP = tick[4]!;
+        }
+        liveTs = m.liveTs as number;
+        if (typeof m.vwapD === 'number' && typeof m.vwapW === 'number' && typeof m.vwapM === 'number' && idx >= 0 && idx < vwapLen) {
+          vwapD[idx] = m.vwapD;
+          vwapW[idx] = m.vwapW;
+          vwapM[idx] = m.vwapM;
+        }
+        const cv = m.cvd as Float64Array | undefined;
+        if (cv && cv.length >= 4 && idx >= 0 && idx < cvdLen) {
+          cvdPerp[idx] = cv[0]!;
+          cvdSpot[idx] = cv[1]!;
+          volPerp[idx] = cv[2]!;
+          volSpot[idx] = cv[3]!;
+        }
+        updateHud();
+        gridDirty = cvdDirty = crossDirty = true;
+        break;
+      }
       case 'volProfile':
         volProfile = {
           bins: m.bins as Float32Array, nBins: m.nBins as number,
@@ -560,50 +598,139 @@ function requestVolProfile() {
   });
 }
 
-// ── OBI feed ─────────────────────────────────────────────────
-// Subscribes to the shared orderbook feed (no extra WS connections).
-// Worker emits raw cross-venue imbalance; we EMA-smooth here so the time
-// constant can follow the active timeframe without re-subscribing.
+// ── OBI + depth rail: same WS stack as TradingView (`createAllOrderbooksWs`) ──
+const hmOrderBooks = shallowRef<Record<string, DepthBook | null>>({});
+const hmObLoading = ref<Record<string, boolean>>({});
+let hmObCleanup: (() => void) | null = null;
+let hmObFlushId = 0;
+let hmObPending: Record<string, DepthBook | null> = {};
+let hmObDirty = false;
+let hmDepthRunningSym = '';
+
+const OBI_DEPTH_LEVELS = 50;
+
+function computeCrossVenueObi(books: Record<string, DepthBook | null | undefined>): number {
+  let bSum = 0, aSum = 0;
+  for (let ei = 0; ei < ALL_EXCHANGES.length; ei++) {
+    const ob = books[ALL_EXCHANGES[ei]];
+    if (!ob) continue;
+    const bids = ob.bids, asks = ob.asks;
+    const bLim = Math.min(bids.length, OBI_DEPTH_LEVELS);
+    const aLim = Math.min(asks.length, OBI_DEPTH_LEVELS);
+    for (let i = 0; i < bLim; i++) bSum += +bids[i][1];
+    for (let i = 0; i < aLim; i++) aSum += +asks[i][1];
+  }
+  const t = bSum + aSum;
+  return t > 1e-12 ? (bSum - aSum) / t : 0;
+}
+
+function hmPushOb(exId: string, ob: DepthBook) {
+  if (!ob?.bids?.length && !ob?.asks?.length) return;
+  hmObPending[exId] = ob;
+  hmObDirty = true;
+}
+
+function hmFlushOb() {
+  if (!hmObDirty) return;
+  hmObDirty = false;
+  const prev = hmOrderBooks.value;
+  const next: Record<string, DepthBook | null> = {};
+  for (let ei = 0; ei < ALL_EXCHANGES.length; ei++) {
+    const ex = ALL_EXCHANGES[ei];
+    next[ex] = hmObPending[ex] ?? prev[ex] ?? null;
+  }
+  hmObPending = {};
+  hmOrderBooks.value = next;
+  if (showObi.value) applyObiFromDepthSnapshot(next);
+}
+
+function hmStartObFlushLoop() {
+  if (hmObFlushId) return;
+  let last = 0;
+  const tick = (now: number) => {
+    if (now - last >= 100) { hmFlushOb(); last = now; }
+    hmObFlushId = requestAnimationFrame(tick);
+  };
+  hmObFlushId = requestAnimationFrame(tick);
+}
+
+function hmStopObFlushLoop() {
+  if (hmObFlushId) { cancelAnimationFrame(hmObFlushId); hmObFlushId = 0; }
+}
+
+function stopHmDepthWs() {
+  hmStopObFlushLoop();
+  hmObCleanup?.();
+  hmObCleanup = null;
+  hmDepthRunningSym = '';
+}
+
+function startHmDepthWs() {
+  const sym = (props.symbol || 'BTC/USDT').trim();
+  if (!sym) return;
+  stopHmDepthWs();
+  hmDepthRunningSym = sym;
+  hmObPending = {};
+  hmObDirty = false;
+  hmOrderBooks.value = {};
+  hmObLoading.value = Object.fromEntries(ALL_EXCHANGES.map(e => [e, true])) as Record<string, boolean>;
+  hmStartObFlushLoop();
+  hmObCleanup = createAllOrderbooksWs(sym, hmPushOb, {
+    onLoaded: (exId: string) => { hmObLoading.value = { ...hmObLoading.value, [exId]: false }; },
+  });
+}
+
+function syncHmDepthWs() {
+  if (!active || !(showOb.value || showObi.value)) {
+    stopHmDepthWs();
+    return;
+  }
+  const sym = (props.symbol || 'BTC/USDT').trim();
+  if (!sym) { stopHmDepthWs(); return; }
+  if (hmObCleanup && hmDepthRunningSym === sym) return;
+  startHmDepthWs();
+}
+
 let _obiSmoothed = 0;
 let _obiHasSmoothed = false;
 let _obiLastT = 0;
-function startObiFeed() {
-  obiCleanup?.();
+
+function applyObiFromDepthSnapshot(books: Record<string, DepthBook | null>) {
   if (!showObi.value) return;
-  const sym = props.symbol || 'BTC/USDT';
-  setOrderbookSymbol(sym);
+  const raw = computeCrossVenueObi(books);
+  const barMs = TF_BAR_MS[activeTf.value] || 36e5;
+  const tauMs = Math.max(400, barMs * 0.55);
+  const now = performance.now();
+  const dt = _obiLastT > 0 ? Math.min(250, now - _obiLastT) : 16;
+  _obiLastT = now;
+  const a = 1 - Math.exp(-dt / tauMs);
+  if (!_obiHasSmoothed) { _obiSmoothed = raw; _obiHasSmoothed = true; }
+  else _obiSmoothed += a * (raw - _obiSmoothed);
+  obiImbalance.value = _obiSmoothed;
+  if (showObiExt.value && cSnapLen > 0) {
+    const midPx = cSnap[(cSnapLen - 1) * CF + CANDLE_FIELD.close];
+    maybeAddObiLevel(raw, midPx);
+  }
+  if (showObi.value) {
+    const sig = Math.round(_obiSmoothed * 1000);
+    const tk = activeTf.value;
+    if (sig !== obiHudSig || tk !== obiHudTfKey) {
+      obiHudSig = sig;
+      obiHudTfKey = tk;
+      obiHudText = 'OBI ' + (_obiSmoothed >= 0 ? '+' : '') + (_obiSmoothed * 100).toFixed(1) + '% · ' + tk + ' · 4ex';
+    }
+    gridDirty = true;
+  }
+}
+
+// OBI EMA uses the same depth snapshots as the order-book rail (TradingView WS).
+function startObiFeed() {
+  if (!showObi.value) return;
   _obiHasSmoothed = false;
   _obiSmoothed = 0;
   _obiLastT = 0;
-  obiCleanup = subscribeOrderbook((m: OrderbookMsg) => {
-    if (m.type !== 'obi') return;
-    const raw = m.value;
-    const barMs = TF_BAR_MS[activeTf.value] || 36e5;
-    const tauMs = Math.max(400, barMs * 0.55);
-    const now = performance.now();
-    const dt = _obiLastT > 0 ? Math.min(250, now - _obiLastT) : 16;
-    _obiLastT = now;
-    const a = 1 - Math.exp(-dt / tauMs);
-    if (!_obiHasSmoothed) { _obiSmoothed = raw; _obiHasSmoothed = true; }
-    else _obiSmoothed += a * (raw - _obiSmoothed);
-    obiImbalance.value = _obiSmoothed;
-    // Feed the OBI Naked Extension tracker. Uses raw (un-smoothed) OBI so we
-    // catch real spikes; the smoother would dampen short-lived ones.
-    if (showObiExt.value && cSnapLen > 0) {
-      const midPx = cSnap[(cSnapLen - 1) * CF + CANDLE_FIELD.close];
-      maybeAddObiLevel(raw, midPx);
-    }
-    if (showObi.value) {
-      const sig = Math.round(_obiSmoothed * 1000);
-      const tk = activeTf.value;
-      if (sig !== obiHudSig || tk !== obiHudTfKey) {
-        obiHudSig = sig;
-        obiHudTfKey = tk;
-        obiHudText = 'OBI ' + (_obiSmoothed >= 0 ? '+' : '') + (_obiSmoothed * 100).toFixed(1) + '% · ' + tk + ' · 4ex';
-      }
-      gridDirty = true;
-    }
-  });
+  syncHmDepthWs();
+  gridDirty = true;
 }
 
 function updateHud() {
@@ -1303,10 +1430,11 @@ function clearDrawings() {
 }
 
 // ── Lifecycle ────────────────────────────────────────────────
-let active = true;
 function start() {
   if (!active) return;
-  resize(); startWorker(); syncCvdToWorker(); startObiFeed(); frame();
+  resize(); startWorker(); syncCvdToWorker(); startObiFeed(); syncHmDepthWs();
+  if (showOb.value) void loadHmRailVwap();
+  frame();
   resizeObs = new ResizeObserver(() => { rectCache = null; resize(); });
   if (chartStackEl.value) resizeObs.observe(chartStackEl.value);
   if (cvdWrapEl.value)    resizeObs.observe(cvdWrapEl.value);
@@ -1315,7 +1443,7 @@ function start() {
 }
 function pause() {
   if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = 0; }
-  obiCleanup?.(); obiCleanup = null;
+  stopHmDepthWs();
   stopWorker();
   wrapEl.value?.removeEventListener('wheel', onWheel);
   window.removeEventListener('keydown', onKey);
@@ -1331,8 +1459,10 @@ watch(showObiExt,    () => {
 });
 watch(showObi,  (on) => {
   if (on) startObiFeed();
-  else { obiCleanup?.(); obiCleanup = null; gridDirty = true; }
+  else { gridDirty = true; }
 });
+watch([showOb, showObi], () => { if (active) syncHmDepthWs(); });
+watch(() => props.symbol, () => { if (active) { startObiFeed(); syncHmDepthWs(); } });
 watch(showCvd, () => { syncCvdToWorker(); rectCache = null; resize(); cvdDirty = true; });
 watch(activeTf, () => { if (active) startObiFeed(); });
 watch(() => props.timeframe, (tf) => {
@@ -1340,9 +1470,33 @@ watch(() => props.timeframe, (tf) => {
   if (tf === activeTf.value) return;
   selectTf(tf);
 });
-watch(() => props.symbol, () => { if (active) startObiFeed(); });
 
 const obSymbol = computed(() => props.symbol || 'BTC/USDT');
+
+const hmRailVwap = ref<{ d: number | null; w: number | null; m: number | null }>({ d: null, w: null, m: null });
+const hmObStep = ref(100);
+const hmObMode = ref<'usd' | 'coin'>('usd');
+const HM_FMT_V = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function fmtHmVwap(v: number | null | undefined) { return v != null ? HM_FMT_V.format(v) : '—'; }
+
+async function loadHmRailVwap() {
+  const sym = props.symbol;
+  if (!sym || !showOb.value) { hmRailVwap.value = { d: null, w: null, m: null }; return; }
+  try {
+    const exId = EXCHANGE_IDS[props.exchange || 'Binance'] ?? 'binance';
+    const tf = isTf(props.timeframe) ? props.timeframe : '1h';
+    const raw = await fetchOhlcv(exId, sym, tf, 500);
+    const ohlcv = raw.map(r => ({
+      time: Math.floor(Number(r[0]) / 1000),
+      open: +r[1], high: +r[2], low: +r[3], close: +r[4], volume: +r[5] || 0,
+    }));
+    hmRailVwap.value = getLastVwapAll(ohlcv) ?? { d: null, w: null, m: null };
+  } catch { hmRailVwap.value = { d: null, w: null, m: null }; }
+}
+
+watch([showOb, () => props.symbol, () => props.exchange, () => props.timeframe], () => {
+  if (active && showOb.value) loadHmRailVwap();
+});
 
 // Close indicator dropdown on outside click. Bound once at mount, removed at
 // unmount. We don't preventDefault — just check whether the event was inside
@@ -1482,10 +1636,31 @@ onDeactivated(() => { active = false; pause(); });
         </div>
       </div>
 
-      <!-- Right rail: orderbook -->
-      <div class="hm-rail" v-show="showOb">
-        <OrderBookGl :symbol="obSymbol" />
-      </div>
+      <!-- Right rail: multi-venue order book — Odin WASM bar widths + DOM (no extra WebGL on main thread) -->
+      <aside class="hm-ob-sidebar" v-show="showOb">
+        <div class="hm-vwap">
+          <div class="hm-vwap-title">VWAP</div>
+          <div class="hm-vwap-row"><span class="hm-lbl">D</span><span class="hm-val">{{ fmtHmVwap(hmRailVwap.d) }}</span></div>
+          <div class="hm-vwap-row"><span class="hm-lbl">W</span><span class="hm-val">{{ fmtHmVwap(hmRailVwap.w) }}</span></div>
+          <div class="hm-vwap-row"><span class="hm-lbl">M</span><span class="hm-val">{{ fmtHmVwap(hmRailVwap.m) }}</span></div>
+        </div>
+        <div class="hm-ob-cfg">
+          <select v-model.number="hmObStep" class="hm-sel">
+            <option :value="10">$10</option><option :value="50">$50</option><option :value="100">$100</option>
+            <option :value="500">$500</option><option :value="1000">$1K</option>
+          </select>
+          <select v-model="hmObMode" class="hm-sel"><option value="usd">USD</option><option value="coin">Coin</option></select>
+          <span class="hm-sym-lbl">{{ obSymbol || '—' }}</span>
+        </div>
+        <div class="hm-ob-list">
+          <OrderBookInstancedGl
+            v-for="ex in ALL_EXCHANGES" :key="ex"
+            :exchange="ex" :symbol="obSymbol || ''"
+            :bids="hmOrderBooks[ex]?.bids ?? []" :asks="hmOrderBooks[ex]?.asks ?? []"
+            :loading="hmObLoading[ex]" :mode="hmObMode" :step="hmObStep"
+          />
+        </div>
+      </aside>
     </div>
   </div>
 </template>
@@ -1544,7 +1719,20 @@ onDeactivated(() => { active = false; pause(); });
 .hm-cvd{flex-shrink:0;height:110px;border-top:1px solid #14141c;background:#05060a;position:relative}
 .hm-cvd-canvas{display:block;width:100%;height:100%;vertical-align:top}
 
-.hm-rail{width:300px;flex-shrink:0;display:flex;min-height:0;border-left:1px solid #14141c}
+.hm-ob-sidebar{width:280px;flex-shrink:0;padding:8px;border-left:1px solid #1e2a1e;display:flex;flex-direction:column;gap:8px;background:#0a0a0e;overflow:hidden;min-height:0}
+.hm-vwap{padding:8px 10px;background:#0f0f14;border:1px solid #1e2a1e;border-radius:4px;flex-shrink:0}
+.hm-vwap-title{font-size:.7rem;color:#8ab88a;margin-bottom:4px;text-transform:uppercase;letter-spacing:1px}
+.hm-vwap-row{display:flex;justify-content:space-between;font-size:.75rem;padding:1px 0}
+.hm-lbl{color:#5a7a5a}
+.hm-val{color:#f0c14b;font-weight:600}
+.hm-ob-cfg{display:flex;align-items:center;gap:8px;padding:4px 6px;background:#0f0f14;border:1px solid #1e2a1e;border-radius:4px;flex-shrink:0}
+.hm-sel{background:#14141c;color:#b8e6b8;border:1px solid #2a3a2a;padding:3px 6px;border-radius:4px;font:inherit;font-size:.72rem}
+.hm-sym-lbl{font-size:.72rem;color:#5a7a5a;margin-left:auto}
+.hm-ob-list{display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;overflow-y:auto;overflow-x:hidden}
+.hm-ob-list::-webkit-scrollbar{width:6px}
+.hm-ob-list::-webkit-scrollbar-track{background:#0f0f14}
+.hm-ob-list::-webkit-scrollbar-thumb{background:#2a3a2a;border-radius:3px}
+.hm-ob-list{scrollbar-width:thin;scrollbar-color:#2a3a2a #0f0f14}
 
 .vwap-hud{position:absolute;top:8px;left:8px;background:rgba(10,11,18,0.85);border:1px solid #1e2435;border-radius:4px;padding:6px 9px;min-width:170px;backdrop-filter:blur(2px);pointer-events:none;z-index:5}
 .vwap-hud-title{font:600 .58rem/1 Consolas,monospace;color:#9aaecc;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px}

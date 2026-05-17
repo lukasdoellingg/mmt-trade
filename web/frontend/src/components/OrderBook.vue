@@ -64,20 +64,38 @@ const mid = computed(() => {
 });
 
 const asksEl = ref(null);
-let pinned = true;
+const bidsEl = ref(null);
+let asksPinned = true;
+let bidsPinned = true;
 
 function onAsksScroll() {
   const el = asksEl.value;
-  if (el) pinned = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+  if (el) asksPinned = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+}
+
+function onBidsScroll() {
+  const el = bidsEl.value;
+  if (el) bidsPinned = el.scrollTop <= 4;
 }
 
 function scrollAsksDown() {
   const el = asksEl.value;
-  if (el && pinned) el.scrollTop = el.scrollHeight;
+  if (el && asksPinned) el.scrollTop = el.scrollHeight;
+}
+
+function scrollBidsTop() {
+  const el = bidsEl.value;
+  if (el && bidsPinned) el.scrollTop = 0;
+}
+
+function scrollPinned() {
+  scrollAsksDown();
+  scrollBidsTop();
 }
 
 watch(askRows, () => nextTick(scrollAsksDown), { flush: 'post' });
-onMounted(() => nextTick(scrollAsksDown));
+watch(bidRows, () => nextTick(scrollBidsTop), { flush: 'post' });
+onMounted(() => nextTick(scrollPinned));
 </script>
 
 <template>
@@ -94,7 +112,7 @@ onMounted(() => nextTick(scrollAsksDown));
         </div>
       </div>
       <div class="spread">BID / ASK</div>
-      <div class="bids">
+      <div ref="bidsEl" class="bids" @scroll="onBidsScroll">
         <div v-for="b in bidRows" :key="b[0]" class="row bid" :style="{'--pct': Math.min(100, b[1]/stats.mxB*100)}">
           <span class="p">{{ fmtP(b[0]) }}</span><span class="s">{{ fmtS(b[1], b[0]) }}{{ sfx }}</span>
         </div>

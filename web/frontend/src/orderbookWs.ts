@@ -3,15 +3,32 @@ import { symbolToWs } from './utils/symbols';
 const RECONNECT_MS = 3000;
 const MAX_RECONNECT = 5;
 const STALE_TIMEOUT_MS = 15000;
-const PRUNE_MAX_LEVELS = 500;
-const PRUNE_INTERVAL = 100;
+/** Per-side cap after prune; OKX/Binance can feed more — keep UI + Odin ROW_CAP headroom in frontend. */
+const PRUNE_MAX_LEVELS = 3500;
+/** Prune maps every N dirty updates (reduces sort churn under burst traffic). */
+const PRUNE_INTERVAL = 200;
 
-type Level = [number, number];
+const pendingFlushes = new Map<string, () => void>();
+let flushRaf = 0;
+
+/** One flush per venue per animation frame (coalesces WS bursts across 4 sockets). */
+function scheduleDepthFlush(key: string, run: () => void): void {
+  pendingFlushes.set(key, run);
+  if (flushRaf) return;
+  flushRaf = requestAnimationFrame(() => {
+    flushRaf = 0;
+    for (const fn of pendingFlushes.values()) fn();
+    pendingFlushes.clear();
+  });
+}
+
+export type DepthLevel = [number, number];
 type BookMap = Map<string, number>;
 
-interface OrderBook {
-  bids: Level[];
-  asks: Level[];
+/** One venue depth snapshot (same shape as TradingView `OrderBook.vue` props). */
+export interface DepthBook {
+  bids: DepthLevel[];
+  asks: DepthLevel[];
 }
 
 interface StreamContext {
@@ -23,7 +40,7 @@ interface StreamContext {
   flush: () => void;
 }
 
-type OnUpdate = (book: OrderBook) => void;
+type OnUpdate = (book: DepthBook) => void;
 type OnLoaded = () => void;
 type ConnectFn = (ctx: StreamContext) => WebSocket;
 
@@ -50,7 +67,7 @@ function pruneMap(map: BookMap, keepTop: number, desc: boolean): void {
   }
 }
 
-function makeStream(connect: ConnectFn) {
+function makeStream(connect: ConnectFn, flushKey: string) {
   let ws: WebSocket | null = null;
   let closed = false, retries = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -83,14 +100,17 @@ function makeStream(connect: ConnectFn) {
   function flush(onUpdate: OnUpdate, onLoaded: OnLoaded): void {
     if (!dirty) return;
     dirty = false;
-    const bidArr: Level[] = new Array(Math.min(bids.size, PRUNE_MAX_LEVELS));
-    const askArr: Level[] = new Array(Math.min(asks.size, PRUNE_MAX_LEVELS));
+    // Between prune intervals the map can grow past PRUNE_MAX; flush must not take an arbitrary slice.
+    if (bids.size > PRUNE_MAX_LEVELS) pruneMap(bids, PRUNE_MAX_LEVELS, true);
+    if (asks.size > PRUNE_MAX_LEVELS) pruneMap(asks, PRUNE_MAX_LEVELS, false);
+    const bidArr: DepthLevel[] = new Array(Math.min(bids.size, PRUNE_MAX_LEVELS));
+    const askArr: DepthLevel[] = new Array(Math.min(asks.size, PRUNE_MAX_LEVELS));
     let bi = 0, ai = 0;
     for (const [p, q] of bids) { if (bi >= bidArr.length) break; bidArr[bi++] = [+p, q]; }
     for (const [p, q] of asks) { if (ai >= askArr.length) break; askArr[ai++] = [+p, q]; }
     bidArr.sort((a, b) => b[0] - a[0]);
     askArr.sort((a, b) => a[0] - b[0]);
-    const book: OrderBook = { bids: bidArr, asks: askArr };
+    const book: DepthBook = { bids: bidArr, asks: askArr };
     if (book.bids.length || book.asks.length) {
       onUpdate(book);
       if (!loaded) { loaded = true; onLoaded(); }
@@ -102,7 +122,7 @@ function makeStream(connect: ConnectFn) {
     ws = connect({
       bids, asks, apply, snap,
       markDirty,
-      flush: () => flush(onUpdate, onLoaded),
+      flush: () => scheduleDepthFlush(flushKey, () => flush(onUpdate, onLoaded)),
     });
     ws.onerror = () => {};
     ws.onclose = () => {
@@ -135,7 +155,8 @@ function parse(raw: unknown): any {
 function binanceStream(symbol: string) {
   const wsSym = symbolToWs(symbol, 'binance');
   return makeStream(({ bids, asks, apply: ap, markDirty, flush }) => {
-    const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${wsSym}@depth@100ms`);
+    // Spot only allows @depth, @depth@100ms, @depth@1000ms — not @500ms (no events → loading stuck).
+    const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${wsSym}@depth@1000ms`);
     ws.onmessage = e => {
       const d = parse(e.data);
       if (!d || d.e !== 'depthUpdate') return;
@@ -144,16 +165,26 @@ function binanceStream(symbol: string) {
       flush();
     };
     return ws;
-  });
+  }, 'binance');
 }
 
 function bybitStream(symbol: string) {
   const sym = (symbol || 'BTC/USDT').toUpperCase().replace(/[\s/]/g, '');
   return makeStream(({ bids, asks, apply: ap, snap: sn, markDirty, flush }) => {
     const ws = new WebSocket('wss://stream.bybit.com/v5/public/spot');
-    ws.onopen = () => ws.send(JSON.stringify({ op: 'subscribe', args: [`orderbook.1000.${sym}`] }));
+    let pingIv: ReturnType<typeof setInterval> | null = null;
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ op: 'subscribe', args: [`orderbook.1000.${sym}`] }));
+      pingIv = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ op: 'ping' }));
+      }, 20000);
+    };
+    ws.addEventListener('close', () => {
+      if (pingIv) { clearInterval(pingIv); pingIv = null; }
+    });
     ws.onmessage = e => {
       const d = parse(e.data);
+      if (d?.op === 'pong' || d?.op === 'subscribe') return;
       if (!d?.topic?.startsWith('orderbook') || !d.data) return;
       if (d.type === 'snapshot') { sn(bids, d.data.b || []); sn(asks, d.data.a || []); }
       else { ap(bids, d.data.b || []); ap(asks, d.data.a || []); }
@@ -161,16 +192,30 @@ function bybitStream(symbol: string) {
       flush();
     };
     return ws;
-  });
+  }, 'bybit');
 }
 
 function okxStream(symbol: string) {
   const instId = symbolToWs(symbol, 'okx');
   return makeStream(({ bids, asks, apply: ap, snap: sn, markDirty, flush }) => {
     const ws = new WebSocket('wss://ws.okx.com:8443/ws/v5/public');
-    ws.onopen = () => ws.send(JSON.stringify({ op: 'subscribe', args: [{ channel: 'books', instId }] }));
+    let pingIv: ReturnType<typeof setInterval> | null = null;
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ op: 'subscribe', args: [{ channel: 'books', instId }] }));
+      pingIv = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ op: 'ping' }));
+      }, 25000);
+    };
+    ws.addEventListener('close', () => {
+      if (pingIv) { clearInterval(pingIv); pingIv = null; }
+    });
     ws.onmessage = e => {
       const d = parse(e.data);
+      if (d?.op === 'ping') {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ op: 'pong', ts: d.ts }));
+        return;
+      }
+      if (d?.op === 'pong' || d?.event === 'subscribe' || d?.op === 'subscribe') return;
       if (!d?.data?.[0] || !d.action) return;
       const row = d.data[0];
       if (d.action === 'snapshot') { sn(bids, row.bids || []); sn(asks, row.asks || []); }
@@ -179,7 +224,7 @@ function okxStream(symbol: string) {
       flush();
     };
     return ws;
-  });
+  }, 'okx');
 }
 
 function coinbaseStream(symbol: string) {
@@ -204,12 +249,12 @@ function coinbaseStream(symbol: string) {
       }
     };
     return ws;
-  });
+  }, 'coinbase');
 }
 
 export function createAllOrderbooksWs(
   symbol: string,
-  onUpdate: (exId: string, book: OrderBook) => void,
+  onUpdate: (exId: string, book: DepthBook) => void,
   opts: { onLoaded?: (exId: string) => void } = {},
 ): () => void {
   const onLoaded = opts.onLoaded || (() => {});
@@ -220,7 +265,7 @@ export function createAllOrderbooksWs(
     ['coinbase', coinbaseStream],
   ];
   const cleanups = streams.map(([id, factory]) =>
-    factory(symbol)((ob) => onUpdate(id, ob), () => onLoaded(id))
+    factory(symbol)((ob) => onUpdate(id, ob), () => onLoaded(id)),
   );
   return () => cleanups.forEach(fn => fn());
 }

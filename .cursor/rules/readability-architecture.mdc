@@ -1,0 +1,25 @@
+---
+description: Lesbarkeit, professionelle Struktur; bestehende Namen und Projektstruktur beibehalten
+alwaysApply: true
+---
+
+# Lesbarkeit, Architektur & Projektstruktur
+
+## Namen nicht umbenennen
+
+- **Variablen, Parameter, Properties, Funktionen, Typen und Dateien nicht umbenennen** nur aus Stilgründen oder „zur Vereinheitlichung“. Bestehende Namen und lokale Konventionen im jeweiligen Modul respektieren.
+- Umbenennungen nur, wenn der Nutzer das **ausdrücklich** verlangt, oder wenn sie **unmittelbar notwendig** sind (z. B. Namenskollision, API-Bruch, einheitlich vorgegebene Schnittstelle).
+
+## Menschlich lesbar & klar strukturiert
+
+- Code so strukturieren, dass er **leicht zu lesen und zu navigieren** ist: klare Abschnitte, nachvollziehbarer Kontrollfluss, sinnvolle Zerlegung in Hilfsfunktionen statt tiefer „cleverer“ Verschachtelung.
+- **Professionelle Architektur**: Verantwortlichkeiten sauber trennen, angemessene Abstraktionsebenen, **vorhandene Schichten, Module und Patterns im Repo** bevorzugen statt paralleler neuer Strukturen ohne Grund.
+
+## Projektstruktur beibehalten
+
+- Neue Dateien und Ordner **nur innerhalb des etablierten Layouts** des Projekts anlegen (`web/`, Paketgrenzen, bestehende Feature-Ordner).
+- **Keine** willkürliche Neuorganisation (Verschieben vieler Dateien, neue Top-Level-Bereiche, „misc“-Sammelordner), wenn der Nutzer das nicht verlangt.
+
+## Abgleich mit Aufgabenstellung
+
+- Änderungen **fokussiert** auf die konkrete Anforderung; keine Refactors nur zur „Aufräumerei“, wenn sie Namen oder Struktur breit anfassen würden.

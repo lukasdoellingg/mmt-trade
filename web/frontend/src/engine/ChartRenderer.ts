@@ -111,13 +111,12 @@ export class ChartRenderer {
     const gl = this.gl;
     const count = Math.min(instanceCount, MAX_INSTANCES);
 
-    if (version !== this.uploadedVersion) {
-      this.uploadedVersion = version;
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.posVBO);
-      gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.posView, 0, count * 4);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.colVBO);
-      gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.colView, 0, count * 4);
-    }
+    if (version !== this.uploadedVersion) this.uploadedVersion = version;
+    // Live kline ticks mutate WASM inst buffers in place — always upload on recompute.
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.posVBO);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.posView, 0, count * 4);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.colVBO);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.colView, 0, count * 4);
 
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(this.program);
