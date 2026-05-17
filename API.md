@@ -1,24 +1,25 @@
-# API Dokumentation
+# API-Dokumentation
 
-Vollständige API-Referenz für MMT-Trade Backend-Endpoints.
+Vollständige Referenz der REST-Endpoints des MMT-Trade Backends. Live-Marktdaten für Order Books und Heatmap-Klines laufen zusätzlich über clientseitige WebSockets (siehe Abschnitt WebSocket).
 
 ## Base URL
 
 - **Development:** `http://localhost:3001/api`
-- **Production:** `/api` (via Vite Proxy)
+- **Production:** `/api` (über Vite-Proxy oder Reverse-Proxy)
 
-## Response Format
+## Response-Format
 
-Alle Endpoints liefern JSON-Responses:
+Erfolgreiche Antworten sind JSON-Objekte. Struktur je nach Endpoint; typisches Muster:
 
 ```json
 {
   "symbol": "BTC/USDT",
-  "data": { ... }
+  "data": { }
 }
 ```
 
-Bei Fehlern:
+Fehler:
+
 ```json
 {
   "error": "Error message"
@@ -27,26 +28,28 @@ Bei Fehlern:
 
 ## Caching
 
-- **TTL:** 60 Sekunden (Standard)
-- **Max Size:** 200 Einträge (FIFO-Eviction)
-- **Cache-Headers:** Keine (Server-Side Caching)
+- **TTL:** 60 Sekunden (Standard); TradFi-Endpoints teils länger (siehe Endpoint-Hinweise)
+- **Max. Größe:** 200 Einträge (FIFO-Eviction)
+- **Cache-Headers:** keine (reines Server-Side-Caching)
 
 ## Rate Limiting
 
-- Per-Exchange Throttling (800-1200ms zwischen Requests)
-- Retry-Logic mit Exponential Backoff (max 2 Retries)
+- Throttling pro Exchange (ca. 800–1200 ms zwischen Requests)
+- Retry mit Exponential Backoff (max. 2 Versuche)
+- Request-Timeout: 120 Sekunden
 
 ---
 
 ## Crypto Exchange Endpoints
 
-### Exchanges & Symbols
+### Exchanges und Symbols
 
 #### `GET /api/exchanges`
 
 Liste aller unterstützten Exchanges.
 
 **Response:**
+
 ```json
 {
   "exchanges": ["Binance", "Coinbase", "Bybit", "OKX", "Deribit", "Hyperliquid"]
@@ -57,13 +60,17 @@ Liste aller unterstützten Exchanges.
 
 #### `GET /api/symbols`
 
-Top USDT-Symbole einer Exchange nach Volume.
+Top-USDT-Symbole einer Exchange nach Volume.
 
 **Query Parameters:**
-- `exchange` (string, optional) – Exchange-Name (Standard: `binance`)
-- `limit` (number, optional) – Anzahl (Standard: 10, Max: 20)
+
+| Parameter | Typ | Standard | Beschreibung |
+|-----------|-----|----------|--------------|
+| `exchange` | string | `binance` | Exchange-Name |
+| `limit` | number | `10` | Anzahl (max. 20) |
 
 **Response:**
+
 ```json
 {
   "symbols": [
@@ -75,67 +82,79 @@ Top USDT-Symbole einer Exchange nach Volume.
 
 ---
 
-### OHLCV Data
+### OHLCV
 
 #### `GET /api/ohlcv`
 
-Spot OHLCV-Kerzen einer Exchange.
+Spot-OHLCV-Kerzen einer Exchange.
 
 **Query Parameters:**
-- `exchange` (string, optional) – Exchange-ID (Standard: `binance`)
-- `symbol` (string, optional) – Trading-Paar (Standard: `BTC/USDT`)
-- `timeframe` (string) – Zeitrahmen: `5m`, `15m`, `1h`, `4h`, `1d`
-- `limit` (number, optional) – Anzahl (Standard: 50, Max: 2000)
+
+| Parameter | Typ | Standard | Beschreibung |
+|-----------|-----|----------|--------------|
+| `exchange` | string | `binance` | Exchange-ID |
+| `symbol` | string | `BTC/USDT` | Trading-Paar |
+| `timeframe` | string | — | `5m`, `15m`, `1h`, `4h`, `1d` |
+| `limit` | number | `50` | Anzahl (max. 2000) |
 
 **Response:**
+
 ```json
 {
   "ohlcv": [
-    [timestamp, open, high, low, close, volume],
-    [1704067200000, 42000, 42500, 41900, 42300, 1234.56],
-    ...
+    [1704067200000, 42000, 42500, 41900, 42300, 1234.56]
   ]
 }
 ```
+
+Felder pro Kerze: `[timestamp, open, high, low, close, volume]`.
 
 ---
 
 #### `GET /api/futures-ohlcv-multi`
 
-Multi-Exchange Futures OHLCV-Daten.
+Futures-OHLCV über mehrere Exchanges.
 
 **Query Parameters:**
-- `symbol` (string, optional) – Trading-Paar (Standard: `BTC/USDT`)
-- `timeframe` (string, optional) – Zeitrahmen (Standard: `1h`)
-- `limit` (number, optional) – Anzahl (Standard: 168, Max: 720)
+
+| Parameter | Typ | Standard | Beschreibung |
+|-----------|-----|----------|--------------|
+| `symbol` | string | `BTC/USDT` | Trading-Paar |
+| `timeframe` | string | `1h` | Zeitrahmen |
+| `limit` | number | `168` | Anzahl (max. 720) |
 
 **Response:**
+
 ```json
 {
   "symbol": "BTC/USDT",
   "timeframe": "1h",
   "ohlcv": {
-    "binance": [[timestamp, open, high, low, close, volume], ...],
-    "bybit": [[timestamp, open, high, low, close, volume], ...],
-    "okx": [[timestamp, open, high, low, close, volume], ...],
-    "deribit": [[timestamp, open, high, low, close, volume], ...],
-    "hyperliquid": [[timestamp, open, high, low, close, volume], ...]
+    "binance": [[1704067200000, 42000, 42500, 41900, 42300, 1234.56]],
+    "bybit": [],
+    "okx": [],
+    "deribit": [],
+    "hyperliquid": []
   }
 }
 ```
 
 ---
 
-### Ticker Data
+### Ticker
 
 #### `GET /api/tickers`
 
-Spot-Ticker-Daten (Multi-Exchange).
+Spot-Ticker (Multi-Exchange).
 
 **Query Parameters:**
-- `symbol` (string, optional) – Trading-Paar (Standard: `BTC/USDT`)
+
+| Parameter | Typ | Standard |
+|-----------|-----|----------|
+| `symbol` | string | `BTC/USDT` |
 
 **Response:**
+
 ```json
 {
   "symbol": "BTC/USDT",
@@ -147,9 +166,7 @@ Spot-Ticker-Daten (Multi-Exchange).
       "change": 2.5,
       "volume": 1234.56,
       "quoteVolume": 51840000
-    },
-    "bybit": { ... },
-    ...
+    }
   }
 }
 ```
@@ -158,12 +175,16 @@ Spot-Ticker-Daten (Multi-Exchange).
 
 #### `GET /api/futures-tickers`
 
-Futures-Ticker-Daten (Multi-Exchange).
+Futures-Ticker (Multi-Exchange).
 
 **Query Parameters:**
-- `symbol` (string, optional) – Trading-Paar (Standard: `BTC/USDT`)
+
+| Parameter | Typ | Standard |
+|-----------|-----|----------|
+| `symbol` | string | `BTC/USDT` |
 
 **Response:**
+
 ```json
 {
   "symbol": "BTC/USDT",
@@ -172,9 +193,7 @@ Futures-Ticker-Daten (Multi-Exchange).
       "last": 42050,
       "quoteVolume": 1234567890,
       "baseVolume": 29345.67
-    },
-    "bybit": { ... },
-    ...
+    }
   }
 }
 ```
@@ -185,29 +204,29 @@ Futures-Ticker-Daten (Multi-Exchange).
 
 #### `GET /api/funding-rates`
 
-Funding Rate History (8h-normalisiert).
+Funding-Rate-History (auf 8h-Äquivalent normalisiert).
 
 **Query Parameters:**
-- `symbol` (string, optional) – Trading-Paar (Standard: `BTC/USDT`)
-- `limit` (number, optional) – Anzahl (Standard: 100, Max: 720)
+
+| Parameter | Typ | Standard |
+|-----------|-----|----------|
+| `symbol` | string | `BTC/USDT` |
+| `limit` | number | `100` (max. 720) |
 
 **Response:**
+
 ```json
 {
   "symbol": "BTC/USDT",
   "rates": {
     "binance": [
-      { "ts": 1704067200000, "rate": 0.0001 },
-      { "ts": 1704096000000, "rate": 0.00015 },
-      ...
-    ],
-    "bybit": [ ... ],
-    ...
+      { "ts": 1704067200000, "rate": 0.0001 }
+    ]
   }
 }
 ```
 
-**Hinweis:** Rates sind bereits auf 8h-Äquivalent normalisiert. Für APR: `rate * 3 * 365 * 100`.
+**Hinweis:** APR-Näherung: `rate * 3 * 365 * 100`.
 
 ---
 
@@ -218,63 +237,69 @@ Funding Rate History (8h-normalisiert).
 Aktuelles Open Interest (Snapshot).
 
 **Query Parameters:**
-- `symbol` (string, optional) – Trading-Paar (Standard: `BTC/USDT`)
+
+| Parameter | Typ | Standard |
+|-----------|-----|----------|
+| `symbol` | string | `BTC/USDT` |
 
 **Response:**
+
 ```json
 {
   "symbol": "BTC/USDT",
   "openInterest": {
-    "binance": { "oi": 5340000000, "ts": 1704067200000 },
-    "bybit": { "oi": 3040000000, "ts": 1704067200000 },
-    ...
+    "binance": { "oi": 5340000000, "ts": 1704067200000 }
   }
 }
 ```
 
-**Hinweis:** `oi` ist in USD. Für Deribit/Hyperliquid wird Runtime-History gespeichert.
+`oi` ist in USD. Für Deribit/Hyperliquid wird Runtime-History mitgeführt.
 
 ---
 
 #### `GET /api/open-interest-history`
 
-Open Interest Verlauf.
+Open-Interest-Verlauf.
 
 **Query Parameters:**
-- `symbol` (string, optional) – Trading-Paar (Standard: `BTC/USDT`)
-- `timeframe` (string, optional) – Zeitrahmen (Standard: `1h`)
-- `limit` (number, optional) – Anzahl (Standard: 168, Max: 720)
+
+| Parameter | Typ | Standard |
+|-----------|-----|----------|
+| `symbol` | string | `BTC/USDT` |
+| `timeframe` | string | `1h` |
+| `limit` | number | `168` (max. 720) |
 
 **Response:**
+
 ```json
 {
   "symbol": "BTC/USDT",
   "history": {
     "binance": [
-      { "ts": 1704067200000, "oi": 5340000000 },
-      { "ts": 1704070800000, "oi": 5350000000 },
-      ...
-    ],
-    "bybit": [ ... ],
-    ...
+      { "ts": 1704067200000, "oi": 5340000000 }
+    ]
   }
 }
 ```
 
-**Hinweis:** Für Deribit/Hyperliquid wird Runtime-History verwendet (falls verfügbar), sonst Flat-Line mit aktuellem Wert.
+Für Deribit/Hyperliquid: Runtime-History falls vorhanden, sonst Flat-Line mit aktuellem Wert.
 
 ---
 
-### Basis & Liquidations
+### Basis und Liquidations
 
 #### `GET /api/basis`
 
-Futures vs Spot Basis (Annualisiert).
+Futures-vs.-Spot-Basis (annualisiert).
 
 **Query Parameters:**
-- `symbol` (string, optional) – Trading-Paar (Standard: `BTC/USDT`)
+
+| Parameter | Typ | Standard |
+|-----------|-----|----------|
+| `symbol` | string | `BTC/USDT` |
 
 **Response:**
+
 ```json
 {
   "symbol": "BTC/USDT",
@@ -284,61 +309,65 @@ Futures vs Spot Basis (Annualisiert).
       "futures": 42050,
       "premium": 0.00119,
       "annualized": 0.00483
-    },
-    "bybit": { ... },
-    ...
+    }
   }
 }
 ```
 
-**Hinweis:** `annualized` ist für 3-Monats-Basis berechnet (`premium * 365 / 90`).
+`annualized` bezieht sich auf eine 3-Monats-Basis (`premium * 365 / 90`).
 
 ---
 
 #### `GET /api/liquidations`
 
-Geschätzte Liquidations (aggregiert über alle Exchanges).
+Geschätzte Liquidations (aggregiert).
 
 **Query Parameters:**
-- `symbol` (string, optional) – Trading-Paar (Standard: `BTC/USDT`)
-- `timeframe` (string, optional) – Zeitrahmen (Standard: `1h`)
-- `limit` (number, optional) – Anzahl (Standard: 168, Max: 720)
+
+| Parameter | Typ | Standard |
+|-----------|-----|----------|
+| `symbol` | string | `BTC/USDT` |
+| `timeframe` | string | `1h` |
+| `limit` | number | `168` (max. 720) |
 
 **Response:**
+
 ```json
 {
   "symbol": "BTC/USDT",
   "timeframe": "1h",
   "liquidations": [
-    { "ts": 1704067200000, "liq": 1234567 },
-    { "ts": 1704070800000, "liq": -987654 },
-    ...
+    { "ts": 1704067200000, "liq": 1234567 }
   ]
 }
 ```
 
-**Hinweis:** Positive Werte = Short Liquidations, Negative = Long Liquidations. Geschätzt aus OHLCV Volume-Spikes.
+Positive Werte: Short-Liquidations; negative Werte: Long-Liquidations. Schätzung aus OHLCV-Volumen-Spikes.
 
 ---
 
-### Order Books
+### Order Books (REST)
 
 #### `GET /api/orderbook`
 
-Single Exchange Order Book.
+Order Book einer Exchange.
 
 **Query Parameters:**
-- `exchange` (string, optional) – Exchange-ID (Standard: `binance`)
-- `symbol` (string, optional) – Trading-Paar (Standard: `BTC/USDT`)
-- `limit` (number, optional) – Anzahl Levels (Standard: 100, Max: 500)
+
+| Parameter | Typ | Standard |
+|-----------|-----|----------|
+| `exchange` | string | `binance` |
+| `symbol` | string | `BTC/USDT` |
+| `limit` | number | `100` (max. 500) |
 
 **Response:**
+
 ```json
 {
   "exchange": "binance",
   "symbol": "BTC/USDT",
-  "bids": [[42000, 1.5], [41999, 2.3], ...],
-  "asks": [[42001, 1.2], [42002, 3.4], ...],
+  "bids": [[42000, 1.5]],
+  "asks": [[42001, 1.2]],
   "timestamp": 1704067200000
 }
 ```
@@ -347,23 +376,25 @@ Single Exchange Order Book.
 
 #### `GET /api/orderbooks`
 
-Multi-Exchange Order Books.
+Order Books mehrerer Exchanges.
 
 **Query Parameters:**
-- `symbol` (string, optional) – Trading-Paar (Standard: `BTC/USDT`)
+
+| Parameter | Typ | Standard |
+|-----------|-----|----------|
+| `symbol` | string | `BTC/USDT` |
 
 **Response:**
+
 ```json
 {
   "symbol": "BTC/USDT",
   "orderbooks": {
     "binance": {
-      "bids": [[42000, 1.5], ...],
-      "asks": [[42001, 1.2], ...],
+      "bids": [[42000, 1.5]],
+      "asks": [[42001, 1.2]],
       "timestamp": 1704067200000
-    },
-    "bybit": { ... },
-    ...
+    }
   }
 }
 ```
@@ -379,9 +410,13 @@ Multi-Exchange Order Books.
 Übersicht: Indizes, CME Futures, Grayscale/ETFs, CME Basis.
 
 **Query Parameters:**
-- `symbol` (string, optional) – Trading-Paar (Standard: `BTC/USDT`)
+
+| Parameter | Typ | Standard |
+|-----------|-----|----------|
+| `symbol` | string | `BTC/USDT` |
 
 **Response:**
+
 ```json
 {
   "symbol": "BTC",
@@ -421,55 +456,78 @@ Multi-Exchange Order Books.
 Historische Chart-Daten (Yahoo Finance).
 
 **Query Parameters:**
-- `ticker` (string, required) – Yahoo Finance Ticker (z.B. `DX-Y.NYB`, `^GSPC`, `GC=F`)
-- `range` (string, optional) – Zeitraum: `1d`, `5d`, `1mo`, `3mo`, `6mo`, `1y`, `2y`, `5y`, `10y`, `ytd`, `max` (Standard: `1y`)
-- `interval` (string, optional) – Interval: `1m`, `2m`, `5m`, `15m`, `30m`, `60m`, `90m`, `1h`, `1d`, `5d`, `1wk`, `1mo`, `3mo` (Standard: `1d`)
+
+| Parameter | Typ | Standard | Beschreibung |
+|-----------|-----|----------|--------------|
+| `ticker` | string | — | **Pflicht**, z. B. `DX-Y.NYB`, `^GSPC` |
+| `range` | string | `1y` | `1d`, `5d`, `1mo`, `3mo`, `6mo`, `1y`, `2y`, `5y`, `10y`, `ytd`, `max` |
+| `interval` | string | `1d` | `1m`, `5m`, `15m`, `1h`, `1d`, `1wk`, `1mo`, … |
 
 **Response:**
+
 ```json
 {
   "ticker": "DX-Y.NYB",
   "range": "1y",
   "interval": "1d",
   "data": [
-    { "ts": 1704067200000, "open": 106.64, "high": 106.75, "low": 106.13, "close": 106.60, "volume": 0 },
-    ...
+    {
+      "ts": 1704067200000,
+      "open": 106.64,
+      "high": 106.75,
+      "low": 106.13,
+      "close": 106.60,
+      "volume": 0
+    }
   ]
 }
 ```
 
 **Cache:** 300 Sekunden
 
-**Verfügbare Ticker:**
-- `DX-Y.NYB` – DXY (US Dollar Index)
-- `^GSPC` – S&P 500
-- `GC=F` – Gold Futures
-- `^TNX` – US 10Y Treasury Yield
-- `BTC=F` – CME Bitcoin Futures
-- `ETH=F` – CME Ethereum Futures
-- `GBTC` – Grayscale Bitcoin Trust
-- `ETHE` – Grayscale Ethereum Trust
-- `IBIT` – iShares Bitcoin Trust ETF
-- `FBTC` – Fidelity Bitcoin ETF
+**Häufige Ticker:**
+
+| Ticker | Beschreibung |
+|--------|----------------|
+| `DX-Y.NYB` | US Dollar Index (DXY) |
+| `^GSPC` | S&P 500 |
+| `GC=F` | Gold Futures |
+| `^TNX` | US 10Y Treasury Yield |
+| `BTC=F` | CME Bitcoin Futures |
+| `ETH=F` | CME Ethereum Futures |
+| `GBTC` | Grayscale Bitcoin Trust |
+| `ETHE` | Grayscale Ethereum Trust |
+| `IBIT` | iShares Bitcoin Trust ETF |
+| `FBTC` | Fidelity Bitcoin ETF |
 
 ---
 
 #### `GET /api/tradfi/cme-history`
 
-CME Futures Preis- und Volumen-Historie.
+CME-Futures-Preis- und Volumen-Historie.
 
 **Query Parameters:**
-- `symbol` (string, optional) – Coin (Standard: `BTC`)
-- `range` (string, optional) – Zeitraum (Standard: `1y`)
+
+| Parameter | Typ | Standard |
+|-----------|-----|----------|
+| `symbol` | string | `BTC` |
+| `range` | string | `1y` |
 
 **Response:**
+
 ```json
 {
   "symbol": "BTC",
   "range": "1y",
   "data": [
-    { "ts": 1704067200000, "open": 66970, "high": 68450, "low": 66565, "close": 67825, "volume": 8398 },
-    ...
+    {
+      "ts": 1704067200000,
+      "open": 66970,
+      "high": 68450,
+      "low": 66565,
+      "close": 67825,
+      "volume": 8398
+    }
   ]
 }
 ```
@@ -478,31 +536,46 @@ CME Futures Preis- und Volumen-Historie.
 
 ---
 
-## Error Codes
+## HTTP-Fehlercodes
 
-- `400` – Bad Request (ungültige Parameter)
-- `500` – Internal Server Error
-- `504` – Gateway Timeout (Request dauerte länger als 120s)
-
----
-
-## Rate Limits
-
-- **Per Exchange:** 800-1200ms zwischen Requests
-- **Retry Logic:** Max 2 Retries mit Exponential Backoff
-- **Request Timeout:** 120 Sekunden
+| Code | Bedeutung |
+|------|-----------|
+| `400` | Ungültige Parameter |
+| `500` | Internal Server Error |
+| `504` | Gateway Timeout (über 120 s) |
 
 ---
 
-## WebSocket Endpoints
+## WebSocket (Client-seitig)
 
-Order Book Streams werden über WebSocket bereitgestellt (siehe `orderbookWs.js`):
+REST deckt historische und aggregierte Daten ab. Live-Streams werden im Frontend aufgebaut.
 
-- **Binance:** `wss://stream.binance.com:9443/ws/{symbol}@depth@100ms`
-- **Bybit:** `wss://stream.bybit.com/v5/public/spot`
-- **OKX:** `wss://ws.okx.com:8443/ws/v5/public`
-- **Coinbase:** `wss://ws-feed.exchange.coinbase.com`
+### Order Books (`orderbookWs.ts`)
+
+Verwendet in Trade View und Heatmap-Sidebar.
+
+| Exchange | Endpoint (Auszug) |
+|----------|-------------------|
+| Binance Spot | `wss://stream.binance.com:9443/ws/{symbol}@depth@1000ms` |
+| Bybit Spot | `wss://stream.bybit.com/v5/public/spot` |
+| OKX | `wss://ws.okx.com:8443/ws/v5/public` |
+| Coinbase | `wss://ws-feed.exchange.coinbase.com` |
+
+Updates werden gebündelt (ca. 150 ms) an die UI übergeben. Reconnect und Stale-Detection sind in den Stream-Factories implementiert.
+
+### Heatmap (`heatmapWorker.ts`)
+
+Direkt im Web Worker, nicht über das Backend:
+
+| Stream | Quelle |
+|--------|--------|
+| Klines | `wss://fstream.binance.com/stream` — `{symbol}@kline_{interval}` |
+| Liquidations | `{symbol}@forceOrder` |
+| CVD Perp | `{symbol}@aggTrade` (Futures) |
+| CVD Spot | `wss://stream.binance.com` — `{symbol}@aggTrade` |
+
+Worker-Messages an den Main Thread: u. a. `meta`, `candles`, `viewport`, `volProfile`, `fps`, `fatal`.
 
 ---
 
-**Letzte Aktualisierung:** Februar 2026
+**Letzte Aktualisierung:** Mai 2026
