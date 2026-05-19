@@ -7,10 +7,12 @@
     "dev": "node --watch index.js"
   },
   "dependencies": {
+    "cbor": "^9.0.2",
     "ccxt": "^4.2.0",
     "compression": "^1.8.1",
     "cors": "^2.8.5",
     "express": "^4.21.0",
+    "express-rate-limit": "^7.4.0",
     "protobufjs": "^8.0.0",
     "ws": "^8.19.0"
   }

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+.odin-sdk/
+**/*.wasm
+**/*.bin
+**/*.har
+**/captures/
+mmt-trade/
+students_workfolder/
+package-lock.json

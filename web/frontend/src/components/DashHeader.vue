@@ -3,8 +3,8 @@ import { computed } from 'vue';
 import NavMenu from './NavMenu.vue';
 
 const props = defineProps({
-  symbol: { type: String, default: '' },
-  view: { type: String, default: 'futures' },
+  symbol: { type: String, default: 'BTC/USDT' },
+  view: { type: String, default: 'heatmap' },
 });
 defineEmits(['navigate']);
 

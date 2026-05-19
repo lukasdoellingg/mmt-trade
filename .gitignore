@@ -1,49 +1,88 @@
-# Byte-compiled / optimized / DLL files
+# ── Python ────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Virtual environments
+# ── Virtual environments ──────────────────────────────────────────
 .venv/
 venv/
 env/
 ENV/
 
-# IDE
+# ── IDE ───────────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# Distribution / packaging
+# ── Build artifacts ───────────────────────────────────────────────
 build/
 dist/
 *.egg-info/
 *.egg
 
-# Environment and secrets
+# ── Environment and secrets ───────────────────────────────────────
 .env
-.env.local
+.env.*
+!.env.example
 *.pem
+*.key
+*.p12
+*.pfx
+secrets/
 
-# Logs and local data
+# ── Logs and local data ───────────────────────────────────────────
 *.log
 logs/
 data/
 *.db
 *.sqlite
 
-# OS
+# ── OS ────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# pytest / coverage
+# ── pytest / coverage ─────────────────────────────────────────────
 .pytest_cache/
 .coverage
 htmlcov/
 
-# mypy
+# ── mypy ──────────────────────────────────────────────────────────
 .mypy_cache/
 
-# Node
+# ── Node ──────────────────────────────────────────────────────────
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ── Captures, HAR, binary fixtures (large + may contain tokens) ──
+*.har
+*.bin
+*.heapsnapshot
+*.cpuprofile
+*.dmp
+captures/
+docs/captures/*.bin
+docs/captures/*.har
+
+# ── WASM artifacts (generated, not source) ────────────────────────
+web/frontend/public/engine.wasm
+web/frontend/public/terminal.wasm
+packages/shell/public/engine.wasm
+packages/shell/public/terminal.wasm
+.odin-sdk/
+
+# ── Reference MMT binaries (never commit, licensing unclear) ──────
+terminal.wasm
+terminal.js
+terminal.data
+
+# ── Legacy / snapshot directories pending user-confirmed deletion ──
+# Tracked by .gitignore to avoid accidental commits while we wait for
+# permission to remove them (see plan Phase 7 user-confirmation note).
+students_workfolder/
+/mmt-trade/
+

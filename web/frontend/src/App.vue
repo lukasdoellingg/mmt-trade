@@ -1,12 +1,18 @@
 <script setup lang="ts">
-import { ref, computed, markRaw } from 'vue';
-import StartScreen from './components/StartScreen.vue';
+import { ref, computed, markRaw, shallowRef } from 'vue';
 import DashHeader from './components/DashHeader.vue';
 import DashboardView from './views/DashboardView.vue';
 import TradeView from './views/TradeView.vue';
 import TradFiView from './views/TradFiView.vue';
 import TradFiMarketsView from './views/TradFiMarketsView.vue';
 import HeatmapView from './views/HeatmapView.vue';
+import {
+  DEFAULT_EXCHANGE,
+  DEFAULT_SYMBOL,
+  DEFAULT_TIMEFRAME,
+  DEFAULT_VIEW,
+} from './core/defaults';
+import type { AppView } from './core/types';
 
 const VIEW_MAP = {
   futures: markRaw(DashboardView),
@@ -16,40 +22,40 @@ const VIEW_MAP = {
   heatmap: markRaw(HeatmapView),
 };
 
-const selected = ref(null);
-const view = ref('futures');
-const exchange = ref('Binance');
-const symbol = ref(null);
-const timeframe = ref('1h');
+const view = ref<AppView>(DEFAULT_VIEW);
+const exchange = shallowRef(DEFAULT_EXCHANGE);
+const symbol = shallowRef(DEFAULT_SYMBOL);
+const timeframe = shallowRef(DEFAULT_TIMEFRAME);
 
-const viewComponent = computed(() => VIEW_MAP[view.value] || VIEW_MAP.futures);
+const viewComponent = computed(() => VIEW_MAP[view.value] || VIEW_MAP.heatmap);
 
-function onStart(cfg: { exchange: string; symbol: string; timeframe: string }) {
-  selected.value = cfg;
-  exchange.value = cfg.exchange;
-  symbol.value = cfg.symbol;
-  timeframe.value = cfg.timeframe;
-  view.value = 'futures';
+function onNavigate(v: string) {
+  if (v in VIEW_MAP) view.value = v as AppView;
 }
 
-function onNavigate(v: string) { view.value = v; }
+function onSymbolChange(payload: { exchange: string; symbol: string }) {
+  exchange.value = payload.exchange;
+  symbol.value = payload.symbol;
+}
 </script>
 
 <template>
   <div class="app">
-    <StartScreen v-if="!selected" @select="onStart" />
-    <template v-else>
-      <DashHeader :symbol="symbol" :view="view" @navigate="onNavigate" />
-      <KeepAlive>
-        <component
-          :is="viewComponent"
-          :symbol="symbol"
-          :exchange="exchange"
-          :timeframe="timeframe"
-          :key="view"
-        />
-      </KeepAlive>
-    </template>
+    <DashHeader
+      :symbol="symbol"
+      :view="view"
+      @navigate="onNavigate"
+    />
+    <KeepAlive>
+      <component
+        :is="viewComponent"
+        :symbol="symbol"
+        :exchange="exchange"
+        :timeframe="timeframe"
+        :key="view"
+        @symbol-change="onSymbolChange"
+      />
+    </KeepAlive>
   </div>
 </template>
 

@@ -1,0 +1,5 @@
+# Vendored Sokol / cimgui sources are downloaded via install-vendor.sh.
+# They contain a lot of binary content (fonts, baked tables) and have
+# their own licenses — keep them out of this repo's git history.
+*
+!.gitignore

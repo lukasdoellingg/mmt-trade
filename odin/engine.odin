@@ -1,5 +1,7 @@
 package engine
 
+import "core:math"
+
 // ═══════════════════════════════════════════════════════════════
 //  WebGL2 Chart Engine — Odin → WASM (freestanding, js_wasm32)
 //
@@ -8,10 +10,6 @@ package engine
 //  - Stride-based OHLC aggregation for zoomed-out rendering
 //  - Buffer-range rendering: WASM pre-computes a padded range,
 //    GPU pans within it via u_camera_x uniform (zero WASM cost)
-//  - Rolling VWAP D/W/M (sliding window, two-pointer O(n))
-//  - Key Levels: anchored on the latest candle's UTC date,
-//    looking back for D/W/M open/high/low + previous periods
-//  - Volume Profile: visible-range histogram with POC/VAH/VAL
 //  - ALL exported params are f64 for safe JS ↔ WASM ABI
 // ═══════════════════════════════════════════════════════════════
 
@@ -21,28 +19,16 @@ CANDLE_FIELDS :: 7
 LIQ_CAP       :: 600
 LIQ_FIELDS    :: 4
 
-// Key Levels: 16 slots × (price f64, kind i32, _pad i32) = 16 B
-KEY_LEVELS_CAP :: 16
-KEY_LEVEL_REC  :: 16
-
-// Volume profile bins
-VP_BINS_MAX :: 256
-
-// ── Memory layout ──
-// Region              Offset       Size (bytes)
-// POS (f32×4)         0x10000      800,000   50k instances
-// COL (f32×4)         0xD3500      800,000
-// LUT (u32)           0x196A00       1,024
-// CANDLE (f64×7)      0x196E00     280,000   5000 candles
-// EMA9 (f64)          0x1DB440      40,000
-// EMA21 (f64)         0x1E5080      40,000
-// LIQ (f64×4)         0x1EECC0      19,200
-// VWAP_D (f64)        0x1F3800      40,000
-// VWAP_W (f64)        0x1FD440      40,000
-// VWAP_M (f64)        0x207080      40,000
-// KEY_LEVELS          0x211000         256   16 × 16 B
-// VOL_PROFILE (f32)   0x211200       1,024   256 bins
-// Peak usage:         0x211600 ≈ 2,168,832 B → 34 pages
+// ── Memory layout (50k instances) ──
+// Region          Offset     Size (bytes)
+// POS (f32×4)     0x10000    800,000   50k instances
+// COL (f32×4)     0xD3500    800,000
+// LUT (u32)       0x196A00     1,024   256 entries
+// CANDLE (f64×7)  0x196E00   280,000   5000 candles
+// EMA9 (f64)      0x1DB440    40,000
+// EMA21 (f64)     0x1E5080    40,000
+// LIQ (f64×4)     0x1EECC0    19,200   600 events
+// Peak usage:     0x1F3600 ≈ 2,045,440 B → 32 pages
 // Target: 36 pages (2,359,296 B) for headroom
 
 POS_OFFSET    :: 0x10000
@@ -52,11 +38,6 @@ CANDLE_OFFSET :: 0x196E00
 EMA9_OFFSET   :: 0x1DB440
 EMA21_OFFSET  :: 0x1E5080
 LIQ_OFFSET    :: 0x1EECC0
-VWAP_D_OFFSET :: 0x1F3800
-VWAP_W_OFFSET :: 0x1FD440
-VWAP_M_OFFSET :: 0x207080
-KEY_LEVELS_OFFSET :: 0x211000
-VP_OFFSET         :: 0x211200
 
 // ── Mutable globals ──
 candle_count:  i32
@@ -71,28 +52,22 @@ buf_range_start: i32
 buf_range_end:   i32
 buf_x_step:      f32
 buf_inst_count:  i32
+vwap_d_price:    f64
+vwap_w_price:    f64
+vwap_m_price:    f64
+vwap_d_upper:    f64
+vwap_d_lower:    f64
+render_flags:    i32
 
-key_levels_count: i32
-vp_bins_count:    i32
-vp_max_vol:       f64
-vp_poc_price:     f64
-vp_vah_price:     f64
-vp_val_price:     f64
-vp_price_lo:      f64
-vp_price_hi:      f64
-
-// Indicator render flags (bitset). See set_indicator_flags below.
-//   bit 0  →  VWAP D segments
-//   bit 1  →  VWAP W segments
-//   bit 2  →  VWAP M segments
-//   bit 3  →  Key-level horizontal lines
-//   bit 4  →  Volume-profile bars (right-edge strip)
-indicator_flags: u32 = 0
-vp_strip_w:      f32 = 110.0     // logical CSS pixels (will be × dpr internally)
+RENDER_VWAP_D     :: 1
+RENDER_VWAP_W     :: 2
+RENDER_VWAP_M     :: 4
+RENDER_VWAP_BANDS :: 8
+RENDER_EMA        :: 16
+RENDER_LIQ        :: 32
 
 EMA9_K  :: 2.0 / 10.0
 EMA21_K :: 2.0 / 22.0
-LINE_THICK_LOGICAL :: 1.6        // CSS pixels (multiplied by dpr at emit)
 
 // ── Tiny helpers (inlined by compiler) ──
 @(private) clamp_i32 :: proc "contextless" (v, lo, hi: i32) -> i32 {
@@ -107,12 +82,6 @@ LINE_THICK_LOGICAL :: 1.6        // CSS pixels (multiplied by dpr at emit)
 @(private) ema9_buf  :: proc "contextless" () -> [^]f64 { return cast([^]f64) uintptr(EMA9_OFFSET) }
 @(private) ema21_buf :: proc "contextless" () -> [^]f64 { return cast([^]f64) uintptr(EMA21_OFFSET) }
 @(private) liq_buf   :: proc "contextless" () -> [^]f64 { return cast([^]f64) uintptr(LIQ_OFFSET) }
-@(private) vwap_d   :: proc "contextless" () -> [^]f64 { return cast([^]f64) uintptr(VWAP_D_OFFSET) }
-@(private) vwap_w   :: proc "contextless" () -> [^]f64 { return cast([^]f64) uintptr(VWAP_W_OFFSET) }
-@(private) vwap_m   :: proc "contextless" () -> [^]f64 { return cast([^]f64) uintptr(VWAP_M_OFFSET) }
-@(private) key_levels_f64 :: proc "contextless" () -> [^]f64 { return cast([^]f64) uintptr(KEY_LEVELS_OFFSET) }
-@(private) key_levels_i32 :: proc "contextless" () -> [^]i32 { return cast([^]i32) uintptr(KEY_LEVELS_OFFSET) }
-@(private) vp_bins  :: proc "contextless" () -> [^]f32 { return cast([^]f32) uintptr(VP_OFFSET) }
 
 // ── Candle field accessors (bounds assumed by caller) ──
 @(private) c_ts    :: proc "contextless" (i: i32) -> f64 { return candles()[i * CANDLE_FIELDS] }
@@ -129,13 +98,6 @@ LINE_THICK_LOGICAL :: 1.6        // CSS pixels (multiplied by dpr at emit)
 @export get_ema9_offset   :: proc "contextless" () -> i32 { return EMA9_OFFSET }
 @export get_ema21_offset  :: proc "contextless" () -> i32 { return EMA21_OFFSET }
 @export get_liq_offset    :: proc "contextless" () -> i32 { return LIQ_OFFSET }
-@export get_vwap_d_offset :: proc "contextless" () -> i32 { return VWAP_D_OFFSET }
-@export get_vwap_w_offset :: proc "contextless" () -> i32 { return VWAP_W_OFFSET }
-@export get_vwap_m_offset :: proc "contextless" () -> i32 { return VWAP_M_OFFSET }
-@export get_key_levels_offset :: proc "contextless" () -> i32 { return KEY_LEVELS_OFFSET }
-@export get_vol_profile_offset :: proc "contextless" () -> i32 { return VP_OFFSET }
-@export get_key_levels_cap :: proc "contextless" () -> i32 { return KEY_LEVELS_CAP }
-@export get_vp_bins_max :: proc "contextless" () -> i32 { return VP_BINS_MAX }
 
 // ── State getters ──
 @export get_candle_count    :: proc "contextless" () -> i32 { return candle_count }
@@ -147,21 +109,17 @@ LINE_THICK_LOGICAL :: 1.6        // CSS pixels (multiplied by dpr at emit)
 @export get_buf_range_end   :: proc "contextless" () -> i32 { return buf_range_end }
 @export get_buf_x_step      :: proc "contextless" () -> f32 { return buf_x_step }
 @export get_buf_inst_count  :: proc "contextless" () -> i32 { return buf_inst_count }
-@export get_key_levels_count :: proc "contextless" () -> i32 { return key_levels_count }
-@export get_vp_bins_count    :: proc "contextless" () -> i32 { return vp_bins_count }
-@export get_vp_max_vol       :: proc "contextless" () -> f64 { return vp_max_vol }
-@export get_vp_poc           :: proc "contextless" () -> f64 { return vp_poc_price }
-@export get_vp_vah           :: proc "contextless" () -> f64 { return vp_vah_price }
-@export get_vp_val           :: proc "contextless" () -> f64 { return vp_val_price }
-@export get_vp_lo            :: proc "contextless" () -> f64 { return vp_price_lo }
-@export get_vp_hi            :: proc "contextless" () -> f64 { return vp_price_hi }
+@export get_vwap_d          :: proc "contextless" () -> f64 { return vwap_d_price }
+@export get_vwap_w          :: proc "contextless" () -> f64 { return vwap_w_price }
+@export get_vwap_m          :: proc "contextless" () -> f64 { return vwap_m_price }
+@export get_vwap_d_upper    :: proc "contextless" () -> f64 { return vwap_d_upper }
+@export get_vwap_d_lower    :: proc "contextless" () -> f64 { return vwap_d_lower }
 
 // ── Setters ──
-@export set_candle_count    :: proc "contextless" (n: i32) { candle_count = clamp_i32(n, 0, MAX_CANDLES) }
-@export set_liq_count       :: proc "contextless" (n: i32) { liq_count = clamp_i32(n, 0, LIQ_CAP) }
-@export set_mid_price       :: proc "contextless" (p: f64) { mid_price = p }
-@export set_indicator_flags :: proc "contextless" (f: u32) { indicator_flags = f }
-@export set_vp_strip_w      :: proc "contextless" (w: f64) { vp_strip_w = f32(w) }
+@export set_candle_count :: proc "contextless" (n: i32) { candle_count = clamp_i32(n, 0, MAX_CANDLES) }
+@export set_liq_count    :: proc "contextless" (n: i32) { liq_count = clamp_i32(n, 0, LIQ_CAP) }
+@export set_mid_price    :: proc "contextless" (p: f64) { mid_price = p }
+@export set_render_flags :: proc "contextless" (f: i32) { render_flags = f }
 
 // ── LUT init ──
 @export
@@ -180,7 +138,7 @@ init_lut :: proc "contextless" () {
     }
     l[0] = 0; l[1] = 0
     mid_price = 0; candle_count = 0; liq_count = 0
-    key_levels_count = 0; vp_bins_count = 0
+    render_flags = RENDER_VWAP_D | RENDER_VWAP_W | RENDER_VWAP_M | RENDER_VWAP_BANDS | RENDER_EMA | RENDER_LIQ
 }
 
 // ── EMA ──
@@ -205,522 +163,8 @@ init_lut :: proc "contextless" () {
     ema9_buf()[idx] = ema9_val; ema21_buf()[idx] = ema21_val
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  ROLLING VWAP D/W/M — Two-pointer sliding window, O(n) per series.
-//  win_*_ms = lookback window in milliseconds (e.g. 24h / 7d / 30d).
-//  Writes results directly into VWAP_D/W/M memory regions.
-//
-//  Saves final window state in module-level globals so live ticks
-//  can be processed by update_vwap_last() in O(1).
-// ═══════════════════════════════════════════════════════════════
-
-// Persistent state captured at the END of the last full sweep, so live ticks
-// can patch the last bar without re-iterating the whole candle buffer.
-@(private) vwap_d_pv:       f64
-@(private) vwap_d_v:        f64
-@(private) vwap_d_j:        i32
-@(private) vwap_d_last_pv:  f64   // tp*vol contribution of the last bar
-@(private) vwap_d_last_vol: f64   // vol of the last bar
-@(private) vwap_w_pv:       f64
-@(private) vwap_w_v:        f64
-@(private) vwap_w_j:        i32
-@(private) vwap_w_last_pv:  f64
-@(private) vwap_w_last_vol: f64
-@(private) vwap_m_pv:       f64
-@(private) vwap_m_v:        f64
-@(private) vwap_m_j:        i32
-@(private) vwap_m_last_pv:  f64
-@(private) vwap_m_last_vol: f64
-
-@export
-compute_vwap_rolling :: proc "contextless" (win_d_ms, win_w_ms, win_m_ms: f64) {
-    if candle_count < 1 { return }
-
-    vd := vwap_d(); vw := vwap_w(); vm := vwap_m()
-
-    pv_d: f64 = 0; v_d: f64 = 0; j_d: i32 = 0
-    pv_w: f64 = 0; v_w: f64 = 0; j_w: i32 = 0
-    pv_m: f64 = 0; v_m: f64 = 0; j_m: i32 = 0
-    last_pv: f64 = 0; last_vol: f64 = 0
-
-    for i: i32 = 0; i < candle_count; i += 1 {
-        ts  := c_ts(i)
-        tp  := (c_high(i) + c_low(i) + c_close(i)) / 3.0
-        vol := c_vol(i)
-        pv  := tp * vol
-
-        pv_d += pv; v_d += vol
-        pv_w += pv; v_w += vol
-        pv_m += pv; v_m += vol
-
-        for j_d <= i {
-            if ts - c_ts(j_d) <= win_d_ms { break }
-            vj := c_vol(j_d)
-            pv_d -= (c_high(j_d) + c_low(j_d) + c_close(j_d)) / 3.0 * vj
-            v_d  -= vj
-            j_d += 1
-        }
-        for j_w <= i {
-            if ts - c_ts(j_w) <= win_w_ms { break }
-            vj := c_vol(j_w)
-            pv_w -= (c_high(j_w) + c_low(j_w) + c_close(j_w)) / 3.0 * vj
-            v_w  -= vj
-            j_w += 1
-        }
-        for j_m <= i {
-            if ts - c_ts(j_m) <= win_m_ms { break }
-            vj := c_vol(j_m)
-            pv_m -= (c_high(j_m) + c_low(j_m) + c_close(j_m)) / 3.0 * vj
-            v_m  -= vj
-            j_m += 1
-        }
-
-        if v_d > 0 { vd[i] = pv_d / v_d } else { vd[i] = tp }
-        if v_w > 0 { vw[i] = pv_w / v_w } else { vw[i] = tp }
-        if v_m > 0 { vm[i] = pv_m / v_m } else { vm[i] = tp }
-
-        last_pv = pv; last_vol = vol
-    }
-
-    // Persist trailing-window state for incremental live-tick updates.
-    vwap_d_pv = pv_d; vwap_d_v = v_d; vwap_d_j = j_d
-    vwap_w_pv = pv_w; vwap_w_v = v_w; vwap_w_j = j_w
-    vwap_m_pv = pv_m; vwap_m_v = v_m; vwap_m_j = j_m
-    vwap_d_last_pv = last_pv; vwap_d_last_vol = last_vol
-    vwap_w_last_pv = last_pv; vwap_w_last_vol = last_vol
-    vwap_m_last_pv = last_pv; vwap_m_last_vol = last_vol
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  INCREMENTAL VWAP — O(1) refresh of the LAST bar's value only.
-//  Use this on same-bar live ticks (OHLCV updated for current bar).
-//  For new-bar transitions, call compute_vwap_rolling instead.
-// ═══════════════════════════════════════════════════════════════
-@export
-update_vwap_last :: proc "contextless" (win_d_ms, win_w_ms, win_m_ms: f64) {
-    if candle_count < 1 { return }
-    last := candle_count - 1
-    ts   := c_ts(last)
-    tp   := (c_high(last) + c_low(last) + c_close(last)) / 3.0
-    vol  := c_vol(last)
-    pv   := tp * vol
-
-    vwap_d_pv += pv  - vwap_d_last_pv
-    vwap_d_v  += vol - vwap_d_last_vol
-    vwap_w_pv += pv  - vwap_w_last_pv
-    vwap_w_v  += vol - vwap_w_last_vol
-    vwap_m_pv += pv  - vwap_m_last_pv
-    vwap_m_v  += vol - vwap_m_last_vol
-
-    // Window may need to advance on long-running live bars; rare but covers
-    // edge cases when no full recompute has run for many minutes.
-    for vwap_d_j < last {
-        if ts - c_ts(vwap_d_j) <= win_d_ms { break }
-        vj := c_vol(vwap_d_j)
-        vwap_d_pv -= (c_high(vwap_d_j) + c_low(vwap_d_j) + c_close(vwap_d_j)) / 3.0 * vj
-        vwap_d_v  -= vj
-        vwap_d_j  += 1
-    }
-    for vwap_w_j < last {
-        if ts - c_ts(vwap_w_j) <= win_w_ms { break }
-        vj := c_vol(vwap_w_j)
-        vwap_w_pv -= (c_high(vwap_w_j) + c_low(vwap_w_j) + c_close(vwap_w_j)) / 3.0 * vj
-        vwap_w_v  -= vj
-        vwap_w_j  += 1
-    }
-    for vwap_m_j < last {
-        if ts - c_ts(vwap_m_j) <= win_m_ms { break }
-        vj := c_vol(vwap_m_j)
-        vwap_m_pv -= (c_high(vwap_m_j) + c_low(vwap_m_j) + c_close(vwap_m_j)) / 3.0 * vj
-        vwap_m_v  -= vj
-        vwap_m_j  += 1
-    }
-
-    vwap_d_last_pv = pv; vwap_d_last_vol = vol
-    vwap_w_last_pv = pv; vwap_w_last_vol = vol
-    vwap_m_last_pv = pv; vwap_m_last_vol = vol
-
-    vd := vwap_d(); vw := vwap_w(); vm := vwap_m()
-    if vwap_d_v > 0 { vd[last] = vwap_d_pv / vwap_d_v } else { vd[last] = tp }
-    if vwap_w_v > 0 { vw[last] = vwap_w_pv / vwap_w_v } else { vw[last] = tp }
-    if vwap_m_v > 0 { vm[last] = vwap_m_pv / vwap_m_v } else { vm[last] = tp }
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  KEY LEVELS — anchored on the latest candle (chart "now"),
-//  looking back for D / Prev-D / W / Prev-W / M / Prev-M
-//  open/high/low. Stored as (price: f64, kind: i32, pad: i32)
-//  records. Kind codes:
-//    0 D-Open, 1 D-High,  2 D-Low,
-//    3 PD-High, 4 PD-Low,
-//    5 W-Open, 6 W-High, 7 W-Low,
-//    8 PW-High, 9 PW-Low,
-//    10 M-Open, 11 PM-High, 12 PM-Low
-// ═══════════════════════════════════════════════════════════════
-
-MS_PER_DAY  :: 86_400_000.0
-MS_PER_WEEK :: 604_800_000.0
-
-// Howard Hinnant civil_from_days — returns (y, m, d) in UTC for unix day count.
-@(private)
-civil_from_days :: proc "contextless" (z: i64) -> (y: i32, mo: i32, d: i32) {
-    zz := z + 719468
-    era: i64 = zz / 146097
-    if zz < 0 && (zz % 146097) != 0 { era -= 1 }
-    doe := zz - era * 146097
-    if doe < 0 { doe = 0 }
-    doe_u := u64(doe)
-    yoe := (doe_u - doe_u / 1460 + doe_u / 36524 - doe_u / 146096) / 365
-    Y := i64(yoe) + era * 400
-    doy := doe_u - (365 * yoe + yoe / 4 - yoe / 100 + yoe / 400)
-    mp := (5 * doy + 2) / 153
-    dd := i32(doy - (153 * mp + 2) / 5 + 1)
-    mm: i32
-    if mp < 10 { mm = i32(mp) + 3 } else { mm = i32(mp) - 9 }
-    YY := i32(Y)
-    if mm <= 2 { YY += 1 }
-    return YY, mm, dd
-}
-
-@(private)
-days_from_civil :: proc "contextless" (y, mo, d: i32) -> i64 {
-    yy: i32 = y
-    if mo <= 2 { yy -= 1 }
-    era: i64
-    if yy >= 0 { era = i64(yy) / 400 } else { era = (i64(yy) - 399) / 400 }
-    yoe := u64(i64(yy) - era * 400)
-    mm: u64
-    if mo > 2 { mm = u64(mo - 3) } else { mm = u64(mo + 9) }
-    doy := (153 * mm + 2) / 5 + u64(d) - 1
-    doe := yoe * 365 + yoe / 4 - yoe / 100 + doy
-    return era * 146097 + i64(doe) - 719468
-}
-
-@(private)
-start_of_day_utc :: proc "contextless" (ts_ms: f64) -> f64 {
-    days := i64(ts_ms / MS_PER_DAY)
-    return f64(days) * MS_PER_DAY
-}
-
-@(private)
-start_of_week_utc :: proc "contextless" (ts_ms: f64) -> f64 {
-    // ISO Monday 00:00 UTC. Unix epoch is Thursday → +3 day shift.
-    OFFSET :: 3.0 * MS_PER_DAY
-    weeks := i64((ts_ms + OFFSET) / MS_PER_WEEK)
-    return f64(weeks) * MS_PER_WEEK - OFFSET
-}
-
-@(private)
-start_of_month_utc :: proc "contextless" (ts_ms: f64) -> f64 {
-    days := i64(ts_ms / MS_PER_DAY)
-    y, m, _ := civil_from_days(days)
-    return f64(days_from_civil(y, m, 1)) * MS_PER_DAY
-}
-
-// Scan candles within [start_ts, end_ts) and write (open, high, low) into outs.
-@(private)
-scan_bucket :: proc "contextless" (start_ts, end_ts: f64) -> (lo, hi, op: f64, ok: bool) {
-    lo = 1e308; hi = -1e308; op = 0
-    opened := false
-    for i: i32 = 0; i < candle_count; i += 1 {
-        ts := c_ts(i)
-        if ts < start_ts { continue }
-        if ts >= end_ts { break }
-        if !opened { op = c_open(i); opened = true }
-        h := c_high(i); l := c_low(i)
-        if h > hi { hi = h }
-        if l < lo { lo = l }
-    }
-    return lo, hi, op, opened
-}
-
-@(private)
-push_level :: proc "contextless" (price: f64, kind: i32) {
-    if key_levels_count >= KEY_LEVELS_CAP { return }
-    base := key_levels_count * 2          // record = 16 B = 2× f64
-    key_levels_f64()[base] = price
-    key_levels_i32()[base * 2 + 2] = kind // i32 at byte offset +8
-    key_levels_count += 1
-}
-
-@export
-compute_key_levels :: proc "contextless" () {
-    key_levels_count = 0
-    if candle_count < 2 { return }
-
-    anchor := c_ts(candle_count - 1)
-
-    d_start := start_of_day_utc(anchor)
-    d_end   := d_start + MS_PER_DAY
-    pd_start := d_start - MS_PER_DAY
-
-    w_start := start_of_week_utc(anchor)
-    w_end   := w_start + MS_PER_WEEK
-    pw_start := w_start - MS_PER_WEEK
-
-    m_start := start_of_month_utc(anchor)
-    pm_start := start_of_month_utc(m_start - 1.0)
-
-    // Current day
-    lo, hi, op, ok := scan_bucket(d_start, d_end)
-    if ok {
-        if op > 0 { push_level(op, 0) }
-        if hi > 0 { push_level(hi, 1) }
-        if lo < 1e308 && lo > 0 { push_level(lo, 2) }
-    }
-    // Previous day
-    lo, hi, op, ok = scan_bucket(pd_start, d_start)
-    if ok {
-        if hi > 0 { push_level(hi, 3) }
-        if lo < 1e308 && lo > 0 { push_level(lo, 4) }
-    }
-    // Current week
-    lo, hi, op, ok = scan_bucket(w_start, w_end)
-    if ok {
-        if op > 0 { push_level(op, 5) }
-        if hi > 0 { push_level(hi, 6) }
-        if lo < 1e308 && lo > 0 { push_level(lo, 7) }
-    }
-    // Previous week
-    lo, hi, op, ok = scan_bucket(pw_start, w_start)
-    if ok {
-        if hi > 0 { push_level(hi, 8) }
-        if lo < 1e308 && lo > 0 { push_level(lo, 9) }
-    }
-    // Current month (open only — H/L would shift constantly)
-    _, _, op, ok = scan_bucket(m_start, m_start + 32.0 * MS_PER_DAY)
-    if ok && op > 0 { push_level(op, 10) }
-    // Previous month
-    lo, hi, _, ok = scan_bucket(pm_start, m_start)
-    if ok {
-        if hi > 0 { push_level(hi, 11) }
-        if lo < 1e308 && lo > 0 { push_level(lo, 12) }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  VOLUME PROFILE — Visible-range histogram with POC/VAH/VAL.
-//  Bins typical-price-weighted volume into n_bins between
-//  [price_lo, price_hi]. Value area = 70% of total volume around POC.
-// ═══════════════════════════════════════════════════════════════
-
-VALUE_AREA_PCT :: 0.7
-
-@export
-compute_vol_profile :: proc "contextless" (vis_s_f, vis_e_f: f64, price_lo, price_hi: f64, n_bins_f: f64) {
-    vp_bins_count = 0
-    vp_max_vol = 0
-    vp_poc_price = 0; vp_vah_price = 0; vp_val_price = 0
-    vp_price_lo = price_lo; vp_price_hi = price_hi
-
-    if candle_count < 1 || price_hi <= price_lo { return }
-
-    n_bins := clamp_i32(i32(n_bins_f), 4, VP_BINS_MAX)
-    s := clamp_i32(i32(vis_s_f), 0, candle_count - 1)
-    e := clamp_i32(i32(vis_e_f), s + 1, candle_count)
-
-    bins := vp_bins()
-    for i: i32 = 0; i < n_bins; i += 1 { bins[i] = 0 }
-
-    span := price_hi - price_lo
-    scale := f64(n_bins) / span
-
-    total: f64 = 0
-    max_v: f32 = 0
-    poc: i32 = 0
-    for i := s; i < e; i += 1 {
-        tp := (c_high(i) + c_low(i) + c_close(i)) / 3.0
-        v := c_vol(i)
-        if v <= 0 { continue }
-        bi_f := (tp - price_lo) * scale
-        bi := i32(bi_f)
-        if bi < 0 { bi = 0 }; if bi >= n_bins { bi = n_bins - 1 }
-        bins[bi] += f32(v)
-        total += v
-        if bins[bi] > max_v { max_v = bins[bi]; poc = bi }
-    }
-
-    vp_bins_count = n_bins
-    vp_max_vol = f64(max_v)
-    if total <= 0 { return }
-
-    target := total * VALUE_AREA_PCT
-    cum := f64(bins[poc])
-    lo_b := poc
-    hi_b := poc
-    for cum < target {
-        up_v: f64 = -1
-        dn_v: f64 = -1
-        if hi_b + 1 < n_bins { up_v = f64(bins[hi_b + 1]) }
-        if lo_b - 1 >= 0     { dn_v = f64(bins[lo_b - 1]) }
-        if up_v < 0 && dn_v < 0 { break }
-        if up_v >= dn_v {
-            if hi_b + 1 < n_bins { hi_b += 1; cum += f64(bins[hi_b]) }
-            else if lo_b - 1 >= 0 { lo_b -= 1; cum += f64(bins[lo_b]) }
-        } else {
-            if lo_b - 1 >= 0 { lo_b -= 1; cum += f64(bins[lo_b]) }
-            else if hi_b + 1 < n_bins { hi_b += 1; cum += f64(bins[hi_b]) }
-        }
-    }
-    bin_w := span / f64(n_bins)
-    vp_poc_price = price_lo + (f64(poc) + 0.5) * bin_w
-    vp_vah_price = price_lo + f64(hi_b + 1) * bin_w
-    vp_val_price = price_lo + f64(lo_b) * bin_w
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  Indicator emit helpers — VWAP / Key Levels / Vol Profile
-//  Write quads directly into the WebGL POS/COL instance buffers.
-//  Negative width  →  screen-space (no camera_x shift in shader)
-// ═══════════════════════════════════════════════════════════════
-
-@(private)
-emit_quad :: proc "contextless" (
-    pos: [^]f32, col: [^]f32,
-    inst: i32, x, y, w, h, r, g, b, a: f32,
-) {
-    off := inst * 4
-    pos[off] = x; pos[off+1] = y; pos[off+2] = w; pos[off+3] = h
-    col[off] = r; col[off+1] = g; col[off+2] = b; col[off+3] = a
-}
-
-@(private)
-kl_color :: proc "contextless" (kind: i32) -> (r, g, b: f32) {
-    switch kind {
-    case  0: return 0.91, 0.91, 0.94   // D-Open
-    case  1: return 0.94, 0.75, 0.25   // D-High
-    case  2: return 0.94, 0.75, 0.25   // D-Low
-    case  3: return 0.88, 0.38, 0.94   // PD-High
-    case  4: return 0.35, 0.85, 0.66   // PD-Low
-    case  5: return 1.00, 1.00, 1.00   // W-Open
-    case  6: return 0.94, 0.75, 0.25   // W-High
-    case  7: return 0.94, 0.75, 0.25   // W-Low
-    case  8: return 0.88, 0.38, 0.94   // PW-High
-    case  9: return 0.35, 0.85, 0.66   // PW-Low
-    case 10: return 0.63, 0.66, 0.78   // M-Open
-    case 11: return 0.94, 0.31, 0.38   // PM-High
-    case 12: return 0.35, 0.63, 0.91   // PM-Low
-    case:    return 0.50, 0.50, 0.50
-    }
-}
-
-// Emits one VWAP series as bar-aligned thick horizontal segments +
-// vertical "step" connectors. Camera-space (positive width).
-@(private)
-emit_vwap_series :: proc "contextless" (
-    pos: [^]f32, col: [^]f32,
-    inst, limit: i32,
-    b_s, b_e, stride: i32,
-    x_step, max_p, inv_pr: f64,
-    line_h, ph: f32,
-    vwap_arr: [^]f64,
-    r, g, b: f32,
-) -> i32 {
-    cur := inst
-    half_h := line_h * 0.5
-    prev_y: f32 = 0
-    prev_x_right: f32 = 0
-    prev_valid := false
-    for raw := b_s; raw < b_e && raw < candle_count && cur < limit; raw += stride {
-        slot_end := raw + stride - 1
-        if slot_end >= candle_count { slot_end = candle_count - 1 }
-        val := vwap_arr[slot_end]
-        if val <= 0 { prev_valid = false; continue }
-        agg_i := (raw - b_s) / stride
-        x_left := f32(f64(agg_i) * x_step)
-        x_right := x_left + f32(x_step)
-        y := f32((max_p - val) * inv_pr)
-        if y >= -line_h && y <= ph + line_h {
-            emit_quad(pos, col, cur, x_left, y - half_h, f32(x_step), line_h, r, g, b, 0.95)
-            cur += 1
-        }
-        if prev_valid && cur < limit {
-            dy := y - prev_y
-            ady := dy
-            if ady < 0 { ady = -ady }
-            if ady > line_h {
-                y_top: f32 = prev_y
-                if dy > 0 { y_top = prev_y } else { y_top = y }
-                emit_quad(
-                    pos, col, cur,
-                    prev_x_right - half_h, y_top - half_h,
-                    line_h, ady + line_h,
-                    r, g, b, 0.95,
-                )
-                cur += 1
-            }
-        }
-        prev_y = y
-        prev_x_right = x_right
-        prev_valid = true
-    }
-    return cur
-}
-
-@(private)
-emit_key_levels :: proc "contextless" (
-    pos: [^]f32, col: [^]f32,
-    inst, limit: i32,
-    pw, ph: f32, max_p, inv_pr: f64, dpr: f32,
-) -> i32 {
-    cur := inst
-    klf := key_levels_f64()
-    kli := key_levels_i32()
-    line_h := dpr * 1.0
-    for i: i32 = 0; i < key_levels_count && cur < limit; i += 1 {
-        price := klf[i * 2]
-        kind  := kli[i * 4 + 2]
-        if kind < 0 || kind >= 13 { continue }
-        y := f32((max_p - price) * inv_pr)
-        if y < 0 || y > ph { continue }
-        r, g, b := kl_color(kind)
-        // Negative width → screen-space, spans whole plot
-        emit_quad(pos, col, cur, 0, y - line_h * 0.5, -pw, line_h, r, g, b, 0.82)
-        cur += 1
-    }
-    return cur
-}
-
-@(private)
-emit_vol_profile_bars :: proc "contextless" (
-    pos: [^]f32, col: [^]f32,
-    inst, limit: i32,
-    pw, ph: f32, max_p, inv_pr: f64, dpr: f32,
-) -> i32 {
-    cur := inst
-    if vp_bins_count <= 0 || vp_max_vol <= 0 { return cur }
-    bins := vp_bins()
-    strip := vp_strip_w * dpr
-    y_a := f32((max_p - vp_price_lo) * inv_pr)
-    y_b := f32((max_p - vp_price_hi) * inv_pr)
-    strip_top: f32; strip_bot: f32
-    if y_b < y_a { strip_top = y_b; strip_bot = y_a } else { strip_top = y_a; strip_bot = y_b }
-    if strip_bot <= strip_top + 1 { return cur }
-    strip_ph := strip_bot - strip_top
-    y_step := strip_ph / f32(vp_bins_count)
-    if y_step < 1 { y_step = 1 }
-    x_strip_left := pw - strip
-    inner_w := strip - 4 * dpr
-    if inner_w < 4 { inner_w = 4 }
-    max_v_f := f32(vp_max_vol)
-    bar_h := y_step - 1
-    if bar_h < 1 { bar_h = 1 }
-    for bi: i32 = 0; bi < vp_bins_count && cur < limit; bi += 1 {
-        v := bins[bi]
-        if !(v > 0) { continue }
-        w_bar := (v / max_v_f) * inner_w
-        if w_bar < 0.5 { continue }
-        y_top := strip_bot - (f32(bi) + 1) * y_step
-        if y_top < -y_step || y_top > ph { continue }
-        x_left := x_strip_left + strip - w_bar - 2 * dpr
-        // Negative width → screen-space
-        emit_quad(pos, col, cur, x_left, y_top, -w_bar, bar_h, 0.43, 0.63, 1.0, 0.62)
-        cur += 1
-    }
-    return cur
-}
-
 // ── Stride-aware OHLC aggregation ──
+// Merges [start .. min(start+stride, candle_count)) into one OHLC bar.
 @(private)
 agg_ohlc :: proc "contextless" (start, stride: i32) -> (o, h, l, c: f64) {
     if start < 0 || start >= candle_count {
@@ -740,6 +184,216 @@ agg_ohlc :: proc "contextless" (start, stride: i32) -> (o, h, l, c: f64) {
         if lo < l { l = lo }
     }
     return
+}
+
+// ── Date helpers (UTC) ──
+@(private)
+civil_from_days :: proc "contextless" (z0: i64) -> (year, month, day: i32) {
+    z := z0 + 719468
+    era: i64
+    if z >= 0 { era = z / 146097 } else { era = (z - 146096) / 146097 }
+    doe := z - era * 146097
+    yoe := (doe - doe/1460 + doe/36524 - doe/146096) / 365
+    y := yoe + era * 400
+    doy := doe - (365*yoe + yoe/4 - yoe/100)
+    mp := (5*doy + 2) / 153
+    d := doy - (153*mp + 2) / 5 + 1
+    m := mp + 3
+    if mp >= 10 { m = mp - 9 }
+    if m <= 2 { y += 1 }
+    year = i32(y)
+    month = i32(m)
+    day = i32(d)
+    return
+}
+
+VwapAccum :: struct {
+    num: f64,
+    den: f64,
+    num2: f64,
+}
+
+// Accumulate one candle into D/W/M VWAP buckets (UTC period resets).
+@(private)
+accumulate_vwap_candle :: proc "contextless" (
+    i: i32,
+    day_acc, week_acc, month_acc: ^VwapAccum,
+    last_day, last_week, last_month: ^i64,
+) {
+    if i < 0 || i >= candle_count { return }
+    ts := c_ts(i)
+    day_key, week_key, month_key := period_keys(ts)
+    if day_key != last_day^ {
+        day_acc^ = VwapAccum{}
+        last_day^ = day_key
+    }
+    if week_key != last_week^ {
+        week_acc^ = VwapAccum{}
+        last_week^ = week_key
+    }
+    if month_key != last_month^ {
+        month_acc^ = VwapAccum{}
+        last_month^ = month_key
+    }
+    v := c_vol(i)
+    if v <= 0 { return }
+    tp := (c_high(i) + c_low(i) + c_close(i)) / 3.0
+    tpv := tp * v
+    day_acc.num += tpv; day_acc.den += v; day_acc.num2 += tp * tpv
+    week_acc.num += tpv; week_acc.den += v
+    month_acc.num += tpv; month_acc.den += v
+}
+
+// Seed VWAP state from candle 0 .. until-1 so draw pass at b_s is correct mid-session.
+@(private)
+seed_vwap_until :: proc "contextless" (
+    until: i32,
+    day_acc, week_acc, month_acc: ^VwapAccum,
+    last_day, last_week, last_month: ^i64,
+) {
+    if until <= 0 { return }
+    for i: i32 = 0; i < until && i < candle_count; i += 1 {
+        accumulate_vwap_candle(i, day_acc, week_acc, month_acc, last_day, last_week, last_month)
+    }
+}
+
+// Last visible-bar VWAP levels (for Y-axis auto-fit before draw pass).
+@(private)
+visible_vwap_at :: proc "contextless" (end_i: i32) -> (d, w, m: f64) {
+    if end_i < 0 || end_i >= candle_count { return 0, 0, 0 }
+    day_acc := VwapAccum{}
+    week_acc := VwapAccum{}
+    month_acc := VwapAccum{}
+    last_day: i64 = -1
+    last_week: i64 = -1
+    last_month: i64 = -1
+    for i: i32 = 0; i <= end_i; i += 1 {
+        accumulate_vwap_candle(i, &day_acc, &week_acc, &month_acc, &last_day, &last_week, &last_month)
+    }
+    d = 0; w = 0; m = 0
+    if day_acc.den > 0 { d = day_acc.num / day_acc.den }
+    if week_acc.den > 0 { w = week_acc.num / week_acc.den }
+    if month_acc.den > 0 { m = month_acc.num / month_acc.den }
+    return
+}
+
+@(private)
+period_keys :: proc "contextless" (ts_ms: f64) -> (day_key, week_key, month_key: i64) {
+    d := i64(ts_ms) / 86_400_000
+    dow := (d + 3) % 7 // Monday=0 ... Sunday=6
+    if dow < 0 { dow += 7 }
+    day_key = d
+    week_key = d - dow
+    y, m, _ := civil_from_days(d)
+    month_key = i64(y) * 100 + i64(m)
+    return
+}
+
+LineState :: struct {
+    has_prev: bool,
+    prev_x: f32,
+    prev_y: f32,
+}
+
+@(private)
+append_rect :: proc "contextless" (
+    pos, col: [^]f32,
+    inst: ^i32,
+    limit: i32,
+    x, y, w, h, r, g, b, a: f32,
+) -> bool {
+    if inst^ >= limit { return false }
+    ww := w
+    hh := h
+    if ww < 1 { ww = 1 }
+    if hh < 1 { hh = 1 }
+    off := inst^ * 4
+    pos[off] = x
+    pos[off+1] = y
+    pos[off+2] = ww
+    pos[off+3] = hh
+    col[off] = r
+    col[off+1] = g
+    col[off+2] = b
+    col[off+3] = a
+    inst^ += 1
+    return true
+}
+
+@(private)
+draw_vwap_point :: proc "contextless" (
+    pos, col: [^]f32,
+    inst: ^i32,
+    limit: i32,
+    st: ^LineState,
+    x, y, th, r, g, b, a: f32,
+) {
+    if st.has_prev {
+        append_line_segment(pos, col, inst, limit, st.prev_x, st.prev_y, x, y, th, r, g, b, a)
+    }
+    st.prev_x = x; st.prev_y = y; st.has_prev = true
+}
+
+@(private)
+append_line_segment :: proc "contextless" (
+    pos, col: [^]f32,
+    inst: ^i32,
+    limit: i32,
+    x0, y0, x1, y1, th, r, g, b, a: f32,
+) {
+    dx := x1 - x0
+    dy := y1 - y0
+    if dx < 0 { dx = -dx }
+    if dy < 0 { dy = -dy }
+
+    // Near-horizontal: single rect
+    if dy < 1.5 {
+        lx := x0; rx := x1
+        if rx < lx { t := lx; lx = rx; rx = t }
+        w := rx - lx
+        if w < 1 { w = 1 }
+        avg_y := (y0 + y1) * 0.5
+        _ = append_rect(pos, col, inst, limit, lx, avg_y - th*0.5, w, th, r, g, b, a)
+        return
+    }
+
+    // Near-vertical: single rect
+    if dx < 1.5 {
+        ty := y0; by := y1
+        if by < ty { t := ty; ty = by; by = t }
+        h := by - ty
+        if h < 1 { h = 1 }
+        avg_x := (x0 + x1) * 0.5
+        _ = append_rect(pos, col, inst, limit, avg_x - th*0.5, ty, th, h, r, g, b, a)
+        return
+    }
+
+    // Diagonal: subdivide into small rects along the longer axis
+    steps := i32(dx)
+    if i32(dy) > steps { steps = i32(dy) }
+    seg_len := f32(4.0)  // each sub-segment covers ~4px
+    n_segs := steps / i32(seg_len) + 1
+    if n_segs < 2 { n_segs = 2 }
+    if n_segs > 120 { n_segs = 120 }
+
+    inv_n := 1.0 / f32(n_segs)
+    for s: i32 = 0; s < n_segs && inst^ < limit; s += 1 {
+        t0 := f32(s) * inv_n
+        t1 := f32(s + 1) * inv_n
+        sx := x0 + (x1 - x0) * t0
+        sy := y0 + (y1 - y0) * t0
+        ex := x0 + (x1 - x0) * t1
+        ey := y0 + (y1 - y0) * t1
+        lx := sx; rx := ex
+        if rx < lx { t := lx; lx = rx; rx = t }
+        ty := sy; by := ey
+        if by < ty { t := ty; ty = by; by = t }
+        rw := rx - lx
+        rh := by - ty
+        if rw < th { rw = th }
+        if rh < th { rh = th }
+        _ = append_rect(pos, col, inst, limit, lx, ty, rw, rh, r, g, b, a)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -774,18 +428,13 @@ update_chart_buffered :: proc "contextless" (
     b_s := clamp_i32(i32(buf_start_f), 0, max_idx)
     b_e := clamp_i32(i32(buf_end_f),   0, candle_count)
     v_s := clamp_i32(i32(vis_start_f),  0, max_idx)
-    // v_e_raw may exceed candle_count when the user pans past the live edge.
-    // We keep v_e clamped to candle_count for Y-axis fit + candle iteration,
-    // but use v_e_raw for x-step / vis_agg so empty space appears on the right.
-    v_e_raw := i32(vis_end_f)
-    if v_e_raw < v_s + 1 { v_e_raw = v_s + 1 }
-    v_e := clamp_i32(v_e_raw, 1, candle_count)
+    v_e := clamp_i32(i32(vis_end_f),    1, candle_count)
 
-    b_s = (b_s / stride) * stride
+    b_s = (b_s / stride) * stride   // align to stride boundary
     if b_e <= b_s { return 0 }
     if v_e <= v_s { return 0 }
 
-    vis_len := v_e_raw - v_s
+    vis_len := v_e - v_s
     buf_len := b_e - b_s
     vis_agg := (vis_len + stride - 1) / stride
     if vis_agg < 1 { vis_agg = 1 }
@@ -799,7 +448,25 @@ update_chart_buffered :: proc "contextless" (
     }
     data_range := data_hi - data_lo
     if data_range <= 0 { data_range = 1 }
-    pad := data_range * 0.05
+    pad := data_range * 0.06
+    if (render_flags & (RENDER_VWAP_D | RENDER_VWAP_W | RENDER_VWAP_M)) != 0 {
+        vis_end_i := clamp_i32(v_e - 1, 0, max_idx)
+        vd, vw, vm := visible_vwap_at(vis_end_i)
+        if (render_flags & RENDER_VWAP_D) != 0 && vd > 0 {
+            if vd > data_hi { data_hi = vd }
+            if vd < data_lo { data_lo = vd }
+        }
+        if (render_flags & RENDER_VWAP_W) != 0 && vw > 0 {
+            if vw > data_hi { data_hi = vw }
+            if vw < data_lo { data_lo = vw }
+        }
+        if (render_flags & RENDER_VWAP_M) != 0 && vm > 0 {
+            if vm > data_hi { data_hi = vm }
+            if vm < data_lo { data_lo = vm }
+        }
+        data_range = data_hi - data_lo
+        if data_range <= 0 { data_range = 1 }
+    }
     center     := (data_hi + data_lo) * 0.5 + y_offset
     half_range := (data_range + pad * 2) * 0.5 * y_scale
     min_p := center - half_range
@@ -812,14 +479,17 @@ update_chart_buffered :: proc "contextless" (
     out_max_price = max_p
     out_mid_price = c_close(clamp_i32(v_e - 1, 0, max_idx))
 
+    // ── X layout (TradingView-style proportional sizing) ──
     x_step := f64(pw) / f64(vis_agg)
 
+    // Body: 60% of slot width, capped so candles never become absurdly wide
     cw_f := x_step * 0.6
     if cw_f < 1 { cw_f = 1 }
     max_cw := f64(14 * dpr)
     if cw_f > max_cw { cw_f = max_cw }
     cw := f32(cw_f); half_cw := cw * 0.5
 
+    // Wick: proportional to body width (like TradingView), min 1px, max ~2px
     wk_w := cw * 0.15
     if wk_w < dpr { wk_w = dpr }
     max_wk := dpr * 2.0
@@ -838,7 +508,7 @@ update_chart_buffered :: proc "contextless" (
         ao, ah, al, ac := agg_ohlc(raw, stride)
         agg_i  := (raw - b_s) / stride
         x_raw  := f32(f64(agg_i) * x_step + x_step * 0.5)
-        x      := f32(i32(x_raw + 0.5))
+        x      := f32(i32(x_raw + 0.5))  // snap to pixel grid
         y_hi   := f32(i32(f32((max_p - ah) * inv_pr) + 0.5))
         y_lo   := f32(i32(f32((max_p - al) * inv_pr) + 0.5))
         wh     := y_lo - y_hi; if wh < 1 { wh = 1 }
@@ -861,6 +531,7 @@ update_chart_buffered :: proc "contextless" (
         y_top, y_bot: f32
         if bull { y_top = f32((max_p - ac) * inv_pr); y_bot = f32((max_p - ao) * inv_pr) }
         else    { y_top = f32((max_p - ao) * inv_pr); y_bot = f32((max_p - ac) * inv_pr) }
+        // Snap to pixel grid: floor top, ceil bottom → no sub-pixel gaps
         yt := f32(i32(y_top))
         yb := f32(i32(y_bot + 1.0))
         bh := yb - yt; if bh < 1 { bh = 1 }
@@ -873,18 +544,24 @@ update_chart_buffered :: proc "contextless" (
     }
 
     // ── Liquidation markers ──
-    if liq_count > 0 && b_s < candle_count && buf_len > 0 {
+    // Bin liquidations by raw candle, then floor-divide to the aggregated
+    // slot so X matches the candle body that contains the event.
+    //
+    //   raw_bin    = (lt - t0) / candle_ms
+    //   slot       = floor(raw_bin / stride)
+    //   x          = (slot + 0.5) * x_step   <- identical to candle wick/body
+    if (render_flags & RENDER_LIQ) != 0 && liq_count > 0 && b_s < candle_count && buf_len > 0 {
         t0 := c_ts(b_s)
-        t1 := c_ts(clamp_i32(b_e - 1, 0, max_idx))
-        t_range := t1 - t0; if t_range < candle_ms { t_range = candle_ms }
-        buf_agg := (buf_len + stride - 1) / stride
-        if buf_agg < 1 { buf_agg = 1 }
+        t_last := c_ts(clamp_i32(b_e - 1, 0, max_idx))
+        inv_stride := 1.0 / f64(stride)
         for i: i32 = 0; i < liq_count && inst < limit; i += 1 {
             base := int(i) * LIQ_FIELDS
             lt := liq_buf()[base]; lp := liq_buf()[base+1]
             lq := liq_buf()[base+2]; ls := liq_buf()[base+3]
-            if lt < t0 || lt > t1 + candle_ms { continue }
-            xf := f32((lt - t0) / t_range * f64(buf_agg) * x_step)
+            if lt < t0 || lt > t_last + candle_ms { continue }
+            raw_bin_f := (lt - t0) / candle_ms
+            slot_f := raw_bin_f * inv_stride
+            xf := f32(slot_f * x_step + x_step * 0.5)
             yf := f32((max_p - lp) * inv_pr)
             if yf < 0 || yf > ph { continue }
             sz := lq * lp / 1000.0
@@ -900,22 +577,150 @@ update_chart_buffered :: proc "contextless" (
         }
     }
 
-    // ── Indicator passes (GPU-rendered as instanced quads) ──
-    line_h := f32(LINE_THICK_LOGICAL) * dpr
-    if (indicator_flags & 0x1) != 0 {
-        inst = emit_vwap_series(pos, col, inst, limit, b_s, b_e, stride, x_step, max_p, inv_pr, line_h, ph, vwap_d(), 0.94, 0.75, 0.25)
+    // ── VWAP suite (daily/weekly/monthly, UTC anchors) — MMT.gg / TradingView style ──
+    //
+    // Sample VWAP/EMA at the **same X positions as the candle bodies** — one
+    // sample per aggregated slot, placed at slot-centre `(agg_i + 0.5) * x_step`.
+    //
+    // The volume accumulator still advances per raw candle so the daily/weekly/
+    // monthly period resets land exactly on the right candle. But we only emit
+    // a line point when we cross into a new slot (or hit a period reset, or
+    // reach the buffer's last raw). This guarantees pixel-perfect alignment
+    // between the VWAP line and the candle body it sits on, at any stride.
+    vwap_d_price = 0; vwap_w_price = 0; vwap_m_price = 0
+    vwap_d_upper = 0; vwap_d_lower = 0
+    vwap_on := (render_flags & (RENDER_VWAP_D | RENDER_VWAP_W | RENDER_VWAP_M)) != 0
+    if vwap_on && b_s < candle_count && inst < limit {
+        line_th := dpr * 1.35
+        if line_th < 1.5 { line_th = 1.5 }
+        band_th := line_th * 0.85
+        if band_th < 1 { band_th = 1 }
+
+        day_r, day_g, day_b, day_a         := f32(0.941), f32(0.757), f32(0.188), f32(0.92)
+        week_r, week_g, week_b, week_a     := f32(0.937), f32(0.310), f32(0.557), f32(0.88)
+        month_r, month_g, month_b, month_a := f32(0.247), f32(0.827), f32(0.894), f32(0.88)
+        band_a := f32(0.42)
+
+        last_day: i64 = -1
+        last_week: i64 = -1
+        last_month: i64 = -1
+
+        day_acc := VwapAccum{}
+        week_acc := VwapAccum{}
+        month_acc := VwapAccum{}
+
+        seed_vwap_until(b_s, &day_acc, &week_acc, &month_acc, &last_day, &last_week, &last_month)
+
+        day_state := LineState{}
+        week_state := LineState{}
+        month_state := LineState{}
+        day_up_st := LineState{}
+        day_lo_st := LineState{}
+
+        last_emitted_slot: i32 = -1
+        for raw := b_s; raw < b_e && raw < candle_count; raw += 1 {
+            if inst >= limit { break }
+            prev_day := last_day
+            prev_week := last_week
+            prev_month := last_month
+            accumulate_vwap_candle(raw, &day_acc, &week_acc, &month_acc, &last_day, &last_week, &last_month)
+            if last_day != prev_day && prev_day >= 0 {
+                day_state = LineState{}
+                day_up_st = LineState{}
+                day_lo_st = LineState{}
+            }
+            if last_week != prev_week && prev_week >= 0 { week_state = LineState{} }
+            if last_month != prev_month && prev_month >= 0 { month_state = LineState{} }
+
+            slot := (raw - b_s) / stride
+            is_slot_last := raw == b_e - 1 || raw == candle_count - 1 || ((raw - b_s) + 1) % stride == 0
+            period_reset := last_day != prev_day || last_week != prev_week || last_month != prev_month
+            if !is_slot_last && !period_reset { continue }
+            if slot == last_emitted_slot && !period_reset { continue }
+            last_emitted_slot = slot
+
+            x_raw := f32(f64(slot) * x_step + x_step * 0.5)
+            x := f32(i32(x_raw + 0.5))
+
+            if (render_flags & RENDER_VWAP_D) != 0 && day_acc.den > 0 {
+                dv := day_acc.num / day_acc.den
+                vwap_d_price = dv
+                y := f32(i32(f32((max_p - dv) * inv_pr) + 0.5))
+                draw_vwap_point(pos, col, &inst, limit, &day_state, x, y, line_th, day_r, day_g, day_b, day_a)
+
+                if (render_flags & RENDER_VWAP_BANDS) != 0 {
+                    var_f := day_acc.num2/day_acc.den - dv*dv
+                    if var_f < 0 { var_f = 0 }
+                    std := math.sqrt(var_f)
+                    vwap_d_upper = dv + std
+                    vwap_d_lower = dv - std
+                    y_up := f32(i32(f32((max_p - vwap_d_upper) * inv_pr) + 0.5))
+                    y_lo := f32(i32(f32((max_p - vwap_d_lower) * inv_pr) + 0.5))
+                    draw_vwap_point(pos, col, &inst, limit, &day_up_st, x, y_up, band_th, day_r, day_g, day_b, band_a)
+                    draw_vwap_point(pos, col, &inst, limit, &day_lo_st, x, y_lo, band_th, day_r, day_g, day_b, band_a)
+                }
+            }
+
+            if (render_flags & RENDER_VWAP_W) != 0 && week_acc.den > 0 {
+                wv := week_acc.num / week_acc.den
+                vwap_w_price = wv
+                y := f32(i32(f32((max_p - wv) * inv_pr) + 0.5))
+                draw_vwap_point(pos, col, &inst, limit, &week_state, x, y, line_th, week_r, week_g, week_b, week_a)
+            }
+
+            if (render_flags & RENDER_VWAP_M) != 0 && month_acc.den > 0 {
+                mv := month_acc.num / month_acc.den
+                vwap_m_price = mv
+                y := f32(i32(f32((max_p - mv) * inv_pr) + 0.5))
+                draw_vwap_point(pos, col, &inst, limit, &month_state, x, y, line_th, month_r, month_g, month_b, month_a)
+            }
+        }
+
+        // Project current daily VWAP to the right edge of the buffer
+        // (MMT/TradingView style — flat extension into the empty future zone).
+        last_slot := (buf_len - 1) / stride + 1
+        x_right := f32(f64(last_slot) * x_step)
+        if (render_flags & RENDER_VWAP_D) != 0 && day_state.has_prev && vwap_d_price > 0 {
+            append_line_segment(pos, col, &inst, limit, day_state.prev_x, day_state.prev_y, x_right, day_state.prev_y, line_th, day_r, day_g, day_b, day_a)
+        }
     }
-    if (indicator_flags & 0x2) != 0 {
-        inst = emit_vwap_series(pos, col, inst, limit, b_s, b_e, stride, x_step, max_p, inv_pr, line_h, ph, vwap_w(), 0.25, 0.63, 0.94)
-    }
-    if (indicator_flags & 0x4) != 0 {
-        inst = emit_vwap_series(pos, col, inst, limit, b_s, b_e, stride, x_step, max_p, inv_pr, line_h, ph, vwap_m(), 0.88, 0.38, 0.94)
-    }
-    if (indicator_flags & 0x8) != 0 && key_levels_count > 0 {
-        inst = emit_key_levels(pos, col, inst, limit, pw, ph, max_p, inv_pr, dpr)
-    }
-    if (indicator_flags & 0x10) != 0 {
-        inst = emit_vol_profile_bars(pos, col, inst, limit, pw, ph, max_p, inv_pr, dpr)
+
+    // ── EMA 9 / EMA 21 — one sample per aggregated slot at slot-centre X ──
+    //
+    // EMA itself is computed per raw candle in `recompute_ema`; here we just
+    // pick the EMA value at the **last raw of each slot** (most recent close
+    // in that aggregation window) and draw a line through the slot centres.
+    if (render_flags & RENDER_EMA) != 0 && candle_count >= 2 && b_s < candle_count && inst < limit {
+        ema9 := ema9_buf()
+        ema21 := ema21_buf()
+        line_th := dpr * 1.35
+        if line_th < 1.5 { line_th = 1.5 }
+        e9r, e9g, e9b, e9a := f32(1.0), f32(0.85), f32(0.2), f32(0.95)
+        e21r, e21g, e21b, e21a := f32(0.55), f32(0.45), f32(1.0), f32(0.88)
+
+        ema9_st := LineState{}
+        ema21_st := LineState{}
+        for raw := b_s; raw < b_e && raw < candle_count && inst < limit; raw += stride {
+            slot_last := raw + stride - 1
+            if slot_last >= b_e { slot_last = b_e - 1 }
+            if slot_last >= candle_count { slot_last = candle_count - 1 }
+            slot := (raw - b_s) / stride
+
+            x_raw := f32(f64(slot) * x_step + x_step * 0.5)
+            x := f32(i32(x_raw + 0.5))
+            p9 := ema9[slot_last]
+            p21 := ema21[slot_last]
+            y9 := f32(i32(f32((max_p - p9) * inv_pr) + 0.5))
+            y21 := f32(i32(f32((max_p - p21) * inv_pr) + 0.5))
+            if ema9_st.has_prev {
+                append_line_segment(pos, col, &inst, limit, ema9_st.prev_x, ema9_st.prev_y, x, y9, line_th, e9r, e9g, e9b, e9a)
+            }
+            if ema21_st.has_prev {
+                append_line_segment(pos, col, &inst, limit, ema21_st.prev_x, ema21_st.prev_y, x, y21, line_th, e21r, e21g, e21b, e21a)
+            }
+            ema9_st.prev_x = x; ema9_st.prev_y = y9; ema9_st.has_prev = true
+            ema21_st.prev_x = x; ema21_st.prev_y = y21; ema21_st.has_prev = true
+        }
     }
 
     buf_inst_count = inst

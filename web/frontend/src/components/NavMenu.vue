@@ -6,11 +6,11 @@ const emit = defineEmits(['navigate']);
 const open = ref(false);
 
 const ITEMS = [
+  { id: 'heatmap', label: 'Heatmap' },
   { id: 'chart', label: 'Chart' },
   { id: 'futures', label: 'Futures' },
   { id: 'cme', label: 'CME + ETF' },
   { id: 'tradfi', label: 'TradFi' },
-  { id: 'heatmap', label: 'Heatmap' },
 ];
 
 function go(id: string) {

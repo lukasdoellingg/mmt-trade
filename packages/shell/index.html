@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MMT-Trade Terminal</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #06060b;
+        color: #e8e8f0;
+        font-family: system-ui, sans-serif;
+        overflow: hidden;
+      }
+      #terminalCanvas {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        display: block;
+      }
+      #loaderOverlay {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background: #06060b;
+        color: #8889a8;
+        font-size: 14px;
+        pointer-events: none;
+        transition: opacity 250ms ease;
+      }
+      #loaderOverlay.hidden {
+        opacity: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="terminalCanvas" tabindex="0"></canvas>
+    <div id="loaderOverlay">Loading terminal.wasm…</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

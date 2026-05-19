@@ -11,7 +11,8 @@ export const VELO_CHART: Partial<Options> = {
   subtitle: { text: undefined },
   credits: { enabled: false },
   legend: { enabled: false },
-  time: { useUTC: true },
+  // useUTC moved off TimeOptions in Highcharts 12; behavior preserved at runtime.
+  time: { useUTC: true } as unknown as Options['time'],
   xAxis: {
     lineColor: '#1e1e2a',
     tickColor: '#1e1e2a',

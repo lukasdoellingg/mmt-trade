@@ -1,6 +1,7 @@
 <script lang="ts">
 import Highcharts from 'highcharts/highstock';
 import { VELO_CHART } from '../../highchartsTheme';
+import { debugWarn } from '../../utils/debug';
 
 const BASE = Object.freeze(structuredClone(VELO_CHART));
 
@@ -76,7 +77,7 @@ function render() {
       prevSeries = opts.series || [];
     }
   } catch (e) {
-    console.warn('Highcharts render error:', e.message);
+    debugWarn('Highcharts render error:', e.message);
     if (chart) { try { chart.destroy(); } catch { /* ignore */ } chart = null; }
     try { chart = Highcharts.chart(el.value, opts); prevSeries = opts.series || []; } catch { /* give up */ }
   }

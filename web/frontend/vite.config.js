@@ -10,7 +10,18 @@ export default defineConfig({
       '/ws': { target: 'ws://localhost:3001', ws: true },
     },
     headers: {
+      // Enable SharedArrayBuffer for the WASM engine and its workers.
+      // Required by emscripten_create_wasm_worker.
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+      'Cross-Origin-Resource-Policy': 'same-origin',
       'Cache-Control': 'no-store',
+    },
+  },
+  preview: {
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
     },
   },
   worker: {

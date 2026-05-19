@@ -1,0 +1,17 @@
+{
+  "name": "@mmt-trade/shell",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal HTML/TS bootloader that loads odin.js + terminal.wasm under COOP/COEP",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^5.4.0"
+  }
+}

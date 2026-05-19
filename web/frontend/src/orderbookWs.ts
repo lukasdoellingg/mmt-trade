@@ -46,8 +46,11 @@ type ConnectFn = (ctx: StreamContext) => WebSocket;
 
 function apply(map: BookMap, levels: unknown[][]): void {
   for (let i = 0; i < levels.length; i++) {
-    const p = String(levels[i][0]), q = +levels[i][1];
-    q === 0 ? map.delete(p) : map.set(p, q);
+    const row = levels[i];
+    const p = String(row[0]);
+    const q = Number(row[1]);
+    if (q === 0) map.delete(p);
+    else map.set(p, q);
   }
 }
 
