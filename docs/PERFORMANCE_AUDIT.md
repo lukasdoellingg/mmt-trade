@@ -49,7 +49,9 @@ Probes already in the repo:
 Open TODOs (entered after Phase 5 lands):
 
 - [x] `useChartLayers.ts` `postTimeAxis` allocates a `Float64Array(n)` per sync — triple-buffer pool (`candleBufferPool.ts`).
-- [ ] `OrderFlowLadderWidget.vue` `drawBars` allocates a fresh `CanvasGradient` per bar — switch to a sprite-sheet/atlas approach once we're in Odin.
+- [x] `OrderFlowLadderWidget.vue` `drawBars` allocates a fresh `CanvasGradient` per bar — solid fill + `globalAlpha` (ask/bid palette constants).
+- [x] Chart canvas backing store capped at 3840 px / DPR 1.5 (`chartDisplayMetrics.ts`) — ~35% fewer GPU pixels on 4K.
+- [x] `ChartOverlayRenderer.drawAxisChrome` time labels used undefined `cf`/`tf` — fixed (axis timestamps were blank).
 - [x] `heatmapWorker` WS handler — `JSON.parse` replaced with `binanceWsParse.ts` field extractors.
 - [x] `obHeatmapWorker` / `footprintLayerWorker` snapshot `.slice()` — recycled column pools (`columnBufferPool.ts`).
 

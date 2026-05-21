@@ -2,6 +2,7 @@
  * MMT-style Footprint — per-candle buy/sell bins (Binance aggTrade).
  */
 export {}; // make this file a module so its top-level consts don't clash with other workers
+import { parseBinanceAggTrade } from './binanceWsParse';
 import { createFloatColumnPool } from './columnBufferPool';
 const MARGIN_RIGHT = 80;
 const MARGIN_BOTTOM = 32;
@@ -43,7 +44,7 @@ let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let animId = 0;
 
 const snapshotByTs = new Map<number, Float32Array>();
-const _fpPool = createFloatColumnPool(PRICE_BINS * FP_FIELDS);
+const fpPool = createFloatColumnPool(PRICE_BINS * FP_FIELDS);
 let liveTs = 0;
 let liveFp: Float32Array | undefined = undefined;
 let refVolume = 1;

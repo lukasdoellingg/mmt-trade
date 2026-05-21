@@ -30,6 +30,7 @@ import {
 } from '../chart/useChartViewport';
 import { createKineticControl } from '../chart/useChartKinetic';
 import { createLayerRunner } from '../chart/useChartLayers';
+import { chartCanvasPixelSize, chartDevicePixelRatio } from '../chart/chartDisplayMetrics';
 import { busEmit } from '../workspace/widgetBus';
 import { debugWarn } from '../utils/debug';
 import WorkspaceWidget from '../workspace/WorkspaceWidget.vue';
@@ -67,7 +68,7 @@ const timeScale = new ChartTimeScale(0.5, 2);
 const viewport = createViewportState();
 const kinetic = createKineticControl();
 
-const DPR = Math.min(window.devicePixelRatio || 1, 2);
+const DPR = chartDevicePixelRatio();
 const MR = 80,
   MB = 32;
 let W = 800,
@@ -188,16 +189,21 @@ const vpLayer = createLayerRunner({
   },
 });
 
-// ── Overlay axis fan-out (debounced to one RAF) ─────────────────────
+// ── Overlay axis fan-out (debounced — idle when possible) ─────────
 function scheduleOverlayAxisSync(): void {
   if (overlayAxisPending) return;
   overlayAxisPending = true;
-  requestAnimationFrame(() => {
+  const flush = () => {
     overlayAxisPending = false;
     obLayer.postTimeAxis(viewport, settings.timeframe);
     fpLayer.postTimeAxis(viewport, settings.timeframe);
     vpLayer.postTimeAxis(viewport, settings.timeframe);
-  });
+  };
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(flush, { timeout: 32 });
+  } else {
+    requestAnimationFrame(flush);
+  }
 }
 
 // ── Viewport helpers (delegate to timeScale + viewport state) ───────
@@ -502,8 +508,9 @@ function resize(): void {
   const r = wrap.getBoundingClientRect();
   rectCache = r;
   rectCacheT = performance.now();
-  W = Math.max(200, (r.width * DPR) | 0);
-  H = Math.max(200, (r.height * DPR) | 0);
+  const px = chartCanvasPixelSize(r.width, r.height);
+  W = px.w;
+  H = px.h;
   PW = W - MR * DPR;
   PH = H - MB * DPR;
   for (const c of [gridCanvas.value, crossCanvas.value]) {

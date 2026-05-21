@@ -152,8 +152,8 @@ export class ChartOverlayRenderer {
     visEnd: number,
     candleSnapshotBuffer: Float64Array,
     candleSnapshotCount: number,
-    _cf: number,
-    _tf: string,
+    cf: number,
+    tf: string,
   ): void {
     const { W, H, PW, PH, DPR } = L;
 
