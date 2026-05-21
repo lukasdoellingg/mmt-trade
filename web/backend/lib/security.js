@@ -11,7 +11,12 @@
 
 import rateLimit from 'express-rate-limit';
 
-export const DEFAULT_DEV_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173'];
+export const DEFAULT_DEV_ORIGINS = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:5174',
+  'http://127.0.0.1:5174',
+];
 
 export function parseAllowedCorsOrigins(envValue) {
   if (!envValue || envValue === '*') return DEFAULT_DEV_ORIGINS.slice();
@@ -71,7 +76,38 @@ export function createRateLimiters() {
     legacyHeaders: false,
     message: { error: 'Order-book rate limit exceeded' },
   });
-  return { restLimiter, orderBookLimiter };
+  // Symbol-discovery endpoints are heavy (cross-venue calls) but called once
+  // per user action; cap at 60/min so a runaway client can't sweep the
+  // exchange list every frame.
+  const symbolsLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 60,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    message: { error: 'Symbol discovery rate limit exceeded' },
+  });
+  return { restLimiter, orderBookLimiter, symbolsLimiter };
+}
+
+// ── Token / URL redaction for log lines ─────────────────────────────
+
+const TOKEN_PARAM_NAMES = ['token', 'api_key', 'apiKey', 'access_token'];
+
+/**
+ * Strip query-string tokens from a URL before it hits a log line.
+ *
+ * MMT v2 carries the user's Supabase JWT in `?token=`, and we proxy that
+ * through. Any `console.*` or `pino` call that touches a request URL goes
+ * through this helper first.
+ */
+export function redactTokensInUrl(rawUrl) {
+  if (typeof rawUrl !== 'string') return rawUrl;
+  let redacted = rawUrl;
+  for (const param of TOKEN_PARAM_NAMES) {
+    const pattern = new RegExp(`([?&]${param}=)[^&#]*`, 'gi');
+    redacted = redacted.replace(pattern, `$1REDACTED`);
+  }
+  return redacted;
 }
 
 // ── WebSocket gate: Origin allow-list + per-IP concurrency cap ─────
@@ -137,12 +173,20 @@ export function installHeartbeat(webSocketServer) {
       if (!socket.isAlive) {
         socket.missedHeartbeats = (socket.missedHeartbeats || 0) + 1;
         if (socket.missedHeartbeats >= MISSED_HEARTBEATS_BEFORE_TERMINATE) {
-          try { socket.terminate(); } catch { /* ignore */ }
+          try {
+            socket.terminate();
+          } catch {
+            /* ignore */
+          }
           continue;
         }
       }
       socket.isAlive = false;
-      try { socket.ping(); } catch { /* ignore */ }
+      try {
+        socket.ping();
+      } catch {
+        /* ignore */
+      }
     }
   }, HEARTBEAT_INTERVAL_MS);
 
@@ -163,14 +207,20 @@ export function createBackoffController({
 } = {}) {
   let attemptCount = 0;
   return {
-    reset() { attemptCount = 0; },
-    isExhausted() { return attemptCount >= maxAttempts; },
+    reset() {
+      attemptCount = 0;
+    },
+    isExhausted() {
+      return attemptCount >= maxAttempts;
+    },
     nextDelayMs() {
       const exponentialDelay = Math.min(maxDelayMs, baseDelayMs * 2 ** attemptCount);
       const jitter = Math.random() * (exponentialDelay * 0.3);
       attemptCount += 1;
       return exponentialDelay + jitter;
     },
-    currentAttempt() { return attemptCount; },
+    currentAttempt() {
+      return attemptCount;
+    },
   };
 }

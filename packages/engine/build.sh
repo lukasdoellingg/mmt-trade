@@ -146,47 +146,57 @@ EMCC_COMMON=(
 if (( DEBUG_MODE == 1 )); then
   EMCC_COMMON+=(-g -O0)
 else
-  EMCC_COMMON+=(-O3 -flto)
+  # No -flto: Odin's js_wasm32 .wasm.o is not LTO-bitcode; mixing breaks stub linking.
+  EMCC_COMMON+=(-O3)
 fi
 
-mkdir -p "$WORK_DIR/sokol" "$WORK_DIR/cimgui"
+mkdir -p "$WORK_DIR/sokol"
 
-echo "[engine] emcc sokol.c (smoke uses gfx only; full build adds app, time, glue)"
+echo "[engine] emcc sokol_gfx + wasm stubs"
 emcc "${EMCC_COMMON[@]}" -c "$VENDOR_DIR/sokol-c/sokol_gfx.h" -x c -DSOKOL_IMPL -o "$WORK_DIR/sokol/sokol_gfx.o"
-
-if (( SMOKE_MODE == 0 )); then
-  emcc "${EMCC_COMMON[@]}" -c "$VENDOR_DIR/sokol-c/sokol_app.h" -x c -DSOKOL_IMPL -o "$WORK_DIR/sokol/sokol_app.o"
-  emcc "${EMCC_COMMON[@]}" -c "$VENDOR_DIR/sokol-c/sokol_time.h" -x c -DSOKOL_IMPL -o "$WORK_DIR/sokol/sokol_time.o"
-  emcc "${EMCC_COMMON[@]}" -c "$VENDOR_DIR/sokol-c/sokol_glue.h" -x c -DSOKOL_IMPL -o "$WORK_DIR/sokol/sokol_glue.o"
-fi
+# Compile without -flto so the stub links cleanly with the non-LTO Odin .wasm.o.
+emcc -c "$ENGINE_DIR/stubs/wasm_stubs.c" -o "$WORK_DIR/sokol/wasm_stubs.o"
+emcc -c "$ENGINE_DIR/stubs/odin_env_write.s" -o "$WORK_DIR/sokol/odin_env_write.o"
 
 # ── Link with emcc to produce terminal.wasm + terminal.js ─────────
+#
+# The smoke build is a single-threaded Hello-Triangle: no SHARED_MEMORY,
+# no pthread pool, no WASM workers, no MMT websocket export. That avoids
+# Odin's `js_wasm32` target tripping the wasm-ld `--shared-memory` check
+# (atomics + bulk-memory features are not emitted by the freestanding Odin
+# build) and keeps the smoke binary under the 1 MB acceptance gate.
 LINK_FLAGS=(
   -sUSE_WEBGL2=1
   -sFULL_ES3=1
   -sALLOW_MEMORY_GROWTH=1
   -sINITIAL_MEMORY=67108864          # 64 MiB
   -sMAXIMUM_MEMORY=268435456         # 256 MiB headroom for full layer set
-  -sSHARED_MEMORY=1
-  -sWASM_WORKERS=1                   # emscripten_create_wasm_worker_*
-  -sUSE_PTHREADS=1
-  -sPTHREAD_POOL_SIZE=4
-  -sPROXY_TO_PTHREAD=0
+  -sSTACK_SIZE=8388608               # 8 MiB — large draw staging + Odin frames
   -sEXIT_RUNTIME=0
-  -sEXPORTED_FUNCTIONS=_main,_malloc,_free,_step,_decode_worker_main,_indicator_worker_main,_heatmap_texture_worker_main
-  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8,HEAPF32,HEAPF64
+  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8,HEAPF32,HEAPF64,GL
   -sENVIRONMENT=web,worker
   -sFETCH=1
   -sMODULARIZE=1
   -sEXPORT_ES6=1
   -sEXPORT_NAME=createTerminalModule
-  -lwebsocket.js
 )
+
+SMOKE_EXPORTS="_app_init,_app_step,_app_resize,_app_set_gl_framebuffer,_malloc,_free"
+FULL_EXPORTS="${SMOKE_EXPORTS},_input_bridge_bind_storage,_mmt_feed_heatmap_frame,_mmt_feed_column_count,_app_debug_frame_count,_app_set_gl_framebuffer"
+
+# Odin's js_wasm32 object does not emit atomics/bulk-memory yet — no -sSHARED_MEMORY.
+if (( SMOKE_MODE == 1 )); then
+  LINK_FLAGS+=(-sEXPORTED_FUNCTIONS="${SMOKE_EXPORTS}")
+else
+  LINK_FLAGS+=(-sEXPORTED_FUNCTIONS="${FULL_EXPORTS}")
+fi
+
 if (( DEBUG_MODE == 1 )); then
   LINK_FLAGS+=(-g -sASSERTIONS=2 -sSAFE_HEAP=1)
 fi
 
 OBJECT_FILES=("$WORK_DIR/${TARGET_NAME}.wasm.o" "$WORK_DIR/sokol"/*.o)
+# odin_env_write.o defines import symbol odin_env..write for Odin libc-shim.
 
 emcc "${LINK_FLAGS[@]}" "${OBJECT_FILES[@]}" -o "$WORK_DIR/${TARGET_NAME}.js"
 

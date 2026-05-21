@@ -20,9 +20,17 @@ Viewport :: struct {
 }
 
 viewport_init :: proc "contextless" (viewport: ^Viewport) {
-    viewport.barSpacingPixels = 1.5
+    viewport.barSpacingPixels = 8.0
     viewport.rightOffsetBars  = 0
     viewport.totalCandleCount = 0
+}
+
+viewport_set_bar_spacing :: proc "contextless" (viewport: ^Viewport, spacing_pixels: f64) {
+    if spacing_pixels < MINIMUM_BAR_SPACING_PIXELS {
+        viewport.barSpacingPixels = MINIMUM_BAR_SPACING_PIXELS
+    } else {
+        viewport.barSpacingPixels = spacing_pixels
+    }
 }
 
 viewport_set_total_candles :: proc "contextless" (viewport: ^Viewport, total: i32) {
@@ -101,11 +109,30 @@ viewport_visible_range :: proc "contextless" (
     bars_visible := chart_width_pixels / viewport.barSpacingPixels
     right_border_index := base_candle_index(viewport) + viewport.rightOffsetBars
     left_border_index  := right_border_index - bars_visible + 1.0
+
+    start_index := i32(round_nearest(left_border_index))
+    end_index   := i32(round_nearest(right_border_index)) + 1
+    if start_index < 0 { start_index = 0 }
+    if end_index > viewport.totalCandleCount { end_index = viewport.totalCandleCount }
+    if end_index < start_index { end_index = start_index }
+
     return {
-        visibleStartIndex = i32(round_nearest(left_border_index)),
-        visibleEndIndex   = i32(round_nearest(right_border_index)),
+        visibleStartIndex = start_index,
+        visibleEndIndex   = end_index,
         isAtLiveEdge      = viewport.rightOffsetBars >= -0.5,
     }
+}
+
+// Horizontal pan in CSS pixels (drag left → scroll forward in time).
+viewport_pan_by_pixels :: proc "contextless" (
+    viewport: ^Viewport,
+    delta_x_pixels: f64,
+    chart_width_pixels: f64,
+) {
+    if viewport.totalCandleCount == 0 || viewport.barSpacingPixels <= 0 { return }
+    viewport.rightOffsetBars += delta_x_pixels / viewport.barSpacingPixels
+    viewport_correct_right_offset(viewport)
+    _ = chart_width_pixels
 }
 
 viewport_zoom_around :: proc "contextless" (

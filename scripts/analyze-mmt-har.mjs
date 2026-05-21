@@ -34,7 +34,6 @@ for (const e of entries) {
   const msgs = e._webSocketMessages;
   if (!url.startsWith('wss://') || !msgs?.length) continue;
   wsSockets += 1;
-  const host = url.replace(/\?.*$/, '?…');
   for (const m of msgs) {
     if (m.type === 'send') sent += 1;
     else recv += 1;
@@ -56,7 +55,9 @@ for (const e of entries) {
         const j = JSON.parse(text);
         methods.set(j.method, (methods.get(j.method) ?? 0) + 1);
         if (j.method === 'subscribe') subs.add(JSON.stringify(j.data));
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
   }
 }
@@ -65,11 +66,19 @@ const wasm = entries.filter((e) => (e.request?.url ?? '').endsWith('.wasm'));
 
 console.log('MMT HAR summary\n================');
 console.log('Entries:', entries.length);
-console.log('WS endpoint:', [...new Set(entries.map((e) => e.request?.url).filter((u) => u?.startsWith('wss://')))].map((u) => u.replace(/token=[^&]+/, 'token=REDACTED')));
+console.log(
+  'WS endpoint:',
+  [...new Set(entries.map((e) => e.request?.url).filter((u) => u?.startsWith('wss://')))].map((u) =>
+    u.replace(/token=[^&]+/, 'token=REDACTED'),
+  ),
+);
 console.log('WS sockets with messages:', wsSockets);
 console.log('Client→server:', sent, '| Server→client:', recv);
 console.log('Recv size buckets:', recvBuckets);
 console.log('Client methods:', Object.fromEntries(methods));
-console.log('WASM:', wasm.map((e) => ({ url: e.request.url, bytes: e.response?.content?.size })));
+console.log(
+  'WASM:',
+  wasm.map((e) => ({ url: e.request.url, bytes: e.response?.content?.size })),
+);
 console.log('\nSubscribe payloads (' + subs.size + '):');
 [...subs].sort().forEach((s) => console.log(' ', s));

@@ -8,32 +8,58 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -n backend,frontend -c cyan,green \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev": "concurrently -n backend,shell -c cyan,magenta \"npm run dev:backend\" \"npm run dev:shell\"",
+    "dev:legacy": "concurrently -n backend,frontend -c cyan,green \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:backend": "npm --workspace web/backend run dev",
     "dev:frontend": "npm --workspace web/frontend run dev",
+    "dev:shell": "npm --workspace packages/shell run dev",
     "build": "npm --workspace web/frontend run build",
+    "build:shell": "npm --workspace packages/shell run build",
     "start": "concurrently -n backend,frontend -c cyan,green \"npm run start:backend\" \"npm run preview:frontend\"",
     "start:backend": "npm --workspace web/backend run start",
     "preview:frontend": "npm --workspace web/frontend run build && npm --workspace web/frontend run preview",
     "install:all": "npm install",
+    "prepare": "husky",
     "build:wasm": "bash scripts/build-wasm.sh",
     "build:engine": "bash packages/engine/build.sh",
-    "lint": "eslint . --ext .ts,.tsx,.vue,.js,.mjs --cache --max-warnings=0",
+    "build:engine:smoke": "bash packages/engine/build.sh --smoke",
+    "lint": "eslint . --ext .ts,.tsx,.vue,.js,.mjs --cache --max-warnings=0 --no-warn-ignored",
     "lint:fix": "eslint . --ext .ts,.tsx,.vue,.js,.mjs --cache --fix",
+    "lint-staged": "lint-staged",
     "format": "prettier --write \"**/*.{ts,tsx,vue,js,mjs,json,md,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,vue,js,mjs,json,md,yml,yaml}\"",
     "typecheck": "npm --workspace web/frontend exec -- tsc --noEmit",
-    "audit:prod": "npm audit --omit=dev",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "test": "npm run test:smoke && npm run test:regression",
+    "test:smoke": "node --test tests/smoke/",
+    "test:regression": "node --test tests/regression/",
+    "test:integration": "node --test tests/integration/",
+    "test:e2e": "playwright test",
+    "test:all": "npm test && npm run test:integration && npm run test:e2e",
     "test:mmt-cbor": "node scripts/test-mmt-cbor.mjs",
+    "test:cbor:odin": "bash packages/engine/scripts/test-cbor.sh",
+    "test:cbor": "npm run test:cbor:odin && npm run test:mmt-cbor",
     "analyze:mmt-har": "node scripts/analyze-mmt-har.mjs"
   },
+  "lint-staged": {
+    "*.{ts,tsx,vue,js,mjs}": [
+      "eslint --fix --max-warnings=0 --no-warn-ignored"
+    ],
+    "*.{ts,tsx,vue,js,mjs,json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  },
   "devDependencies": {
+    "@playwright/test": "^1.52.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
     "cbor": "^9.0.2",
     "concurrently": "^9.0.0",
     "eslint": "^9.0.0",
     "eslint-plugin-vue": "^9.27.0",
+    "globals": "^17.6.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.0",
     "prettier": "^3.3.0",
     "typescript": "^5.9.3",
     "vue-eslint-parser": "^9.4.0"

@@ -13,8 +13,8 @@ import "../data"
 
 MINIMUM_CANDLE_WIDTH_PIXELS :: 4
 
-BULLISH_FILL_COLOR  :: [4]f32{ 0.18, 0.78, 0.49, 1.0 } // green
-BEARISH_FILL_COLOR  :: [4]f32{ 0.93, 0.30, 0.40, 1.0 } // red
+BULLISH_FILL_COLOR  :: [4]f32{ 0.20, 0.85, 0.55, 1.0 } // green
+BEARISH_FILL_COLOR  :: [4]f32{ 0.95, 0.35, 0.45, 1.0 } // red
 WICK_LINE_COLOR     :: [4]f32{ 0.50, 0.54, 0.62, 0.9 } // grey
 
 CandleLayerOutput :: struct {

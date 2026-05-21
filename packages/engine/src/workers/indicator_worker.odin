@@ -6,11 +6,11 @@
 package workers
 
 import "../data"
-import "../layers"
+import "../indicators"
 
 IndicatorWorkerContext :: struct {
     candleStoreHandle:    ^data.CandleStore,
-    vwapRollingState:     layers.VwapRollingState,
+    vwapRollingState:     indicators.VwapRollingState,
     cvdLayerState:        ^layers.CvdLayerState,
     recomputeFromIndex:   i32,
     recomputeUntilIndex:  i32,
@@ -25,11 +25,11 @@ indicator_worker_main :: proc "c" (context_ptr: rawptr) {
 
 @(private)
 recompute_vwap_range :: proc "contextless" (ctx: ^IndicatorWorkerContext) {
-    layers.vwap_rolling_state_init(&ctx.vwapRollingState)
-    layers.vwap_seed_until(&ctx.vwapRollingState, ctx.candleStoreHandle, ctx.recomputeFromIndex)
+    indicators.vwap_rolling_state_init(&ctx.vwapRollingState)
+    indicators.vwap_seed_until(&ctx.vwapRollingState, ctx.candleStoreHandle, ctx.recomputeFromIndex)
     for candle_index := ctx.recomputeFromIndex;
         candle_index < ctx.recomputeUntilIndex;
         candle_index += 1 {
-        _, _, _ = layers.vwap_rolling_advance(&ctx.vwapRollingState, ctx.candleStoreHandle, candle_index)
+        _, _, _ = indicators.vwap_rolling_advance(&ctx.vwapRollingState, ctx.candleStoreHandle, candle_index)
     }
 }
