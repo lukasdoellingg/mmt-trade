@@ -30,6 +30,7 @@ WebSocketEventCallback :: #type proc "c" (event: ^WebSocketEvent, user_data: raw
 // ── External declarations resolved by emcc at link time. ──────────
 // Phase 2's `build.sh` already links against -lwebsocket.js.
 
+when ODIN_ARCH == .wasm32 {
 @(default_calling_convention="c")
 foreign emscripten {
     @(link_name="emscripten_websocket_new")
@@ -123,3 +124,5 @@ websocket_subscription_send_text :: proc "c" (
     if subscription.socketHandle == 0 || !subscription.isOpen { return -1 }
     return websocket_send_utf8_text(i32(subscription.socketHandle), utf8_text)
 }
+
+} // when ODIN_ARCH == .wasm32

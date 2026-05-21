@@ -5,11 +5,28 @@
 // (no heap allocations on the hot path).
 package net
 
-MMT_STREAM_LIVE         :: 1
-MMT_STREAM_PER_EX_4     :: 4
-MMT_STREAM_PER_EX_5     :: 5
-MMT_STREAM_PER_EX_6     :: 6
-MMT_STREAM_HEATMAP_AGG  :: 16
+// Stream IDs observed in MMT v2 HAR captures (`docs/MMT_PROTOCOL.md` §3).
+// Values are sent verbatim in the `subscribe` payload.
+MMT_STREAM_LIVE_TICK       :: 1   // live tick stream, timeframe = 0
+MMT_STREAM_CANDLE_OHLC     :: 4   // OHLC candles per exchange
+MMT_STREAM_VOLUME_LAYER    :: 5   // aggregate volume / secondary layer stream
+MMT_STREAM_FOOTPRINT_DEPTH :: 6   // footprint / depth per exchange
+MMT_STREAM_TICKER_STATS    :: 9   // ticker stats per symbol (symbol-list pane)
+MMT_STREAM_SUB_INDICATOR   :: 13  // sub-indicator stack (`bucket_group` 5–9)
+MMT_STREAM_HEATMAP_AGG     :: 16  // aggregated OB heatmap (multi-venue)
+
+// Legacy aliases — keep until call sites migrate.
+MMT_STREAM_LIVE        :: MMT_STREAM_LIVE_TICK
+MMT_STREAM_PER_EX_4    :: MMT_STREAM_CANDLE_OHLC
+MMT_STREAM_PER_EX_5    :: MMT_STREAM_VOLUME_LAYER
+MMT_STREAM_PER_EX_6    :: MMT_STREAM_FOOTPRINT_DEPTH
+
+// Sub-indicator stack slots (`bucket_group` values for stream:13).
+MMT_BUCKET_GROUP_CVD      :: 5
+MMT_BUCKET_GROUP_OI       :: 6
+MMT_BUCKET_GROUP_FUNDING  :: 7
+MMT_BUCKET_GROUP_VOLUME   :: 8
+MMT_BUCKET_GROUP_PREMIUM  :: 9
 
 MMT_DEFAULT_HOST :: "eu-central-2.mmt.gg"
 MMT_DEFAULT_PATH :: "/api/v2/ws"
@@ -149,4 +166,34 @@ mmt_build_get_range :: proc "contextless" (builder: ^MmtRpcBuilder, request: Mmt
 mmt_build_ping :: proc "contextless" (builder: ^MmtRpcBuilder) -> bool {
     mmt_builder_reset(builder)
     return write_string(builder, "{\"method\":\"ping\"}")
+}
+
+// `update_inputs` adjusts layer-specific parameters (heatmap bin width,
+// footprint depth, sub-indicator window length, …) for the active session
+// without resubscribing. The HAR shows two `update_inputs` calls per
+// session, both ~120 bytes of compact JSON. `inputs_json_fragment` is the
+// caller-built `"key":value,...` body (no surrounding braces).
+mmt_build_update_inputs :: proc "contextless" (
+    builder: ^MmtRpcBuilder, inputs_json_fragment: string,
+) -> bool {
+    mmt_builder_reset(builder)
+    ok := write_string(builder, "{\"method\":\"update_inputs\",\"data\":{")
+    ok = ok && write_string(builder, inputs_json_fragment)
+    ok = ok && write_string(builder, "}}")
+    return ok
+}
+
+// `update_context` swaps the active pair / aggregate without tearing down
+// running subscriptions. See HAR `242.har` for the two update_context
+// events per session captured at symbol-switches.
+mmt_build_update_context :: proc "contextless" (
+    builder: ^MmtRpcBuilder, exchange: string, symbol: string,
+) -> bool {
+    mmt_builder_reset(builder)
+    ok := write_string(builder, "{\"method\":\"update_context\",\"data\":{\"pair\":{\"exchange\":\"")
+    ok = ok && write_string(builder, exchange)
+    ok = ok && write_string(builder, "\",\"symbol\":\"")
+    ok = ok && write_string(builder, symbol)
+    ok = ok && write_string(builder, "\"}}}")
+    return ok
 }

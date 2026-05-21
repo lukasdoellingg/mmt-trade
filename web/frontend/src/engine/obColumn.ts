@@ -9,6 +9,13 @@ export function emptyColumn(): Uint8Array {
   return new Uint8Array(COLUMN_BYTES);
 }
 
+let sdScratchColumn: Uint8Array | null = null;
+
+function sdScratch(): Uint8Array {
+  if (!sdScratchColumn) sdScratchColumn = new Uint8Array(COLUMN_BYTES);
+  return sdScratchColumn;
+}
+
 function volumeToByte(volume: number, lowCutoff: number): number {
   if (volume <= lowCutoff) return 0;
   return Math.min(255, (Math.log1p(volume - lowCutoff) * 52) | 0);
@@ -20,8 +27,14 @@ export function subsampleLevels(
   maxPerSide = 1200,
 ) {
   if (levels.length <= maxPerSide * 2) return levels;
-  const bids = levels.filter((l) => l.isBid).sort((a, b) => b.volume - a.volume).slice(0, maxPerSide);
-  const asks = levels.filter((l) => !l.isBid).sort((a, b) => b.volume - a.volume).slice(0, maxPerSide);
+  const bids = levels
+    .filter((l) => l.isBid)
+    .sort((a, b) => b.volume - a.volume)
+    .slice(0, maxPerSide);
+  const asks = levels
+    .filter((l) => !l.isBid)
+    .sort((a, b) => b.volume - a.volume)
+    .slice(0, maxPerSide);
   return [...bids, ...asks];
 }
 
@@ -64,7 +77,7 @@ export function writeLevelsToColumn(
 
 /** MMT SD: merge adjacent HD rows (max intensity per bucket). */
 export function downsampleColumnHdToSd(src: Uint8Array): Uint8Array {
-  const dst = emptyColumn();
+  const dst = sdScratch();
   const f = SD_MERGE_FACTOR;
   const sdRows = Math.floor(PRICE_ROWS / f);
   for (let sr = 0; sr < sdRows; sr++) {

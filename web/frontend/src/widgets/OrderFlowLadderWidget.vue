@@ -17,13 +17,14 @@ import { useWorkspace } from '../workspace/useWorkspace';
 import { LadderAggregator, type LadderSnapshot } from './orderflow/ladderState';
 import { decodeHeatmapFrame } from '../engine/heatmapProto';
 import { useChartSettings } from '../chart/chartSettings';
+import { chartCanvasPixelSize, chartDevicePixelRatio } from '../chart/chartDisplayMetrics';
 import { busEmit, busOn } from '../workspace/widgetBus';
 import { debugWarn } from '../utils/debug';
 
 interface LadderProps {
-  aggregate?: string;      // CSV of exchanges, default 'binance,bybit'
-  pg?: number;             // bin width in quote currency
-  rowsPerSide?: number;    // default 25
+  aggregate?: string; // CSV of exchanges, default 'binance,bybit'
+  pg?: number; // bin width in quote currency
+  rowsPerSide?: number; // default 25
   quoteUsd?: boolean;
   sortDir?: 'asc' | 'desc';
   linkGroup?: '' | 'A' | 'B';
@@ -42,12 +43,20 @@ const rowsPerSide = computed(() => ladderProps.value.rowsPerSide ?? 25);
 const quoteUsd = computed(() => settings.quoteUsd);
 const aggregateCsv = computed(() => ladderProps.value.aggregate ?? 'binance,bybit');
 const aggregateCount = computed(() => aggregateCsv.value.split(',').filter(Boolean).length);
-const sortDir = computed<'asc' | 'desc'>(() => (ladderProps.value.sortDir ?? 'desc'));
-const linkGroup = computed<'' | 'A' | 'B'>(() => (ladderProps.value.linkGroup ?? ''));
+const sortDir = computed<'asc' | 'desc'>(() => ladderProps.value.sortDir ?? 'desc');
+const linkGroup = computed<'' | 'A' | 'B'>(() => ladderProps.value.linkGroup ?? '');
 const settingsOpen = ref(false);
 
 const agg = new LadderAggregator({ pg: pg.value, rowsPerSide: rowsPerSide.value });
-const snap = ref<LadderSnapshot>({ midPrice: 0, pg: pg.value, asks: [], bids: [], maxSize: 0, topAbsorption: 0, topAbsorptionPrice: 0 });
+const snap = ref<LadderSnapshot>({
+  midPrice: 0,
+  pg: pg.value,
+  asks: [],
+  bids: [],
+  maxSize: 0,
+  topAbsorption: 0,
+  topAbsorptionPrice: 0,
+});
 let midPrice = 0;
 let socket: WebSocket | null = null;
 let renderPending = false;
@@ -56,7 +65,9 @@ let reconnectDelay = 750;
 
 const barsCanvas = ref<HTMLCanvasElement | null>(null);
 let barsCtx: CanvasRenderingContext2D | null = null;
-const DPR = Math.min(window.devicePixelRatio || 1, 2);
+const _dpr = chartDevicePixelRatio();
+const ASK_BAR_COLOR = 'rgb(239,79,96)';
+const BID_BAR_COLOR = 'rgb(61,201,133)';
 
 function wsBaseUrl(): string {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -119,7 +130,7 @@ function drawBars(): void {
   const refIntensity = volumeToIntensity(s.maxSize, lowCutoff) || 1;
   const maxBarWidth = w * 0.86;
 
-  const drawBar = (rowIdx: number, size: number, baseR: number, baseG: number, baseB: number) => {
+  const drawBar = (rowIdx: number, size: number, barColor: string) => {
     if (size <= lowCutoff) return;
     const intensity = volumeToIntensity(size, lowCutoff) / refIntensity;
     if (intensity <= 0) return;
@@ -131,32 +142,29 @@ function drawBars(): void {
     // sqrt-alpha curve mirrors OB heatmap fragment shader (a = sqrt(sum) * mul * 0.24)
     const a = Math.min(0.95, Math.sqrt(intensity) * intensityMul * 0.72);
     const innerX = w - barW;
-    const grad = ctx.createLinearGradient(w, 0, innerX, 0);
-    grad.addColorStop(0,   `rgba(${baseR},${baseG},${baseB},${a})`);
-    grad.addColorStop(0.6, `rgba(${baseR},${baseG},${baseB},${a * 0.55})`);
-    grad.addColorStop(1,   `rgba(${baseR},${baseG},${baseB},0)`);
-    ctx.fillStyle = grad;
+    ctx.fillStyle = barColor;
+    ctx.globalAlpha = a;
     ctx.fillRect(innerX, y, barW, rh);
+    ctx.globalAlpha = 1;
   };
 
-  // Asks (red): render top → mid (descending price = ascending row index from top)
-  // mmt.gg ask colour: warm red 239/79/96
-  const asksDesc = [...s.asks].reverse();
-  for (let i = 0; i < asksDesc.length; i++) drawBar(i, asksDesc[i].size, 239, 79, 96);
-  // Mid row stays clear (the price label sits there)
-  // Bids (green): same green family as the chart heatmap (~57/200/132)
-  for (let i = 0; i < s.bids.length; i++) drawBar(asksDesc.length + 1 + i, s.bids[i].size, 61, 201, 133);
+  for (let i = s.asks.length - 1; i >= 0; i--) drawBar(s.asks.length - 1 - i, s.asks[i].size, ASK_BAR_COLOR);
+  for (let i = 0; i < s.bids.length; i++) drawBar(s.asks.length + 1 + i, s.bids[i].size, BID_BAR_COLOR);
 }
 
 function handleFrame(buf: ArrayBuffer): void {
   const f = decodeHeatmapFrame(buf);
   if (!f || !f.levels.length) return;
   // Derive a mid: highest bid + lowest ask if both present, else mean of book.
-  let bestBid = -Infinity, bestAsk = Infinity;
+  let bestBid = -Infinity,
+    bestAsk = Infinity;
   for (let i = 0; i < f.levels.length; i++) {
     const lv = f.levels[i];
-    if (lv.isBid) { if (lv.price > bestBid) bestBid = lv.price; }
-    else          { if (lv.price < bestAsk) bestAsk = lv.price; }
+    if (lv.isBid) {
+      if (lv.price > bestBid) bestBid = lv.price;
+    } else {
+      if (lv.price < bestAsk) bestAsk = lv.price;
+    }
   }
   if (bestBid !== -Infinity && bestAsk !== Infinity) midPrice = (bestBid + bestAsk) * 0.5;
   agg.ingest(f.levels, midPrice);
@@ -166,15 +174,27 @@ function handleFrame(buf: ArrayBuffer): void {
 function openSocket(): void {
   closeSocket();
   const url = buildWsUrl();
-  try { socket = new WebSocket(url); }
-  catch (e) { debugWarn('[Ladder] ws open failed', e); scheduleReconnect(); return; }
+  try {
+    socket = new WebSocket(url);
+  } catch (e) {
+    debugWarn('[Ladder] ws open failed', e);
+    scheduleReconnect();
+    return;
+  }
   socket.binaryType = 'arraybuffer';
   socket.onmessage = (ev: MessageEvent) => {
     if (ev.data instanceof ArrayBuffer) handleFrame(ev.data);
   };
-  socket.onerror = () => { /* close handler kicks reconnect */ };
-  socket.onclose = () => { socket = null; scheduleReconnect(); };
-  socket.onopen = () => { reconnectDelay = 750; };
+  socket.onerror = () => {
+    /* close handler kicks reconnect */
+  };
+  socket.onclose = () => {
+    socket = null;
+    scheduleReconnect();
+  };
+  socket.onopen = () => {
+    reconnectDelay = 750;
+  };
 }
 
 function scheduleReconnect(): void {
@@ -189,7 +209,11 @@ function scheduleReconnect(): void {
 function closeSocket(): void {
   if (!socket) return;
   socket.onmessage = socket.onopen = socket.onerror = socket.onclose = null;
-  try { socket.close(); } catch { /* ignore */ }
+  try {
+    socket.close();
+  } catch {
+    /* ignore */
+  }
   socket = null;
 }
 
@@ -212,7 +236,9 @@ function toggleSort(): void {
   updateProps(props.widget.id, { sortDir: next });
 }
 
-function toggleSettings(): void { settingsOpen.value = !settingsOpen.value; }
+function toggleSettings(): void {
+  settingsOpen.value = !settingsOpen.value;
+}
 
 function cycleLink(): void {
   const order: Array<'' | 'A' | 'B'> = ['', 'A', 'B'];
@@ -252,20 +278,29 @@ function resizeCanvas(): void {
   const cv = barsCanvas.value;
   if (!cv) return;
   const rect = cv.getBoundingClientRect();
-  const w = Math.max(40, rect.width * DPR | 0);
-  const h = Math.max(40, rect.height * DPR | 0);
-  cv.width = w; cv.height = h;
+  const px = chartCanvasPixelSize(rect.width, rect.height);
+  cv.width = px.w;
+  cv.height = px.h;
   barsCtx = cv.getContext('2d', { alpha: true });
   drawBars();
 }
 
 const ro = new ResizeObserver(() => resizeCanvas());
 
-watch(pg, (v) => { agg.setPg(v); scheduleRender(); });
-watch(rowsPerSide, (v) => { agg.setRowsPerSide(v); scheduleRender(); });
+watch(pg, (v) => {
+  agg.setPg(v);
+  scheduleRender();
+});
+watch(rowsPerSide, (v) => {
+  agg.setRowsPerSide(v);
+  scheduleRender();
+});
 watch([() => settings.symbol, () => settings.timeframe, aggregateCsv], () => openSocket());
 watch([() => settings.obLow, () => settings.obPeak], () => scheduleRender());
-watch(() => settings.quoteUsd, () => scheduleRender());
+watch(
+  () => settings.quoteUsd,
+  () => scheduleRender(),
+);
 
 onMounted(() => {
   if (barsCanvas.value) ro.observe(barsCanvas.value);
@@ -276,7 +311,10 @@ onUnmounted(() => {
   ro.disconnect();
   closeSocket();
   unsubBus();
-  if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
 });
 
 function fmtPrice(p: number): string {
@@ -289,14 +327,14 @@ function fmtPrice(p: number): string {
     return (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
   }
   if (p >= 1000) return p.toFixed(0);
-  if (p >= 1)    return p.toFixed(2);
+  if (p >= 1) return p.toFixed(2);
   if (p >= 0.01) return p.toFixed(4);
   return p.toFixed(6);
 }
 function fmtSize(s: number): string {
   if (!s || s < 0) return '';
   if (s >= 1_000_000) return (s / 1_000_000).toFixed(s >= 10_000_000 ? 0 : 1) + 'M';
-  if (s >= 1000)     return (s / 1000).toFixed(s >= 10_000 ? 0 : 1) + 'k';
+  if (s >= 1000) return (s / 1000).toFixed(s >= 10_000 ? 0 : 1) + 'k';
   return s < 1 ? s.toFixed(2) : s.toFixed(0);
 }
 function fmtDelta(d: number): string {
@@ -304,7 +342,7 @@ function fmtDelta(d: number): string {
   const sign = d > 0 ? '+' : '-';
   const v = Math.abs(d);
   if (v >= 1_000_000) return sign + (v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1) + 'M';
-  if (v >= 1000)     return sign + (v / 1000).toFixed(v >= 10_000 ? 0 : 1) + 'k';
+  if (v >= 1000) return sign + (v / 1000).toFixed(v >= 10_000 ? 0 : 1) + 'k';
   return sign + (v < 10 ? v.toFixed(1) : v.toFixed(0));
 }
 </script>
@@ -317,8 +355,12 @@ function fmtDelta(d: number): string {
   >
     <div class="ladder-root">
       <div class="ladder-toolbar">
-        <button class="lt-btn" @click="cyclePg" title="Cycle price bin size">PG <strong>{{ pg }}</strong></button>
-        <button class="lt-btn" :class="{ on: quoteUsd }" @click="toggleQuote" title="Toggle quote display">{{ quoteUsd ? '$ USD' : '% BASE' }}</button>
+        <button class="lt-btn" @click="cyclePg" title="Cycle price bin size">
+          PG <strong>{{ pg }}</strong>
+        </button>
+        <button class="lt-btn" :class="{ on: quoteUsd }" @click="toggleQuote" title="Toggle quote display">
+          {{ quoteUsd ? '$ USD' : '% BASE' }}
+        </button>
         <label class="lt-slider" title="Low cutoff (shared with chart heatmap)">
           <span>Low</span>
           <input type="range" min="0" max="0.8" step="0.05" v-model.number="settings.obLow" />
@@ -327,9 +369,23 @@ function fmtDelta(d: number): string {
           <span>Peak</span>
           <input type="range" min="0.2" max="1" step="0.05" v-model.number="settings.obPeak" />
         </label>
-        <button class="lt-btn" :class="{ on: sortDir === 'asc' }" title="Toggle sort direction" @click="toggleSort">&#8645;</button>
-        <button class="lt-btn" :class="{ on: settingsOpen }" title="Widget settings" @click="toggleSettings">&#9881;</button>
-        <button class="lt-btn lt-link" :class="{ ['link-' + (linkGroup || 'off')]: true }" :title="`Link group: ${linkGroup || 'off'}`" @click="cycleLink">
+        <button
+          class="lt-btn"
+          :class="{ on: sortDir === 'asc' }"
+          title="Toggle sort direction"
+          @click="toggleSort"
+        >
+          &#8645;
+        </button>
+        <button class="lt-btn" :class="{ on: settingsOpen }" title="Widget settings" @click="toggleSettings">
+          &#9881;
+        </button>
+        <button
+          class="lt-btn lt-link"
+          :class="{ ['link-' + (linkGroup || 'off')]: true }"
+          :title="`Link group: ${linkGroup || 'off'}`"
+          @click="cycleLink"
+        >
           <span v-if="!linkGroup">&#128279;</span>
           <span v-else>&#128279; {{ linkGroup }}</span>
         </button>
@@ -339,19 +395,30 @@ function fmtDelta(d: number): string {
       <div v-if="settingsOpen" class="lt-popover">
         <label class="lt-pop-row">
           <span>Rows per side</span>
-          <input type="number" min="8" max="60" :value="rowsPerSide" @change="(e) => setRowsPerSide(Number((e.target as HTMLInputElement).value))" />
+          <input
+            type="number"
+            min="8"
+            max="60"
+            :value="rowsPerSide"
+            @change="(e) => setRowsPerSide(Number((e.target as HTMLInputElement).value))"
+          />
         </label>
         <label class="lt-pop-row">
           <span>Aggregate exchanges</span>
-          <input type="text" :value="aggregateCsv" @change="(e) => setAggregate((e.target as HTMLInputElement).value)" />
+          <input
+            type="text"
+            :value="aggregateCsv"
+            @change="(e) => setAggregate((e.target as HTMLInputElement).value)"
+          />
         </label>
-        <div class="lt-pop-row lt-pop-hint">CSV of exchanges. Backend supports: binance, bybit, okx, coinbase, deribit, kraken, bitfinex (+ futures `f` suffixes).</div>
+        <div class="lt-pop-row lt-pop-hint">
+          CSV of exchanges. Backend supports: binance, bybit, okx, coinbase, deribit, kraken, bitfinex (+
+          futures `f` suffixes).
+        </div>
       </div>
 
       <div class="ladder-grid">
-        <div class="lg-head">
-          <span>PRICE</span><span>DELTA</span><span>SIZE</span><span>SUM</span>
-        </div>
+        <div class="lg-head"><span>PRICE</span><span>DELTA</span><span>SIZE</span><span>SUM</span></div>
         <div class="lg-body">
           <canvas ref="barsCanvas" class="lg-bars"></canvas>
           <div class="lg-rows">
@@ -382,41 +449,234 @@ function fmtDelta(d: number): string {
 </template>
 
 <style scoped>
-.ladder-root{position:absolute;inset:0;display:flex;flex-direction:column;background:#06060b;color:#aebcce;font:10.5px/1.2 Consolas,"Courier New",monospace;}
-.ladder-toolbar{display:flex;align-items:center;gap:4px;flex-shrink:0;padding:3px 6px;background:#0a0a12;border-bottom:1px solid #15151f;}
-.lt-btn{background:transparent;border:1px solid #1a1a26;color:#6a7888;font:inherit;font-size:9.5px;padding:2px 7px;border-radius:2px;cursor:pointer;letter-spacing:.2px;line-height:1.2;}
-.lt-btn:hover{color:#cad8e8;border-color:#2a3340}
-.lt-btn.on{color:#e0e8f0;background:#1f1f2e;border-color:#2a3340}
-.lt-btn strong{color:#e0e8f0;margin-left:2px}
-.lt-slider{display:inline-flex;align-items:center;gap:3px;font-size:9px;color:#6a7888;letter-spacing:.2px;padding:0 4px;}
-.lt-slider input[type=range]{width:42px;height:3px;accent-color:#3dc985;cursor:pointer;}
-.lt-link.link-A{color:#f0c130;border-color:#3a3010;background:#1a1810}
-.lt-link.link-B{color:#3fd3e4;border-color:#0e2628;background:#0c1a1c}
-.lt-popover{position:absolute;top:30px;right:6px;z-index:30;background:#0a0a12;border:1px solid #1f1f2c;border-radius:4px;padding:8px 10px;display:flex;flex-direction:column;gap:6px;min-width:200px;font:10px Consolas,monospace;color:#aebcce;box-shadow:0 6px 16px rgba(0,0,0,.6);}
-.lt-pop-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
-.lt-pop-row > span{color:#6a7888}
-.lt-pop-row input[type=number]{width:48px;background:#15151f;border:1px solid #1f1f2c;color:#e0e8f0;padding:1px 4px;border-radius:2px;font:inherit}
-.lt-pop-row input[type=text]{width:140px;background:#15151f;border:1px solid #1f1f2c;color:#e0e8f0;padding:1px 4px;border-radius:2px;font:inherit}
-.lt-pop-hint{color:#5a6878;font-size:9px;line-height:1.4;flex-direction:column;align-items:flex-start;text-align:left}
+.ladder-root {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #06060b;
+  color: #aebcce;
+  font:
+    10.5px/1.2 Consolas,
+    'Courier New',
+    monospace;
+}
+.ladder-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 3px 6px;
+  background: #0a0a12;
+  border-bottom: 1px solid #15151f;
+}
+.lt-btn {
+  background: transparent;
+  border: 1px solid #1a1a26;
+  color: #6a7888;
+  font: inherit;
+  font-size: 9.5px;
+  padding: 2px 7px;
+  border-radius: 2px;
+  cursor: pointer;
+  letter-spacing: 0.2px;
+  line-height: 1.2;
+}
+.lt-btn:hover {
+  color: #cad8e8;
+  border-color: #2a3340;
+}
+.lt-btn.on {
+  color: #e0e8f0;
+  background: #1f1f2e;
+  border-color: #2a3340;
+}
+.lt-btn strong {
+  color: #e0e8f0;
+  margin-left: 2px;
+}
+.lt-slider {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  color: #6a7888;
+  letter-spacing: 0.2px;
+  padding: 0 4px;
+}
+.lt-slider input[type='range'] {
+  width: 42px;
+  height: 3px;
+  accent-color: #3dc985;
+  cursor: pointer;
+}
+.lt-link.link-A {
+  color: #f0c130;
+  border-color: #3a3010;
+  background: #1a1810;
+}
+.lt-link.link-B {
+  color: #3fd3e4;
+  border-color: #0e2628;
+  background: #0c1a1c;
+}
+.lt-popover {
+  position: absolute;
+  top: 30px;
+  right: 6px;
+  z-index: 30;
+  background: #0a0a12;
+  border: 1px solid #1f1f2c;
+  border-radius: 4px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 200px;
+  font:
+    10px Consolas,
+    monospace;
+  color: #aebcce;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.6);
+}
+.lt-pop-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.lt-pop-row > span {
+  color: #6a7888;
+}
+.lt-pop-row input[type='number'] {
+  width: 48px;
+  background: #15151f;
+  border: 1px solid #1f1f2c;
+  color: #e0e8f0;
+  padding: 1px 4px;
+  border-radius: 2px;
+  font: inherit;
+}
+.lt-pop-row input[type='text'] {
+  width: 140px;
+  background: #15151f;
+  border: 1px solid #1f1f2c;
+  color: #e0e8f0;
+  padding: 1px 4px;
+  border-radius: 2px;
+  font: inherit;
+}
+.lt-pop-hint {
+  color: #5a6878;
+  font-size: 9px;
+  line-height: 1.4;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+}
 
-.ladder-grid{flex:1;display:flex;flex-direction:column;min-height:0;}
-.lg-head{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;padding:3px 8px;background:#0c0c14;border-bottom:1px solid #15151f;color:#5a6878;font-weight:600;letter-spacing:.4px;font-size:9.5px;flex-shrink:0;}
-.lg-head span:nth-child(1){text-align:left}
-.lg-head span:nth-child(n+2){text-align:right}
-.lg-body{flex:1;position:relative;overflow:hidden;}
-.lg-bars{position:absolute;inset:0;width:100%;height:100%;opacity:.45;z-index:0;pointer-events:none}
-.lg-rows{position:absolute;inset:0;display:grid;grid-auto-rows:1fr;z-index:1;}
-.lg-row{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;align-items:center;padding:0 8px;gap:4px;font-variant-numeric:tabular-nums;}
-.lg-row.ask span{color:#ef4f60}
-.lg-row.bid span{color:#3dc985}
-.lg-row.ask .lg-d{color:#ff8a93}
-.lg-row.bid .lg-d{color:#7be7b3}
-.lg-row.ask .lg-s,.lg-row.ask .lg-sum{color:#f5b3b9}
-.lg-row.bid .lg-s,.lg-row.bid .lg-sum{color:#9be6c1}
-.lg-row span:nth-child(1){text-align:left}
-.lg-row span:nth-child(n+2){text-align:right}
-.lg-row.mid{display:flex;align-items:center;justify-content:center;background:#1a1a25;color:#cad8e8;font-weight:600;letter-spacing:.4px;border-top:1px solid #2a2a3a;border-bottom:1px solid #2a2a3a;gap:6px;}
-.lg-mid-icon{color:#e8c46a}
-.lg-mid-text{display:inline-flex;align-items:center;gap:6px}
-.lg-mid-tag{color:#e8c46a;font-size:9.5px}
+.ladder-grid {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.lg-head {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 4px;
+  padding: 3px 8px;
+  background: #0c0c14;
+  border-bottom: 1px solid #15151f;
+  color: #5a6878;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  font-size: 9.5px;
+  flex-shrink: 0;
+}
+.lg-head span:nth-child(1) {
+  text-align: left;
+}
+.lg-head span:nth-child(n + 2) {
+  text-align: right;
+}
+.lg-body {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+.lg-bars {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.45;
+  z-index: 0;
+  pointer-events: none;
+}
+.lg-rows {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-auto-rows: 1fr;
+  z-index: 1;
+}
+.lg-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  align-items: center;
+  padding: 0 8px;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.lg-row.ask span {
+  color: #ef4f60;
+}
+.lg-row.bid span {
+  color: #3dc985;
+}
+.lg-row.ask .lg-d {
+  color: #ff8a93;
+}
+.lg-row.bid .lg-d {
+  color: #7be7b3;
+}
+.lg-row.ask .lg-s,
+.lg-row.ask .lg-sum {
+  color: #f5b3b9;
+}
+.lg-row.bid .lg-s,
+.lg-row.bid .lg-sum {
+  color: #9be6c1;
+}
+.lg-row span:nth-child(1) {
+  text-align: left;
+}
+.lg-row span:nth-child(n + 2) {
+  text-align: right;
+}
+.lg-row.mid {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1a1a25;
+  color: #cad8e8;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  border-top: 1px solid #2a2a3a;
+  border-bottom: 1px solid #2a2a3a;
+  gap: 6px;
+}
+.lg-mid-icon {
+  color: #e8c46a;
+}
+.lg-mid-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.lg-mid-tag {
+  color: #e8c46a;
+  font-size: 9.5px;
+}
 </style>

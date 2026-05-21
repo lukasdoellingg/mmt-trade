@@ -57,10 +57,10 @@ read_be_u16 :: #force_inline proc "contextless" (reader: ^CborReader) -> (u16, b
 @(private)
 read_be_u32 :: #force_inline proc "contextless" (reader: ^CborReader) -> (u32, bool) {
     if reader.offset + 4 > reader.length { return 0, false }
-    value := u32(reader.bytes[reader.offset]) << 24
-           | u32(reader.bytes[reader.offset + 1]) << 16
-           | u32(reader.bytes[reader.offset + 2]) << 8
-           | u32(reader.bytes[reader.offset + 3])
+    value := (u32(reader.bytes[reader.offset]) << 24) |
+        (u32(reader.bytes[reader.offset + 1]) << 16) |
+        (u32(reader.bytes[reader.offset + 2]) << 8) |
+        u32(reader.bytes[reader.offset + 3])
     reader.offset += 4
     return value, true
 }
@@ -88,18 +88,25 @@ cbor_read_head :: proc "contextless" (
     switch additional {
     case 0..=23:
         return major_type, u64(additional), true
-    case 24:
-        u8_value, ok2 := read_byte(reader)
-        return major_type, u64(u8_value), ok2
-    case 25:
-        u16_value, ok2 := read_be_u16(reader)
-        return major_type, u64(u16_value), ok2
-    case 26:
-        u32_value, ok2 := read_be_u32(reader)
-        return major_type, u64(u32_value), ok2
-    case 27:
-        u64_value, ok2 := read_be_u64(reader)
-        return major_type, u64_value, ok2
+    case 24, 25, 26, 27:
+        // Float / bool / null payloads follow the head byte — do not consume them here.
+        if major_type == .SimpleOrFloat {
+            return major_type, u64(additional), true
+        }
+        switch additional {
+        case 24:
+            u8_value, ok2 := read_byte(reader)
+            return major_type, u64(u8_value), ok2
+        case 25:
+            u16_value, ok2 := read_be_u16(reader)
+            return major_type, u64(u16_value), ok2
+        case 26:
+            u32_value, ok2 := read_be_u32(reader)
+            return major_type, u64(u32_value), ok2
+        case 27:
+            u64_value, ok2 := read_be_u64(reader)
+            return major_type, u64_value, ok2
+        }
     case 31:
         // Indefinite length — caller handles via repeated cbor_read_head calls.
         return major_type, 0xFFFF_FFFF_FFFF_FFFF, true
@@ -118,16 +125,114 @@ cbor_read_float :: proc "contextless" (reader: ^CborReader) -> (value: f64, ok: 
     return 0, false
 }
 
+// Accept UInt / NInt / f32 / f64 — MMT columns use float64 arrays; test fixtures may use ints.
+cbor_read_numeric_f32 :: proc "contextless" (reader: ^CborReader) -> (value: f32, ok: bool) {
+    major_type, argument_value, head_ok := cbor_read_head(reader)
+    if !head_ok { return 0, false }
+    switch major_type {
+    case .UnsignedInteger:
+        return f32(argument_value), true
+    case .NegativeInteger:
+        return f32(-f64(argument_value) - 1), true
+    case .SimpleOrFloat:
+        switch argument_value {
+        case 25: // half-precision (MMT mixes f16/f32/f64 inside price arrays)
+            raw16, ok2 := read_be_u16(reader)
+            if !ok2 { return 0, false }
+            return f32(transmute(f16be) raw16), true
+        case 26:
+            raw, raw_ok := read_be_u32(reader)
+            if !raw_ok { return 0, false }
+            return transmute(f32) raw, true
+        case 27:
+            raw, raw_ok := read_be_u64(reader)
+            if !raw_ok { return 0, false }
+            return f32(transmute(f64) raw), true
+        }
+    case .ByteString, .TextString, .Array, .Map, .Tag:
+        return 0, false
+    }
+    return 0, false
+}
+
 cbor_read_float32 :: proc "contextless" (reader: ^CborReader) -> (value: f32, ok: bool) {
-    raw, raw_ok := read_be_u32(reader)
-    if !raw_ok { return 0, false }
-    return transmute(f32) raw, true
+    major_type, argument_value, head_ok := cbor_read_head(reader)
+    if !head_ok || major_type != .SimpleOrFloat { return 0, false }
+    switch argument_value {
+    case 26: // IEEE-754 half-precision is unused on MMT wire; treat as float32 if seen.
+        raw, raw_ok := read_be_u32(reader)
+        if !raw_ok { return 0, false }
+        return transmute(f32) raw, true
+    case 27:
+        raw, raw_ok := read_be_u64(reader)
+        if !raw_ok { return 0, false }
+        return f32(transmute(f64) raw), true
+    }
+    return 0, false
 }
 
 cbor_read_float64 :: proc "contextless" (reader: ^CborReader) -> (value: f64, ok: bool) {
     raw, raw_ok := read_be_u64(reader)
     if !raw_ok { return 0, false }
     return transmute(f64) raw, true
+}
+
+// Read a UInt or NInt as i64 — used for timestamps and small enums.
+cbor_read_int64 :: proc "contextless" (reader: ^CborReader) -> (value: i64, ok: bool) {
+    major_type, argument_value, head_ok := cbor_read_head(reader)
+    if !head_ok { return 0, false }
+    switch major_type {
+    case .UnsignedInteger: return i64(argument_value), true
+    case .NegativeInteger: return -i64(argument_value) - 1, true
+    case .Array, .Map, .ByteString, .TextString, .Tag, .SimpleOrFloat:
+        return 0, false
+    }
+    return 0, false
+}
+
+// MMT maps use single-character text keys ("0"…"9") on the wire; accept UInt too.
+cbor_read_map_key_u8 :: proc "contextless" (reader: ^CborReader) -> (key: u8, ok: bool) {
+    major_type, argument_value, head_ok := cbor_read_head(reader)
+    if !head_ok { return 0, false }
+    switch major_type {
+    case .UnsignedInteger:
+        if argument_value > 9 { return 0, false }
+        return u8(argument_value), true
+    case .TextString:
+        if argument_value != 1 { return 0, false }
+        if reader.offset >= reader.length { return 0, false }
+        digit_byte := reader.bytes[reader.offset]
+        reader.offset += 1
+        if digit_byte >= '0' && digit_byte <= '9' {
+            return u8(digit_byte - '0'), true
+        }
+        return 0, false
+    case .NegativeInteger, .ByteString, .Array, .Map, .Tag, .SimpleOrFloat:
+        return 0, false
+    }
+    return 0, false
+}
+
+// Read the *length* of a Map / Array head (for stepping known-arity envelopes).
+cbor_read_collection_header :: proc "contextless" (
+    reader: ^CborReader, expected: CborMajorType,
+) -> (count: u64, ok: bool) {
+    major_type, argument_value, head_ok := cbor_read_head(reader)
+    if !head_ok || major_type != expected { return 0, false }
+    return argument_value, true
+}
+
+// Returns a sub-view into the reader buffer without copying.
+cbor_read_byte_string_view :: proc "contextless" (
+    reader: ^CborReader,
+) -> (data: [^]u8, length: u32, ok: bool) {
+    major_type, argument_value, head_ok := cbor_read_head(reader)
+    if !head_ok || major_type != .ByteString { return nil, 0, false }
+    if argument_value > u64(reader.length) - u64(reader.offset) { return nil, 0, false }
+    data = &reader.bytes[reader.offset]
+    length = u32(argument_value)
+    reader.offset += length
+    return data, length, true
 }
 
 // Skip the next item entirely (used to step past tags or unknown map keys).

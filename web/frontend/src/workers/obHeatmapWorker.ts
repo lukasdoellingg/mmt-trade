@@ -6,13 +6,14 @@
 import { decodeHeatmapFrame } from '../engine/heatmapProto';
 import { ObHeatmapRenderer, TIME_COLS } from '../engine/ObHeatmapRenderer';
 import {
-  emptyColumn,
+  COLUMN_BYTES,
   writeLevelsToColumn,
   candleOpenTs,
   prepareColumnForDisplay,
   lowCutoffVolume,
   type BinMode,
 } from '../engine/obColumn';
+import { createByteColumnPool } from './columnBufferPool';
 
 const MARGIN_RIGHT = 80;
 const MARGIN_BOTTOM = 32;
@@ -20,8 +21,13 @@ const SNAPSHOT_CAP = 5000;
 const CANDLE_FIELD_STRIDE = 7;
 
 const TF_MS: Record<string, number> = {
-  '1m': 60e3, '15m': 9e5, '30m': 18e5, '1h': 36e5,
-  '4h': 144e5, '1D': 864e5, '1W': 6048e5,
+  '1m': 60e3,
+  '15m': 9e5,
+  '30m': 18e5,
+  '1h': 36e5,
+  '4h': 144e5,
+  '1D': 864e5,
+  '1W': 6048e5,
 };
 
 let ws: WebSocket | null = null;
@@ -47,6 +53,7 @@ let lastCandleCount = 0;
 
 /** candle open ts → binned column */
 const snapshotByTs = new Map<number, Uint8Array>();
+const columnPool = createByteColumnPool(COLUMN_BYTES);
 let liveCandleTs = 0;
 let liveColumn: Uint8Array | null = null;
 
@@ -79,12 +86,24 @@ function pruneSnapshots() {
   if (snapshotByTs.size <= SNAPSHOT_CAP) return;
   const keys = [...snapshotByTs.keys()].sort((a, b) => a - b);
   const drop = keys.length - SNAPSHOT_CAP;
-  for (let i = 0; i < drop; i++) snapshotByTs.delete(keys[i]);
+  for (let i = 0; i < drop; i++) {
+    const col = snapshotByTs.get(keys[i]);
+    if (col) columnPool.release(col);
+    snapshotByTs.delete(keys[i]);
+  }
+}
+
+function storeSnapshot(ts: number, src: Uint8Array) {
+  const prev = snapshotByTs.get(ts);
+  if (prev) columnPool.release(prev);
+  const snap = columnPool.take();
+  snap.set(src);
+  snapshotByTs.set(ts, snap);
 }
 
 function finalizeLiveCandle() {
   if (liveCandleTs > 0 && liveColumn) {
-    snapshotByTs.set(liveCandleTs, liveColumn.slice());
+    storeSnapshot(liveCandleTs, liveColumn);
     pruneSnapshots();
   }
 }
@@ -95,9 +114,9 @@ function onObFrame(frameTs: number, levels: { price: number; volume: number; isB
   if (openTs !== liveCandleTs) {
     finalizeLiveCandle();
     liveCandleTs = openTs;
-    liveColumn = emptyColumn();
+    liveColumn = columnPool.take();
   }
-  if (!liveColumn) liveColumn = emptyColumn();
+  if (!liveColumn) liveColumn = columnPool.take();
 
   // Track refVolume against the **current frame's** max — never let it
   // monotonically grow forever (that's what was making lowCutoff drift up
@@ -130,10 +149,7 @@ function rebuildTexture(candleTsBuf: Float64Array | null, candleCount: number) {
 
   const cols = Math.min(TIME_COLS, Math.max(1, span));
   for (let c = 0; c < cols; c++) {
-    const candleIdx =
-      span <= TIME_COLS
-        ? visStart + c
-        : visStart + Math.floor((c * span) / cols);
+    const candleIdx = span <= TIME_COLS ? visStart + c : visStart + Math.floor((c * span) / cols);
     if (candleIdx < 0 || candleIdx >= candleCount) continue;
 
     let openTs = 0;
@@ -149,10 +165,7 @@ function rebuildTexture(candleTsBuf: Float64Array | null, candleCount: number) {
     }
     if (!colData) continue;
 
-    const texCol =
-      span <= TIME_COLS
-        ? c
-        : Math.floor((c * TIME_COLS) / cols);
+    const texCol = span <= TIME_COLS ? c : Math.floor((c * TIME_COLS) / cols);
     const displayCol = prepareColumnForDisplay(colData, binMode);
     renderer.blitColumn(texCol, displayCol);
   }
@@ -169,7 +182,9 @@ function openWs() {
     return;
   }
   ws.onopen = () => post({ type: 'wsConnected' });
-  ws.onclose = () => { if (running) setTimeout(openWs, 3000); };
+  ws.onclose = () => {
+    if (running) setTimeout(openWs, 3000);
+  };
   ws.onerror = () => post({ type: 'error', msg: 'Heatmap WS — backend :3001?' });
   ws.onmessage = (ev) => {
     if (!(ev.data instanceof ArrayBuffer)) return;
@@ -182,7 +197,11 @@ function openWs() {
 function closeWs() {
   if (ws) {
     ws.onclose = null;
-    try { ws.close(); } catch { /* ignore */ }
+    try {
+      ws.close();
+    } catch {
+      /* ignore */
+    }
   }
   ws = null;
 }
@@ -330,7 +349,10 @@ self.onmessage = async (ev: MessageEvent) => {
       break;
     case 'pause':
       running = false;
-      if (animId) { cancelAnimationFrame(animId); animId = 0; }
+      if (animId) {
+        cancelAnimationFrame(animId);
+        animId = 0;
+      }
       closeWs();
       break;
     case 'resume':

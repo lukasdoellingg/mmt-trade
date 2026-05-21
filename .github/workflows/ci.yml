@@ -1,0 +1,208 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install:
+    name: install workspaces
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+
+  typecheck:
+    name: typescript typecheck
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
+  lint:
+    name: eslint + prettier
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+
+  audit:
+    name: npm audit (high+)
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+
+  test-smoke:
+    name: smoke tests
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run test:smoke
+
+  test-regression:
+    name: regression tests (JS)
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run test:regression
+
+  test-integration:
+    name: integration tests
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run test:integration
+
+  build-frontend:
+    name: build legacy frontend
+    needs: [typecheck, lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  build-shell:
+    name: build wasm shell
+    needs: [typecheck, lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build:shell
+
+  build-engine-smoke:
+    name: emscripten + odin smoke build
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: cache emsdk
+        id: emsdk-cache
+        uses: actions/cache@v4
+        with:
+          path: packages/engine/.emsdk
+          key: emsdk-3.1.74-${{ runner.os }}
+      - name: install emsdk
+        if: steps.emsdk-cache.outputs.cache-hit != 'true'
+        run: bash packages/engine/scripts/install-emscripten.sh
+      - name: install odin
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y odin || (
+            git clone --depth 1 https://github.com/odin-lang/Odin.git /tmp/Odin
+            cd /tmp/Odin && make release
+            sudo cp odin /usr/local/bin/
+          )
+      - name: install vendor sources
+        run: bash packages/engine/scripts/install-vendor.sh
+      - name: build smoke wasm
+        run: |
+          source packages/engine/.emsdk/emsdk_env.sh
+          bash packages/engine/build.sh --smoke
+      - name: enforce output size budget
+        run: |
+          wasm=packages/shell/public/terminal_smoke.wasm
+          test -f "$wasm" || (echo "smoke wasm missing"; exit 1)
+          size=$(wc -c < "$wasm")
+          echo "smoke wasm size: $size B"
+          [ "$size" -ge 102400 ]  || (echo "smoke wasm < 100 KB (broken build?)"; exit 1)
+          [ "$size" -le 8388608 ] || (echo "smoke wasm > 8 MB (regression)"; exit 1)
+
+  test-cbor-odin:
+    name: odin CBOR regression
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: install odin
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y odin || (
+            git clone --depth 1 https://github.com/odin-lang/Odin.git /tmp/Odin
+            cd /tmp/Odin && make release
+            sudo cp odin /usr/local/bin/
+          )
+      - run: npm run test:cbor:odin
+
+  ci-success:
+    name: CI gate
+    needs:
+      - typecheck
+      - lint
+      - audit
+      - test-smoke
+      - test-regression
+      - test-integration
+      - build-frontend
+      - build-shell
+      - build-engine-smoke
+      - test-cbor-odin
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All required CI jobs passed."

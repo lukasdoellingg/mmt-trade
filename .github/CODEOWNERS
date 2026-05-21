@@ -1,0 +1,13 @@
+# Default owners for all paths — adjust @lukas to your GitHub handle.
+* @lukas
+
+# Engine / WASM
+/packages/engine/ @lukas
+/packages/shell/ @lukas
+
+# Backend security surface
+/web/backend/lib/security.js @lukas
+/web/backend/lib/mmtCbor.js @lukas
+
+# CI / governance
+/.github/ @lukas
