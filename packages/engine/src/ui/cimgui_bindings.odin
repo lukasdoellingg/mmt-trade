@@ -87,11 +87,11 @@ foreign {
     @(link_name="igCheckbox")
     checkbox :: proc(label: cstring, value: ^bool) -> bool ---
 
-    @(link_name="igText")
-    text :: proc(fmt: cstring) ---
+    @(link_name="igTextUnformatted")
+    text :: proc(label: cstring) ---
 
     @(link_name="igDockSpaceOverViewport")
-    dockspace_over_viewport :: proc(viewport: rawptr, flags: u32, window_class: rawptr) -> ImGuiID ---
+    dockspace_over_viewport :: proc(viewport: rawptr, flags: u32, window_class: rawptr, dock_id: ImGuiID) -> ImGuiID ---
 
     @(link_name="igGetMainViewport")
     get_main_viewport :: proc() -> rawptr ---
@@ -103,13 +103,11 @@ foreign {
     load_ini_settings_from_memory :: proc(ini_data: cstring, ini_size: u32) ---
 }
 
-// Convenience helpers that wrap the raw bindings for the common terminal
-// patterns. They never allocate.
 imgui_enable_docking :: proc "contextless" () {
     mmt_imgui_enable_docking()
 }
 
 imgui_main_dockspace :: proc "contextless" () {
     viewport := get_main_viewport()
-    _ = dockspace_over_viewport(viewport, u32(ImGuiDockNodeFlags.PassthruCentralNode), nil)
+    _ = dockspace_over_viewport(viewport, u32(ImGuiDockNodeFlags.PassthruCentralNode), nil, 0)
 }

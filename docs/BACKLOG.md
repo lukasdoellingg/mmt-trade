@@ -27,24 +27,24 @@
 
 ## A — `packages/engine` + `packages/shell` (Ziel: `terminal.wasm`)
 
-| ID  | Aufgabe                                                              | Status                                                        |
-| --- | -------------------------------------------------------------------- | ------------------------------------------------------------- |
-| A1  | Toolchain: Emscripten, Vendor, `build.sh`, Smoke-Triangle            | **done**                                                      |
-| A2  | `terminal.wasm` Link (`odin_env..write`-Stub)                        | **done**                                                      |
-| A3  | Shell: CSP, `/terminal.js` ohne Blob, GLctx-Init                     | **done**                                                      |
-| A4  | MMT-Layout-Chrome (Topbar 32px, Rail 34px, Chart 78% / Ladder 22%)   | **done** (Sokol-Quads)                                        |
-| A5  | Demo-Kerzen (500 OHLC) + NDC-Fix (Canvas-Koordinaten)                | **done**                                                      |
-| A5b | Viewport `visibleStartIndex` auf ≥0 clampen                          | **done** (P0-Bugfix)                                          |
-| A6  | Input-Bridge → Pan/Zoom (WASM-Heap zero-copy)                        | **done**                                                      |
-| A7  | ImGui + cimgui + `sokol_imgui` linken, Docking                       | **blockiert** — sokol-c HEAD vs imgui 1.91.5                  |
-| A8  | Pane-Registry: Chart, Ladder×2, SymbolList, Stats (dockable)         | skeleton (`ui/panes.odin`)                                    |
-| A9  | `net/cbor.odin` gegen HAR-Sample validieren                          | **done** (`npm run test:cbor`)                                |
-| A10 | `net/mmt_protocol.odin` — Subscribe/getrange/Streams 1/4/5/6/9/13/16 | **done** (RPC builder); Live-WS via Backend-Proxy             |
-| A11 | Live-Heatmap: Shell `/ws/heatmap` → `mmt_feed_heatmap_frame`         | **done** (Protobuf-Bridge); emscripten WS deferred            |
-| A12 | Layer-Parität (heatmap_gpu, vwap, ema, footprint, vpvr, ob_depth, …) | **teilweise** — VWAP+EMA live; heatmap preview; rest skeleton |
-| A13 | WASM-Workers + SAB (decode, indicator, heatmap texture)              | skeleton                                                      |
-| A14 | Cutover: `packages/shell` = einzige UI, Vue → `legacy-frontend`      | offen                                                         |
-| A15 | Performance: 120 FPS, 0 alloc/frame Hot-Path, ≤200 MB                | offen                                                         |
+| ID  | Aufgabe                                                              | Status                                                                    |
+| --- | -------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| A1  | Toolchain: Emscripten, Vendor, `build.sh`, Smoke-Triangle            | **done**                                                                  |
+| A2  | `terminal.wasm` Link (`odin_env..write`-Stub)                        | **done**                                                                  |
+| A3  | Shell: CSP, `/terminal.js` ohne Blob, GLctx-Init                     | **done**                                                                  |
+| A4  | MMT-Layout-Chrome (Topbar 32px, Rail 34px, Chart 78% / Ladder 22%)   | **done** (Sokol-Quads)                                                    |
+| A5  | Demo-Kerzen (500 OHLC) + NDC-Fix (Canvas-Koordinaten)                | **done**                                                                  |
+| A5b | Viewport `visibleStartIndex` auf ≥0 clampen                          | **done** (P0-Bugfix)                                                      |
+| A6  | Input-Bridge → Pan/Zoom (WASM-Heap zero-copy)                        | **done**                                                                  |
+| A7  | ImGui + cimgui + `sokol_imgui` linken, Docking                       | **teilweise** — sokol-c @ 7f69259 + imgui 1.91.5-dock baut; Menu-Bar live |
+| A8  | Pane-Registry: Chart, Ladder×2, SymbolList, Stats (dockable)         | skeleton (`ui/panes.odin`)                                                |
+| A9  | `net/cbor.odin` gegen HAR-Sample validieren                          | **done** (`npm run test:cbor`)                                            |
+| A10 | `net/mmt_protocol.odin` — Subscribe/getrange/Streams 1/4/5/6/9/13/16 | **done** (RPC builder); Live-WS via Backend-Proxy                         |
+| A11 | Live-Heatmap: Shell `/ws/heatmap` → `mmt_feed_heatmap_frame`         | **done** (Protobuf-Bridge); emscripten WS deferred                        |
+| A12 | Layer-Parität (heatmap_gpu, vwap, ema, footprint, vpvr, ob_depth, …) | **teilweise** — VWAP+EMA live; heatmap preview; rest skeleton             |
+| A13 | WASM-Workers + SAB (decode, indicator, heatmap texture)              | skeleton                                                                  |
+| A14 | Cutover: `packages/shell` = einzige UI, Vue → `legacy-frontend`      | offen                                                                     |
+| A15 | Performance: 120 FPS, 0 alloc/frame Hot-Path, ≤200 MB                | offen                                                                     |
 
 ---
 

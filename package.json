@@ -39,6 +39,8 @@
     "test:mmt-cbor": "node scripts/test-mmt-cbor.mjs",
     "test:cbor:odin": "bash packages/engine/scripts/test-cbor.sh",
     "test:cbor": "npm run test:cbor:odin && npm run test:mmt-cbor",
+    "setup:mmt": "node scripts/setup-mmt-token.mjs",
+    "check:mmt": "node -e \"const t=process.env.MMT_WS_TOKEN||require('fs').readFileSync('web/backend/.env','utf8').match(/^MMT_WS_TOKEN=(.+)$/m)?.[1]; console.log(t&&t.length>20?'MMT token present ('+t.slice(0,8)+'…)':'No MMT_WS_TOKEN — run: npm run setup:mmt')\"",
     "analyze:mmt-har": "node scripts/analyze-mmt-har.mjs"
   },
   "lint-staged": {

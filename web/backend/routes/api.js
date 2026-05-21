@@ -40,12 +40,17 @@ export function mountApiRoutes(app, ctx, metrics) {
   app.get('/', (_, res) => res.json({ ok: true, name: 'MMT-Trade API' }));
 
   app.get('/api/health', (_req, res) => {
+    const mmtEnabled = Boolean(process.env.MMT_WS_TOKEN);
     res.json({
       ok: true,
       service: 'mmt-trade-backend',
       uptimeSec: Math.floor(process.uptime()),
       heatmapUpstreamCount: heatmapUpstreams.size,
-      mmtUpstreamEnabled: Boolean(process.env.MMT_WS_TOKEN),
+      mmtUpstreamEnabled: mmtEnabled,
+      heatmapSource: mmtEnabled ? 'mmt' : 'binance-fallback',
+      mmtSetupHint: mmtEnabled
+        ? null
+        : 'Run: node scripts/setup-mmt-token.mjs <JWT> — token from app.mmt.gg DevTools WS URL',
     });
   });
 
