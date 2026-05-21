@@ -7,7 +7,7 @@
     "dev": "node --watch index.js"
   },
   "dependencies": {
-    "cbor": "^9.0.2",
+    "cbor": "^10.0.12",
     "ccxt": "^4.2.0",
     "compression": "^1.8.1",
     "cors": "^2.8.5",
