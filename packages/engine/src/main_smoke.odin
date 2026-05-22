@@ -1,16 +1,24 @@
-// Hello-Triangle smoke test for the Phase 2 toolchain.
+// Hello-Triangle smoke test for the Phase 1 toolchain.
 //
-// If this compiles to a `terminal_smoke.wasm` that runs in the shell and shows
-// a single colored triangle on the canvas, the Emscripten + Odin + Sokol chain
-// is functional and Phase 3 (real chart engine) can begin.
+// If this compiles to a `terminal_smoke.wasm` that runs in the shell and
+// shows a single colored triangle on the canvas, the Emscripten + Odin +
+// Sokol chain is functional and Phase 2 (real chart engine) can begin.
 //
-// Compile with:
-//   npm run build:engine -- --smoke
+// Build:
+//   bash packages/engine/build.sh --smoke
+//
+// API notes — Sokol 2026-05 (HEAD of github.com/floooh/sokol-odin):
+//   * `vs:` / `fs:` got renamed to `vertex_func:` / `fragment_func:` with a
+//     nested `Shader_Function { source = ... }` struct.
+//   * `begin_default_pass` got replaced by `begin_pass(Pass{action, swapchain})`.
+//     Swapchain comes from sokol_glue.h (we fill it manually for now;
+//     Phase 2 will wire `sokol_glue` once `sokol_app` boots properly).
+//   * `main` as `@(export)` is reserved on `js_wasm32` (Odin uses it for the
+//     runtime entry); the smoke binary exports `app_init`/`app_step` instead.
 package smoke
 
 import sg "../vendor/sokol-odin/sokol/gfx"
 
-// Vertex shader: positions in clip space + per-vertex color.
 @(private)
 vertexShaderSource :: `#version 300 es
 layout(location = 0) in vec4 in_position;
@@ -38,26 +46,37 @@ triangleVertices := [?]f32{
     0.6, -0.5, 0.0, 1.0,   0.2, 0.4, 1.0, 1.0,
 }
 
-@(private)
-trianglePipeline: sg.Pipeline
-@(private)
-triangleBindings: sg.Bindings
-@(private)
-passAction: sg.Pass_Action
+@(private) trianglePipeline: sg.Pipeline
+@(private) triangleBindings: sg.Bindings
+@(private) passAction:       sg.Pass_Action
+@(private) swapchainWidth:       i32 = 800
+@(private) swapchainHeight:      i32 = 600
+@(private) swapchainFramebuffer:  u32 = 0
 
-// Entry point called by Emscripten glue. Once Sokol is initialized via
-// emscripten_set_main_loop, the engine just renders one frame per RAF.
+// Called from JS once the WebGL2 context is ready. The shell passes the
+// drawing-surface dimensions; resize is handled via `smoke_resize`.
 @(export)
-main :: proc "c" () -> i32 {
-    sg.setup({})
+app_init :: proc "c" (width: i32, height: i32) -> i32 {
+    swapchainWidth  = width
+    swapchainHeight = height
+
+    sg.setup({
+        environment = {
+            defaults = {
+                color_format = .RGBA8,
+                depth_format = .NONE,
+                sample_count = 1,
+            },
+        },
+    })
 
     triangleBindings.vertex_buffers[0] = sg.make_buffer({
         data = { ptr = &triangleVertices[0], size = size_of(triangleVertices) },
     })
 
     shader := sg.make_shader({
-        vs = { source = vertexShaderSource },
-        fs = { source = fragmentShaderSource },
+        vertex_func   = { source = vertexShaderSource },
+        fragment_func = { source = fragmentShaderSource },
     })
 
     trianglePipeline = sg.make_pipeline({
@@ -78,9 +97,31 @@ main :: proc "c" () -> i32 {
 }
 
 @(export)
-step :: proc "c" (delta_seconds: f32) {
+app_set_gl_framebuffer :: proc "c" (framebuffer: u32) {
+    swapchainFramebuffer = framebuffer
+}
+
+@(export)
+app_resize :: proc "c" (width: i32, height: i32) {
+    swapchainWidth  = width
+    swapchainHeight = height
+}
+
+@(export)
+app_step :: proc "c" (delta_seconds: f32) {
     _ = delta_seconds
-    sg.begin_default_pass(passAction, 800, 600)
+    sg.begin_pass({
+        action = passAction,
+        swapchain = {
+            width        = swapchainWidth,
+            height       = swapchainHeight,
+            sample_count = 1,
+            color_format = .RGBA8,
+            depth_format = .NONE,
+            gl           = { framebuffer = swapchainFramebuffer },
+        },
+    })
+    sg.apply_viewport(0, 0, swapchainWidth, swapchainHeight, true)
     sg.apply_pipeline(trianglePipeline)
     sg.apply_bindings(triangleBindings)
     sg.draw(0, 3, 1)
