@@ -28,15 +28,6 @@ export default defineConfig({
     format: 'es',
   },
   assetsInclude: ['**/*.wasm'],
-  build: {
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          highcharts: ['highcharts/highstock'],
-        },
-      },
-    },
-  },
   optimizeDeps: {
     exclude: ['*.wasm'],
   },
