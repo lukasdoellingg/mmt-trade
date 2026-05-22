@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && cp -f public/terminal.wasm public/terminal.js public/terminal_smoke.wasm public/terminal_smoke.js dist/ 2>/dev/null || true",
+    "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {},

@@ -12,7 +12,7 @@ export type BusEvent =
   | { type: 'orderflow:ping'; widgetId: string }
   | { type: 'workspace:dirty' };
 
-type Listener = (_event: BusEvent) => void;
+type Listener = (e: BusEvent) => void;
 const listeners: Listener[] = [];
 
 export function busEmit(e: BusEvent): void {

@@ -1,4 +1,4 @@
-# MMT.gg vs MMT-Trade — Architektur-Parität (Stand 2026-05)
+# MMT.gg vs 471 Terminal — Architektur-Parität (Stand 2026-05)
 
 > Ehrlicher Vergleich nach VWAP-Suite, Multi-Worker-Chart und OB-Heatmap-Layer.  
 > **Nicht** 1:1 identisch — funktional gleiche *Schichten*, andere *Runtime*.
@@ -13,7 +13,7 @@
 
 ## Schicht-für-Schicht
 
-| Schicht | MMT.gg (`terminal.wasm`) | MMT-Trade | Parität |
+| Schicht | MMT.gg (`terminal.wasm`) | 471 Terminal | Parität |
 |---------|--------------------------|--------------|---------|
 | **UI / Layout** | ImGui in WASM | Vue Main Thread | ◐ Overlay only |
 | **Chart-Kerzen** | Odin + Sokol WebGL | Odin `engine.wasm` + TS `ChartRenderer` | ◐ Gleiche Daten, anderer GL-Pfad |

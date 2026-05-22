@@ -17,13 +17,17 @@ import {
 } from './mmtProtocol.js';
 import { decodeMmtHeatmapMessage, capLevels } from './mmtCbor.js';
 import { encodeHeatmapFrame, broadcastToClients } from './heatmapBook.js';
-import { createBackoffController, redactTokensInUrl } from './security.js';
+import { createBackoffController } from './security.js';
 
 const PING_INTERVAL_MS = 25_000;
 const SNAPSHOT_CAP = 5000;
 const GETRANGE_DAYS = Number(process.env.MMT_GETRANGE_DAYS || 7);
 const MMT_WS_MAX_PAYLOAD_BYTES = Number(process.env.MMT_WS_MAX_PAYLOAD_BYTES || 16 * 1024 * 1024);
 const MMT_RECONNECT_ATTEMPTS = Number(process.env.MMT_RECONNECT_ATTEMPTS || 5);
+
+function redactTokenInUrl(url) {
+  return url.replace(/token=[^&]+/, 'token=REDACTED');
+}
 
 /**
  * @param {string} symbolKey
@@ -59,7 +63,7 @@ export function startMmtHeatmapUpstream(symbolKey, exchanges, HeatmapFrame, time
     const levels = capLevels(decoded.levels);
     if (!levels.length) return;
 
-    let openSec = decoded.ts > 1e12 ? Math.floor(decoded.ts / 1000) : decoded.ts | 0;
+    let openSec = decoded.ts > 1e12 ? Math.floor(decoded.ts / 1000) : (decoded.ts | 0);
     if (openSec <= 0) openSec = Math.floor(Date.now() / 1000);
 
     const bucketMs = openSec * 1000;
@@ -133,11 +137,7 @@ export function startMmtHeatmapUpstream(symbolKey, exchanges, HeatmapFrame, time
       }
       upstream.pingTimer = setInterval(() => {
         if (ws.readyState === 1) {
-          try {
-            ws.send(JSON.stringify({ method: 'ping' }));
-          } catch {
-            /* ignore */
-          }
+          try { ws.send(JSON.stringify({ method: 'ping' })); } catch { /* ignore */ }
         }
       }, PING_INTERVAL_MS);
       console.log(`[MMT] upstream ${symbolKey} ${exchangeString} ${mmtPair} tf=${timeframeSec}s`);
@@ -169,19 +169,13 @@ export function startMmtHeatmapUpstream(symbolKey, exchanges, HeatmapFrame, time
       if (upstream.reconnectBackoff.isExhausted()) {
         console.error(`[MMT] reconnect exhausted for ${symbolKey} — dropping clients`);
         for (const client of upstream.clients) {
-          try {
-            client.close(1011, 'Upstream unavailable');
-          } catch {
-            /* ignore */
-          }
+          try { client.close(1011, 'Upstream unavailable'); } catch { /* ignore */ }
         }
         upstream.clients.clear();
         return;
       }
       const delayMs = upstream.reconnectBackoff.nextDelayMs();
-      console.log(
-        `[MMT] reconnect in ${Math.round(delayMs)}ms (attempt ${upstream.reconnectBackoff.currentAttempt()}) target=${redactTokensInUrl(upstreamUrl)}`,
-      );
+      console.log(`[MMT] reconnect in ${Math.round(delayMs)}ms (attempt ${upstream.reconnectBackoff.currentAttempt()}) target=${redactTokenInUrl(upstreamUrl)}`);
       upstream.reconnectTimer = setTimeout(() => {
         upstream.reconnectTimer = null;
         connect();
@@ -205,9 +199,5 @@ export function closeMmtUpstream(upstream) {
     clearTimeout(upstream.reconnectTimer);
     upstream.reconnectTimer = null;
   }
-  try {
-    upstream.ws?.close();
-  } catch {
-    /* ignore */
-  }
+  try { upstream.ws?.close(); } catch { /* ignore */ }
 }

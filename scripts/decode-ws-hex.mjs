@@ -144,7 +144,7 @@ console.log('\n--- CBOR (best effort) ---');
 if (cbor) console.log(JSON.stringify(cbor.val, null, 2));
 else console.log('(not CBOR)');
 
-console.log('\n--- Protobuf HeatmapFrame (MMT-Trade backend) ---');
+console.log('\n--- Protobuf HeatmapFrame (471 backend) ---');
 if (proto) console.log(JSON.stringify(proto, null, 2));
 else console.log('(not our HeatmapFrame)');
 

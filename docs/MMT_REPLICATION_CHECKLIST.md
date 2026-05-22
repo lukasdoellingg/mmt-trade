@@ -16,7 +16,7 @@
 
 ## Architektur-Vergleich (logisch geprüft)
 
-| Schicht | MMT.gg (bekannt / wahrscheinlich) | MMT-Trade (Ist) | Bewertung |
+| Schicht | MMT.gg (bekannt / wahrscheinlich) | 471 Terminal (Ist) | Bewertung |
 |---------|-----------------------------------|--------------------|-----------|
 | **Main thread** | Input, DOM, evtl. leichte Overlays | Grid, Crosshair, Symbol-Bar, RAF-Compose | OK |
 | **Chart compute+draw** | Odin WASM + **WebGL aus WASM** (`odin.js` + `webgl2` imports) | `heatmapWorker`: Odin nur Geometrie, **WebGL in TS** (`ChartRenderer`) | Funktional OK, nicht MMT-Parität |
@@ -105,4 +105,4 @@ IndicatorHost (inside heatmapWorker)
 - [`MMT_WS_CAPTURE.md`](./MMT_WS_CAPTURE.md) — CBOR-Captures dekodiert
 - [`MMT_ODIN_RUNTIME.md`](./MMT_ODIN_RUNTIME.md) — Odin/WebGL/Worker
 - [`MMT_DEVTOOLS.md`](./MMT_DEVTOOLS.md) — Schritt-für-Schritt DevTools
-- [`CURRENT_STACK.md`](./CURRENT_STACK.md) — MMT-Trade Soll/Ist
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) — 471 Soll/Ist
