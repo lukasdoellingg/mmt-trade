@@ -14,17 +14,17 @@ import {
   installHeartbeat,
   MAX_WEBSOCKET_PAYLOAD_BYTES,
 } from './security.js';
+import { attachPathfulUpgrade } from './wsUpgradeRouter.js';
 import { startBinanceHeatmap, closeBinanceUpstream, MAX_HEATMAP_SYMBOLS } from './binanceHeatmapUpstream.js';
 import { HeatmapFrame } from './runtime.js';
 
 export function attachHeatmapWebSocket(server, { ctx, metrics, allowedCorsOrigins, port }) {
   const webSocketGate = createWebSocketSecurityGate(allowedCorsOrigins);
   const wss = new WebSocketServer({
-    server,
-    path: '/ws/heatmap',
-    verifyClient: webSocketGate.verifyClient,
+    noServer: true,
     maxPayload: MAX_WEBSOCKET_PAYLOAD_BYTES,
   });
+  attachPathfulUpgrade(server, '/ws/heatmap', wss, webSocketGate);
   installHeartbeat(wss);
   const { heatmapUpstreams } = ctx;
 
