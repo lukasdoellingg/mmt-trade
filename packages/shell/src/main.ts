@@ -4,7 +4,7 @@
  * this file only handles canvas wiring, loader UX, and a graceful failure path
  * for browsers without SAB.
  *
- * Phase 2 will wire `loadTerminal()` to the real `odin-runtime.ts`.
+ * Loads terminal.wasm via `odin-runtime.ts` (Emscripten MODULARIZE glue).
  */
 
 import { loadTerminal, type TerminalRuntimeOptions } from './odin-runtime';
@@ -31,17 +31,16 @@ async function bootstrap(): Promise<void> {
     return;
   }
   if (!ensureCrossOriginIsolation()) {
-    setLoaderMessage(
-      'crossOriginIsolated=false — server must send COOP same-origin + COEP require-corp.',
-    );
-    return;
+    // COOP/COEP required later for WASM workers + SAB; core chart runs without it.
+    setLoaderMessage('Loading (crossOriginIsolated=false, workers deferred)…');
   }
 
+  const useSmoke = new URLSearchParams(window.location.search).has('smoke');
   const runtimeOptions: TerminalRuntimeOptions = {
     canvas: terminalCanvas,
-    wasmUrl: '/terminal.wasm',
-    odinJsUrl: '/odin.js',
-    devicePixelRatio: window.devicePixelRatio || 1,
+    wasmUrl: useSmoke ? '/terminal_smoke.wasm' : '/terminal.wasm',
+    jsUrl: useSmoke ? '/terminal_smoke.js' : '/terminal.js',
+    devicePixelRatio: Math.min(2, window.devicePixelRatio || 1),
     onProgress: setLoaderMessage,
   };
 
@@ -51,7 +50,18 @@ async function bootstrap(): Promise<void> {
   } catch (loadError) {
     const message = loadError instanceof Error ? loadError.message : String(loadError);
     setLoaderMessage(`Failed to load terminal: ${message}`);
+    if (loaderOverlayEl) {
+      loaderOverlayEl.classList.remove('hidden');
+      loaderOverlayEl.style.opacity = '1';
+      loaderOverlayEl.style.color = '#f87171';
+    }
   }
+
+  window.addEventListener('error', (event) => {
+    if (!String(event.message).includes('Aborted')) return;
+    setLoaderMessage(`WASM aborted: ${event.message} — hard-reload (Cmd+Shift+R) after npm run build:engine`);
+    loaderOverlayEl?.classList.remove('hidden');
+  });
 }
 
 void bootstrap();

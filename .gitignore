@@ -92,3 +92,5 @@ terminal.data
 students_workfolder/
 /mmt-trade/
 
+packages/shell/public/
+web/frontend/public/terminal*
