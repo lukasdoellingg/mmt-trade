@@ -148,6 +148,7 @@ odin build "$TARGET_SRC" -file "${ODIN_FLAGS[@]}"
 # ── Compile Sokol C / cimgui ──────────────────────────────────────
 EMCC_COMMON=(
   -I "$VENDOR_DIR/sokol-c"
+  -I "$VENDOR_DIR/sokol-c/util"
   -I "$VENDOR_DIR/cimgui"
   -I "$VENDOR_DIR/cimgui/imgui"
   -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS
@@ -171,6 +172,25 @@ emcc "${EMCC_COMMON[@]}" -c "$VENDOR_DIR/sokol-c/sokol_gfx.h" -x c -DSOKOL_IMPL 
 # Compile without -flto so the stub links cleanly with the non-LTO Odin .wasm.o.
 emcc -c "$ENGINE_DIR/stubs/wasm_stubs.c" -o "$WORK_DIR/sokol/wasm_stubs.o"
 emcc -c "$ENGINE_DIR/stubs/odin_env_write.s" -o "$WORK_DIR/sokol/odin_env_write.o"
+
+# ── Dear ImGui + cimgui + simgui (terminal only) ───────────────────
+BUILD_IMGUI="${BUILD_IMGUI:-1}"
+if (( SMOKE_MODE == 0 && BUILD_IMGUI == 1 )); then
+  IMGUI_DIR="$VENDOR_DIR/cimgui/imgui"
+  EMCPP_FLAGS=(
+    "${EMCC_COMMON[@]}"
+    -DIMGUI_DISABLE_DEMO_WINDOWS
+    -std=c++17
+    -fno-exceptions
+    -fno-rtti
+  )
+  echo "[engine] em++ imgui + cimgui + simgui"
+  for src in imgui.cpp imgui_draw.cpp imgui_tables.cpp imgui_widgets.cpp; do
+    em++ "${EMCPP_FLAGS[@]}" -c "$IMGUI_DIR/$src" -o "$WORK_DIR/sokol/${src%.cpp}.o"
+  done
+  em++ "${EMCPP_FLAGS[@]}" -c "$VENDOR_DIR/cimgui/cimgui.cpp" -o "$WORK_DIR/sokol/cimgui.o"
+  em++ "${EMCPP_FLAGS[@]}" -c "$ENGINE_DIR/stubs/sokol_imgui.cpp" -o "$WORK_DIR/sokol/sokol_imgui.o"
+fi
 
 # ── Link with emcc to produce terminal.wasm + terminal.js ─────────
 #

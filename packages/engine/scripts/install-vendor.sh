@@ -13,10 +13,8 @@ mkdir -p "$VENDOR_DIR"
 
 # Pinned commits — bump intentionally, not silently.
 SOKOL_ODIN_REV="${SOKOL_ODIN_REV:-3a96b8e}"
-# Default master pulls latest simgui (imgui≥1.92). For imgui 1.91.5-dock set e.g.:
-#   SOKOL_C_REV=<pre-1.92-sokol-commit> bash packages/engine/scripts/install-vendor.sh
-# Or bump CIMGUI_REV / IMGUI_REV to 1.92.x-docking and keep master.
-SOKOL_C_REV="${SOKOL_C_REV:-master}"
+# simgui before Dear ImGui 1.92 texture API (pairs with cimgui 1.91.5-dock).
+SOKOL_C_REV="${SOKOL_C_REV:-7f69259954a4829d9198e12348c0c9e95f5787b8}"
 CIMGUI_REV="${CIMGUI_REV:-1.91.5dock}"
 IMGUI_REV="${IMGUI_REV:-v1.91.5-docking}"
 

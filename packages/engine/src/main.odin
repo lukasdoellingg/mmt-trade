@@ -9,6 +9,7 @@ import "app"
 import "chart"
 import "data"
 import "gfx"
+import "ui"
 
 MAX_CHART_CANDLES :: 5000
 
@@ -56,6 +57,8 @@ app_init :: proc "c" (width_pixels, height_pixels: i32, device_pixel_ratio: f32)
     if min_price, max_price, ok := data.demo_candles_price_range(&candle_store_state); ok {
         chart.widget_set_price_targets(&chart_widget_state, min_price, max_price)
     }
+
+    ui.simgui_initialize()
 
     dpr := device_pixel_ratio
     if dpr <= 0 { dpr = 1 }
@@ -107,6 +110,16 @@ app_step :: proc "c" (delta_seconds: f32) {
 
     // TODO: re-enable candle batch after staging cap audit (widget emits >2k quads).
     _ = chart.widget_emit_candle_instances(&chart_widget_state)
+
+    state := app.application_state()
+    ui.simgui_begin_frame(
+        state.canvasWidthPixels,
+        state.canvasHeightPixels,
+        delta_seconds,
+        state.devicePixelRatio,
+    )
+    ui.layout_frame_draw(&workspace_layout, delta_seconds)
+    ui.simgui_end_frame()
 
     gfx.end_default_pass()
     gfx.commit_frame()
