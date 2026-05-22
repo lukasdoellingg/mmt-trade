@@ -59,6 +59,9 @@ htmlcov/
 
 # ── Node ──────────────────────────────────────────────────────────
 node_modules/
+test-results/
+playwright-report/
+playwright/.cache/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -74,21 +77,39 @@ captures/
 docs/captures/*.bin
 docs/captures/*.har
 
+# Committed test fixtures (mini CBOR columns)
+!tests/fixtures/
+!tests/fixtures/**
+
 # ── WASM artifacts (generated, not source) ────────────────────────
 web/frontend/public/engine.wasm
 web/frontend/public/terminal.wasm
+web/frontend/public/terminal_smoke.wasm
 packages/shell/public/engine.wasm
 packages/shell/public/terminal.wasm
+packages/shell/public/terminal_smoke.wasm
+packages/shell/public/terminal.js
+packages/shell/public/terminal_smoke.js
+packages/shell/public/*.data
+packages/engine/build/
 .odin-sdk/
+
+# ── Emscripten SDK (installed per developer, ~1.5 GB) ─────────────
+packages/engine/.emsdk/
+
+# ── Vendored third-party engine sources (fetched via install-vendor) ──
+packages/engine/vendor/sokol-c/
+packages/engine/vendor/sokol-odin/
+packages/engine/vendor/cimgui/
 
 # ── Reference MMT binaries (never commit, licensing unclear) ──────
 terminal.wasm
 terminal.js
 terminal.data
 
-# ── Legacy / snapshot directories pending user-confirmed deletion ──
-# Tracked by .gitignore to avoid accidental commits while we wait for
-# permission to remove them (see plan Phase 7 user-confirmation note).
+# ── Legacy / snapshot directories (removed in Phase 0 cleanup) ─────
+# Retained as ignore entries so a stray re-clone of an old snapshot
+# can't accidentally re-enter the index.
 students_workfolder/
 /mmt-trade/
 web/legacy-frontend/

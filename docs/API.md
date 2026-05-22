@@ -14,7 +14,7 @@ Erfolgreiche Antworten sind JSON-Objekte. Struktur je nach Endpoint; typisches M
 ```json
 {
   "symbol": "BTC/USDT",
-  "data": { }
+  "data": {}
 }
 ```
 
@@ -64,10 +64,10 @@ Top-USDT-Symbole einer Exchange nach Volume.
 
 **Query Parameters:**
 
-| Parameter | Typ | Standard | Beschreibung |
-|-----------|-----|----------|--------------|
-| `exchange` | string | `binance` | Exchange-Name |
-| `limit` | number | `10` | Anzahl (max. 20) |
+| Parameter  | Typ    | Standard  | Beschreibung     |
+| ---------- | ------ | --------- | ---------------- |
+| `exchange` | string | `binance` | Exchange-Name    |
+| `limit`    | number | `10`      | Anzahl (max. 20) |
 
 **Response:**
 
@@ -90,20 +90,18 @@ Spot-OHLCV-Kerzen einer Exchange.
 
 **Query Parameters:**
 
-| Parameter | Typ | Standard | Beschreibung |
-|-----------|-----|----------|--------------|
-| `exchange` | string | `binance` | Exchange-ID |
-| `symbol` | string | `BTC/USDT` | Trading-Paar |
-| `timeframe` | string | — | `5m`, `15m`, `1h`, `4h`, `1d` |
-| `limit` | number | `50` | Anzahl (max. 2000) |
+| Parameter   | Typ    | Standard   | Beschreibung                  |
+| ----------- | ------ | ---------- | ----------------------------- |
+| `exchange`  | string | `binance`  | Exchange-ID                   |
+| `symbol`    | string | `BTC/USDT` | Trading-Paar                  |
+| `timeframe` | string | —          | `5m`, `15m`, `1h`, `4h`, `1d` |
+| `limit`     | number | `50`       | Anzahl (max. 2000)            |
 
 **Response:**
 
 ```json
 {
-  "ohlcv": [
-    [1704067200000, 42000, 42500, 41900, 42300, 1234.56]
-  ]
+  "ohlcv": [[1704067200000, 42000, 42500, 41900, 42300, 1234.56]]
 }
 ```
 
@@ -117,11 +115,11 @@ Futures-OHLCV über mehrere Exchanges.
 
 **Query Parameters:**
 
-| Parameter | Typ | Standard | Beschreibung |
-|-----------|-----|----------|--------------|
-| `symbol` | string | `BTC/USDT` | Trading-Paar |
-| `timeframe` | string | `1h` | Zeitrahmen |
-| `limit` | number | `168` | Anzahl (max. 720) |
+| Parameter   | Typ    | Standard   | Beschreibung      |
+| ----------- | ------ | ---------- | ----------------- |
+| `symbol`    | string | `BTC/USDT` | Trading-Paar      |
+| `timeframe` | string | `1h`       | Zeitrahmen        |
+| `limit`     | number | `168`      | Anzahl (max. 720) |
 
 **Response:**
 
@@ -149,9 +147,9 @@ Spot-Ticker (Multi-Exchange).
 
 **Query Parameters:**
 
-| Parameter | Typ | Standard |
-|-----------|-----|----------|
-| `symbol` | string | `BTC/USDT` |
+| Parameter | Typ    | Standard   |
+| --------- | ------ | ---------- |
+| `symbol`  | string | `BTC/USDT` |
 
 **Response:**
 
@@ -179,9 +177,9 @@ Futures-Ticker (Multi-Exchange).
 
 **Query Parameters:**
 
-| Parameter | Typ | Standard |
-|-----------|-----|----------|
-| `symbol` | string | `BTC/USDT` |
+| Parameter | Typ    | Standard   |
+| --------- | ------ | ---------- |
+| `symbol`  | string | `BTC/USDT` |
 
 **Response:**
 
@@ -208,10 +206,10 @@ Funding-Rate-History (auf 8h-Äquivalent normalisiert).
 
 **Query Parameters:**
 
-| Parameter | Typ | Standard |
-|-----------|-----|----------|
-| `symbol` | string | `BTC/USDT` |
-| `limit` | number | `100` (max. 720) |
+| Parameter | Typ    | Standard         |
+| --------- | ------ | ---------------- |
+| `symbol`  | string | `BTC/USDT`       |
+| `limit`   | number | `100` (max. 720) |
 
 **Response:**
 
@@ -219,9 +217,7 @@ Funding-Rate-History (auf 8h-Äquivalent normalisiert).
 {
   "symbol": "BTC/USDT",
   "rates": {
-    "binance": [
-      { "ts": 1704067200000, "rate": 0.0001 }
-    ]
+    "binance": [{ "ts": 1704067200000, "rate": 0.0001 }]
   }
 }
 ```
@@ -238,9 +234,9 @@ Aktuelles Open Interest (Snapshot).
 
 **Query Parameters:**
 
-| Parameter | Typ | Standard |
-|-----------|-----|----------|
-| `symbol` | string | `BTC/USDT` |
+| Parameter | Typ    | Standard   |
+| --------- | ------ | ---------- |
+| `symbol`  | string | `BTC/USDT` |
 
 **Response:**
 
@@ -263,11 +259,11 @@ Open-Interest-Verlauf.
 
 **Query Parameters:**
 
-| Parameter | Typ | Standard |
-|-----------|-----|----------|
-| `symbol` | string | `BTC/USDT` |
-| `timeframe` | string | `1h` |
-| `limit` | number | `168` (max. 720) |
+| Parameter   | Typ    | Standard         |
+| ----------- | ------ | ---------------- |
+| `symbol`    | string | `BTC/USDT`       |
+| `timeframe` | string | `1h`             |
+| `limit`     | number | `168` (max. 720) |
 
 **Response:**
 
@@ -275,9 +271,7 @@ Open-Interest-Verlauf.
 {
   "symbol": "BTC/USDT",
   "history": {
-    "binance": [
-      { "ts": 1704067200000, "oi": 5340000000 }
-    ]
+    "binance": [{ "ts": 1704067200000, "oi": 5340000000 }]
   }
 }
 ```
@@ -294,9 +288,9 @@ Futures-vs.-Spot-Basis (annualisiert).
 
 **Query Parameters:**
 
-| Parameter | Typ | Standard |
-|-----------|-----|----------|
-| `symbol` | string | `BTC/USDT` |
+| Parameter | Typ    | Standard   |
+| --------- | ------ | ---------- |
+| `symbol`  | string | `BTC/USDT` |
 
 **Response:**
 
@@ -324,11 +318,11 @@ Geschätzte Liquidations (aggregiert).
 
 **Query Parameters:**
 
-| Parameter | Typ | Standard |
-|-----------|-----|----------|
-| `symbol` | string | `BTC/USDT` |
-| `timeframe` | string | `1h` |
-| `limit` | number | `168` (max. 720) |
+| Parameter   | Typ    | Standard         |
+| ----------- | ------ | ---------------- |
+| `symbol`    | string | `BTC/USDT`       |
+| `timeframe` | string | `1h`             |
+| `limit`     | number | `168` (max. 720) |
 
 **Response:**
 
@@ -336,9 +330,7 @@ Geschätzte Liquidations (aggregiert).
 {
   "symbol": "BTC/USDT",
   "timeframe": "1h",
-  "liquidations": [
-    { "ts": 1704067200000, "liq": 1234567 }
-  ]
+  "liquidations": [{ "ts": 1704067200000, "liq": 1234567 }]
 }
 ```
 
@@ -354,11 +346,11 @@ Order Book einer Exchange.
 
 **Query Parameters:**
 
-| Parameter | Typ | Standard |
-|-----------|-----|----------|
-| `exchange` | string | `binance` |
-| `symbol` | string | `BTC/USDT` |
-| `limit` | number | `100` (max. 500) |
+| Parameter  | Typ    | Standard         |
+| ---------- | ------ | ---------------- |
+| `exchange` | string | `binance`        |
+| `symbol`   | string | `BTC/USDT`       |
+| `limit`    | number | `100` (max. 500) |
 
 **Response:**
 
@@ -380,9 +372,9 @@ Order Books mehrerer Exchanges.
 
 **Query Parameters:**
 
-| Parameter | Typ | Standard |
-|-----------|-----|----------|
-| `symbol` | string | `BTC/USDT` |
+| Parameter | Typ    | Standard   |
+| --------- | ------ | ---------- |
+| `symbol`  | string | `BTC/USDT` |
 
 **Response:**
 
@@ -411,9 +403,9 @@ Order Books mehrerer Exchanges.
 
 **Query Parameters:**
 
-| Parameter | Typ | Standard |
-|-----------|-----|----------|
-| `symbol` | string | `BTC/USDT` |
+| Parameter | Typ    | Standard   |
+| --------- | ------ | ---------- |
+| `symbol`  | string | `BTC/USDT` |
 
 **Response:**
 
@@ -434,7 +426,7 @@ Order Books mehrerer Exchanges.
     "GBTC": { "price": 52.81, "change": 3.651 },
     "ETHE": { "price": 16.08, "change": 2.944 },
     "IBIT": { "price": 38.42, "change": 3.697 },
-    "FBTC": { "price": 59.01, "change": 3.690 }
+    "FBTC": { "price": 59.01, "change": 3.69 }
   },
   "cmeBasis": {
     "spot": 67659,
@@ -457,11 +449,11 @@ Historische Chart-Daten (Yahoo Finance).
 
 **Query Parameters:**
 
-| Parameter | Typ | Standard | Beschreibung |
-|-----------|-----|----------|--------------|
-| `ticker` | string | — | **Pflicht**, z. B. `DX-Y.NYB`, `^GSPC` |
-| `range` | string | `1y` | `1d`, `5d`, `1mo`, `3mo`, `6mo`, `1y`, `2y`, `5y`, `10y`, `ytd`, `max` |
-| `interval` | string | `1d` | `1m`, `5m`, `15m`, `1h`, `1d`, `1wk`, `1mo`, … |
+| Parameter  | Typ    | Standard | Beschreibung                                                           |
+| ---------- | ------ | -------- | ---------------------------------------------------------------------- |
+| `ticker`   | string | —        | **Pflicht**, z. B. `DX-Y.NYB`, `^GSPC`                                 |
+| `range`    | string | `1y`     | `1d`, `5d`, `1mo`, `3mo`, `6mo`, `1y`, `2y`, `5y`, `10y`, `ytd`, `max` |
+| `interval` | string | `1d`     | `1m`, `5m`, `15m`, `1h`, `1d`, `1wk`, `1mo`, …                         |
 
 **Response:**
 
@@ -476,7 +468,7 @@ Historische Chart-Daten (Yahoo Finance).
       "open": 106.64,
       "high": 106.75,
       "low": 106.13,
-      "close": 106.60,
+      "close": 106.6,
       "volume": 0
     }
   ]
@@ -487,18 +479,18 @@ Historische Chart-Daten (Yahoo Finance).
 
 **Häufige Ticker:**
 
-| Ticker | Beschreibung |
-|--------|----------------|
-| `DX-Y.NYB` | US Dollar Index (DXY) |
-| `^GSPC` | S&P 500 |
-| `GC=F` | Gold Futures |
-| `^TNX` | US 10Y Treasury Yield |
-| `BTC=F` | CME Bitcoin Futures |
-| `ETH=F` | CME Ethereum Futures |
-| `GBTC` | Grayscale Bitcoin Trust |
-| `ETHE` | Grayscale Ethereum Trust |
-| `IBIT` | iShares Bitcoin Trust ETF |
-| `FBTC` | Fidelity Bitcoin ETF |
+| Ticker     | Beschreibung              |
+| ---------- | ------------------------- |
+| `DX-Y.NYB` | US Dollar Index (DXY)     |
+| `^GSPC`    | S&P 500                   |
+| `GC=F`     | Gold Futures              |
+| `^TNX`     | US 10Y Treasury Yield     |
+| `BTC=F`    | CME Bitcoin Futures       |
+| `ETH=F`    | CME Ethereum Futures      |
+| `GBTC`     | Grayscale Bitcoin Trust   |
+| `ETHE`     | Grayscale Ethereum Trust  |
+| `IBIT`     | iShares Bitcoin Trust ETF |
+| `FBTC`     | Fidelity Bitcoin ETF      |
 
 ---
 
@@ -508,10 +500,10 @@ CME-Futures-Preis- und Volumen-Historie.
 
 **Query Parameters:**
 
-| Parameter | Typ | Standard |
-|-----------|-----|----------|
-| `symbol` | string | `BTC` |
-| `range` | string | `1y` |
+| Parameter | Typ    | Standard |
+| --------- | ------ | -------- |
+| `symbol`  | string | `BTC`    |
+| `range`   | string | `1y`     |
 
 **Response:**
 
@@ -538,10 +530,10 @@ CME-Futures-Preis- und Volumen-Historie.
 
 ## HTTP-Fehlercodes
 
-| Code | Bedeutung |
-|------|-----------|
-| `400` | Ungültige Parameter |
-| `500` | Internal Server Error |
+| Code  | Bedeutung                    |
+| ----- | ---------------------------- |
+| `400` | Ungültige Parameter          |
+| `500` | Internal Server Error        |
 | `504` | Gateway Timeout (über 120 s) |
 
 ---
@@ -554,12 +546,12 @@ REST deckt historische und aggregierte Daten ab. Live-Streams werden im Frontend
 
 Verwendet in Trade View und Heatmap-Sidebar.
 
-| Exchange | Endpoint (Auszug) |
-|----------|-------------------|
+| Exchange     | Endpoint (Auszug)                                        |
+| ------------ | -------------------------------------------------------- |
 | Binance Spot | `wss://stream.binance.com:9443/ws/{symbol}@depth@1000ms` |
-| Bybit Spot | `wss://stream.bybit.com/v5/public/spot` |
-| OKX | `wss://ws.okx.com:8443/ws/v5/public` |
-| Coinbase | `wss://ws-feed.exchange.coinbase.com` |
+| Bybit Spot   | `wss://stream.bybit.com/v5/public/spot`                  |
+| OKX          | `wss://ws.okx.com:8443/ws/v5/public`                     |
+| Coinbase     | `wss://ws-feed.exchange.coinbase.com`                    |
 
 Updates werden gebündelt (ca. 150 ms) an die UI übergeben. Reconnect und Stale-Detection sind in den Stream-Factories implementiert.
 
@@ -567,12 +559,12 @@ Updates werden gebündelt (ca. 150 ms) an die UI übergeben. Reconnect und Stale
 
 Direkt im Web Worker, nicht über das Backend:
 
-| Stream | Quelle |
-|--------|--------|
-| Klines | `wss://fstream.binance.com/stream` — `{symbol}@kline_{interval}` |
-| Liquidations | `{symbol}@forceOrder` |
-| CVD Perp | `{symbol}@aggTrade` (Futures) |
-| CVD Spot | `wss://stream.binance.com` — `{symbol}@aggTrade` |
+| Stream       | Quelle                                                           |
+| ------------ | ---------------------------------------------------------------- |
+| Klines       | `wss://fstream.binance.com/stream` — `{symbol}@kline_{interval}` |
+| Liquidations | `{symbol}@forceOrder`                                            |
+| CVD Perp     | `{symbol}@aggTrade` (Futures)                                    |
+| CVD Spot     | `wss://stream.binance.com` — `{symbol}@aggTrade`                 |
 
 Worker-Messages an den Main Thread: u. a. `meta`, `candles`, `viewport`, `volProfile`, `fps`, `fatal`.
 

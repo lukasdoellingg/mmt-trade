@@ -8,7 +8,7 @@
  */
 
 // Mounted under `/api/` the path is `/health`; unmounted checks use full path.
-const PUBLIC_API_PATHS = new Set(['/health', '/api/health']);
+const PUBLIC_API_PATHS = new Set(['/health', '/metrics', '/api/health', '/api/metrics']);
 
 /**
  * @returns {import('express').RequestHandler}

@@ -4,7 +4,7 @@
 // period boundaries. State machine accumulates a running sum that resets at
 // each anchor, so we can seed forward from candle 0 even when the visible
 // range starts mid-session.
-package layers
+package indicators
 
 import "../data"
 

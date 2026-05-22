@@ -3,7 +3,7 @@
 // Two pre-allocated f64 arrays mirror the candle store and are updated in
 // place. `recompute_full` runs once on initial load; `update_last` is called
 // on every closed-candle event.
-package layers
+package indicators
 
 import "../data"
 
