@@ -39,7 +39,7 @@ async function withBackend(fn) {
     await fn(port);
   } finally {
     child.kill('SIGTERM');
-    await new Promise((r) => { child.on('exit', r); setTimeout(() => { try { child.kill('SIGKILL'); } catch {} r(); }, 3_000); });
+    await new Promise((r) => { child.on('exit', r); setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already exited */ } r(); }, 3_000); });
   }
 }
 

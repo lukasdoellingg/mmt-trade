@@ -50,7 +50,7 @@ Dekodiert mit `cbor` (Node). **Eine Kerze / ein Zeitpunkt**, nicht tausende Spal
 
 ### Vergleich mit unserem Stack
 
-| | MMT (dieser Frame) | 471 Terminal |
+| | MMT (dieser Frame) | MMT-Trade |
 |--|-------------------|--------------|
 | Encoding | CBOR | Protobuf `HeatmapFrame` |
 | Modell | Ask/Bid-Preisarrays + Sizes | `levels[]` mit `price`, `volume`, `isBid` |

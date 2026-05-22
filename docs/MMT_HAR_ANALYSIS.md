@@ -128,9 +128,9 @@ Server → Client: überwiegend **Binary** (in HAR als lange Hex/Base64-Strings)
 
 ---
 
-## Vergleich mit 471 Terminal
+## Vergleich mit MMT-Trade
 
-| | MMT App | 471 Terminal |
+| | MMT App | MMT-Trade |
 |--|---------|----------------|
 | WS | 3× v2 JWT, RPC `subscribe`/`getrange` | 1× Protobuf `/ws/heatmap` |
 | Heatmap aggregiert | `stream:16`, 7 Börsen im `exchange`-String | `?aggregate=binance,bybit` |

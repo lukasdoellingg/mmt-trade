@@ -45,13 +45,13 @@ MMT trennt **nicht** alles in einen Worker, sondern:
 - **Overlays** (VWAP, CVD, …) → Chart-gebundene Serien
 - **Widgets** (DOM, Order Book) → eigene UI-Komponenten
 
-Empfehlung für 471 Terminal (bereits in `ARCHITECTURE.md`):
+Empfehlung für MMT-Trade (bereits in `CURRENT_STACK.md`):
 
 ```
 Layer-Worker OB-Heatmap  ←→  Chart-Worker (Kerzen/WASM)  ←→  Indicator-Workers (CPU)
 ```
 
-## Implementiert in 471 Terminal
+## Implementiert in MMT-Trade
 
 | MMT-Feature | Status |
 |-------------|--------|

@@ -3,13 +3,12 @@
  */
 import { WebSocket } from 'ws';
 
-import { bookToLevels, encodeHeatmapFrame, broadcastToClients, HEATMAP_MAX_BOOK_SIZE } from './heatmapBook.js';
+import { bookToLevels, encodeHeatmapFrame, broadcastToClients } from './heatmapBook.js';
 import { candleOpenMs } from './candleTime.js';
 import { createBackoffController } from './security.js';
 
 const UPSTREAM_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 
-const MAX_BOOK_SIZE = HEATMAP_MAX_BOOK_SIZE;
 const SUPPORTED_AGG = new Set(['binance', 'bybit']);
 
 export function parseAggregateExchanges(param) {
@@ -22,7 +21,7 @@ export function aggregateUpstreamKey(symbolKey, exchanges) {
   return `AGG:${symbolKey}:${[...exchanges].sort().join(',')}`;
 }
 
-function applyLevels(map, rows, isBid) {
+function applyLevels(map, rows, _isBid) {
   for (const row of rows || []) {
     const p = String(+row[0]);
     const q = +row[1];

@@ -20,7 +20,7 @@ const props = defineProps<{ symbol?: string; exchange?: string; timeframe?: stri
 const emit = defineEmits<{ 'symbol-change': [payload: { exchange: string; symbol: string }] }>();
 
 const settings = useChartSettings();
-const { ensureDefaults, fitToViewport, resetWorkspace } = useWorkspace();
+const { ensureDefaults, fitToViewport: _fitToViewport, resetWorkspace } = useWorkspace();
 
 if (props.symbol) settings.symbol = props.symbol;
 if (props.exchange) settings.exchange = props.exchange;
@@ -49,9 +49,6 @@ function bootDefaults(): void {
 }
 
 onMounted(() => { bootDefaults(); });
-// Avoid unused-import warning while still keeping the helper available for
-// future explicit "Reset layout" actions.
-void fitToViewport;
 
 watch(() => settings.symbol, (sym) => emit('symbol-change', { exchange: settings.exchange, symbol: sym }));
 watch(() => settings.exchange, (ex) => emit('symbol-change', { exchange: ex, symbol: settings.symbol }));

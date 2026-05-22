@@ -1,5 +1,7 @@
 # MMT-Trade Architecture
 
+> **Current runtime stack (Vue workers, what ships today):** [`docs/CURRENT_STACK.md`](./docs/CURRENT_STACK.md)
+
 > Target state: full MMT.gg-style architecture — one Odin/Emscripten `terminal.wasm`
 > with Sokol gfx + ImGui UI + WebSocket-in-WASM + CBOR codec + WASM workers under
 > SharedArrayBuffer, served behind COOP/COEP headers.

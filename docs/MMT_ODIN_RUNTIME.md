@@ -28,9 +28,9 @@ if (this.memory.buffer instanceof SharedArrayBuffer) {
 
 → Heatmap/Chart können in **Dedicated Workers** laufen, sofern Memory geteilt oder Views neu gebunden werden.
 
-## Vergleich: MMT vs. 471 Terminal (aktuell)
+## Vergleich: MMT vs. MMT-Trade (aktuell)
 
-| | MMT | 471 Terminal |
+| | MMT | MMT-Trade |
 |---|-----|----------------|
 | WASM | Volles App-Modul + WebGL in Odin | Kleines `engine.odin` nur Geometrie |
 | WebGL | Odin → `webgl2.*` Imports | TS `ChartRenderer` + Instancing |

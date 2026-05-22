@@ -34,7 +34,6 @@ for (const e of entries) {
   const msgs = e._webSocketMessages;
   if (!url.startsWith('wss://') || !msgs?.length) continue;
   wsSockets += 1;
-  const host = url.replace(/\?.*$/, '?…');
   for (const m of msgs) {
     if (m.type === 'send') sent += 1;
     else recv += 1;

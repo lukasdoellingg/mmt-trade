@@ -31,7 +31,6 @@
     "test": "npm run test:smoke && npm run test:regression",
     "test:smoke": "node --test tests/smoke/",
     "test:regression": "node --test tests/regression/",
-    "test:integration": "node --test tests/integration/",
     "test:mmt-cbor": "node scripts/test-mmt-cbor.mjs",
     "test:cbor:odin": "bash packages/engine/scripts/test-cbor.sh",
     "test:cbor": "npm run test:cbor:odin && npm run test:mmt-cbor",
@@ -62,9 +61,5 @@
   },
   "engines": {
     "node": ">=20.0.0"
-  },
-  "dependencies": {
-    "odin": "^0.0.10",
-    "vue": "^3.5.34"
   }
 }

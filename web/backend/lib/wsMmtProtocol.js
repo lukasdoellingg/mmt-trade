@@ -57,7 +57,7 @@ const SUPPORTED_METHODS = new Set([
  * @param {import('http').Server} server
  * @param {object} ctxBundle
  */
-export function attachMmtProtocolWebSocket(server, { ctx, metrics, allowedCorsOrigins, port }) {
+export function attachMmtProtocolWebSocket(server, { ctx, metrics, allowedCorsOrigins, port: _port }) {
   const webSocketGate = createWebSocketSecurityGate(allowedCorsOrigins);
   const wss = new WebSocketServer({
     noServer: true,

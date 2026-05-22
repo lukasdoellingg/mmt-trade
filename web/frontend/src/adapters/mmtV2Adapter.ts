@@ -2,11 +2,8 @@
  * mmt.gg /api/v2/ws adapter — lets the Vue workspace consume the same
  * subscribe/getrange/unsubscribe surface that `packages/shell` uses.
  *
- * Today's Vue workers (`heatmapWorker.ts`, `obHeatmapWorker.ts`) open
- * one socket each to `/ws/heatmap` (legacy schema). Phase 8 introduces this
- * skeleton so the workspace can swap onto the new gateway one widget at a
- * time. The legacy `/ws/heatmap` path stays alive until that migration is
- * complete.
+ * **Not wired yet.** Current workers (`heatmapWorker.ts`, `obHeatmapWorker.ts`)
+ * still use `/ws/heatmap` (legacy Protobuf schema). Phase 8 migration skeleton:
  *
  *   const conn = new MmtV2Connection(wsBaseUrl('/api/v2/ws'));
  *   conn.subscribe({ stream: STREAM.HEATMAP_OB, pair: { exchange: 'binance', symbol: 'btc/usd' },

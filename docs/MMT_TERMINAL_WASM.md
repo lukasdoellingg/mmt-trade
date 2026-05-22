@@ -69,9 +69,9 @@ Exakte Enum-Reihenfolge steht vermutlich in `types.odin` / `StreamType` — ohne
 
 ---
 
-## Vergleich: MMT `terminal.wasm` vs. 471 Terminal
+## Vergleich: MMT `terminal.wasm` vs. MMT-Trade
 
-| | MMT | 471 Terminal |
+| | MMT | MMT-Trade |
 |--|-----|----------------|
 | **Module** | 1× `terminal.wasm` (~4,3 MB) | `engine.wasm` (~2 MB) + JS Worker |
 | **WebGL** | Sokol + Emscripten GL | TS `ChartRenderer` + `ObHeatmapRenderer` |
@@ -105,7 +105,7 @@ Nicht committen, wenn Repo-Größe / Lizenz unklar — Strings reichen für Arch
 
 ---
 
-## Konsequenz für 471 Terminal
+## Konsequenz für MMT-Trade
 
 **Kurzfristig (sinnvoll):** Beim Multi-JS-Worker-Modell bleiben — schneller, team-tauglich.
 

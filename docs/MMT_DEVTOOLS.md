@@ -12,7 +12,7 @@ MMT-Produktion: `wss://eu-central-1.mmt.gg/api/v1/ws?api_key=…` — Payload **
 
 **Bereits dekodiert:** [MMT_WS_CAPTURE.md](./MMT_WS_CAPTURE.md) — 53-B-Frame + **2,8-MB-Capture** (`<!DOCTYPE html>.html`: eine OB-Säule, ~76k Ask- / ~86k Bid-Levels, `binance`/`btc/usd`).
 
-**471 Backend:** `ws://localhost:3001/ws/heatmap` — **Protobuf** `HeatmapFrame`.
+**MMT-Trade backend:** `ws://localhost:3001/ws/heatmap` — **Protobuf** `HeatmapFrame`.
 
 Bitte je **ein Screenshot + Copy als HAR** oder Rohdaten für:
 
@@ -70,7 +70,7 @@ Bitte je **ein Screenshot + Copy als HAR** oder Rohdaten für:
 
 ## Was wir aus deinem `odin.js` schon wissen
 
-| Erkenntnis | Bedeutung für 471 Terminal |
+| Erkenntnis | Bedeutung für MMT-Trade |
 |------------|---------------------------|
 | `WebGLInterface` + `webgl2` Imports | Heatmap-Shader läuft **in Odin**, nicht in TS |
 | `global.odin` auch in `self` (Worker) | Worker + WASM + WebGL aus einem Modul möglich |

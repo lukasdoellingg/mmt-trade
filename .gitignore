@@ -91,6 +91,8 @@ terminal.data
 # permission to remove them (see plan Phase 7 user-confirmation note).
 students_workfolder/
 /mmt-trade/
+web/legacy-frontend/
+services/
 
 packages/shell/public/
 web/frontend/public/terminal*
