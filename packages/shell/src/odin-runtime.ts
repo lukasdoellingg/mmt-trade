@@ -200,10 +200,10 @@ export async function loadTerminal(options: TerminalRuntimeOptions): Promise<Ter
   }
 
   if (typeof module._mmt_feed_heatmap_frame === 'function') {
-    heatmapBridge = startHeatmapBridge(module, {
-      symbol: 'btcusdt',
-      timeframe: '1h',
-    });
+    heatmapBridge = startHeatmapBridge(
+      module as Parameters<typeof startHeatmapBridge>[0],
+      { symbol: 'btcusdt', timeframe: '1h' },
+    );
     heatmapBridge.connect();
   }
 

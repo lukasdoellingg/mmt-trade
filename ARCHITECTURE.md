@@ -1,9 +1,10 @@
 # MMT-Trade Architecture
 
-> Ziel: 1:1-Parität mit MMT.gg — ein monolithisches Odin+Emscripten
-> `terminal.wasm` mit Sokol gfx + ImGui-Docking-UI + WebSocket-in-WASM +
-> CBOR-Codec + Emscripten-WASM-Worker hinter COOP/COEP-Headers. Ein
-> Binary, ein Canvas, ImGui-Docking statt HTML-Widgets.
+> **Current runtime stack (Vue workers, what ships today):** [`docs/CURRENT_STACK.md`](./docs/CURRENT_STACK.md)
+
+> Target state: full MMT.gg-style architecture — one Odin/Emscripten `terminal.wasm`
+> with Sokol gfx + ImGui UI + WebSocket-in-WASM + CBOR codec + WASM workers under
+> SharedArrayBuffer, served behind COOP/COEP headers.
 
 Dieses Dokument beschreibt die **Ziel-Architektur** und die
 Migrations-Phasen. Die laufende Recherche zum WS-Protokoll und zum

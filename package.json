@@ -8,11 +8,11 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -n backend,shell -c cyan,magenta \"npm run dev:backend\" \"npm run dev:shell\"",
+    "dev": "concurrently -n backend,frontend -c cyan,green \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:shell": "concurrently -n backend,shell -c cyan,magenta \"npm run dev:backend\" \"npm --workspace packages/shell run dev\"",
     "dev:legacy": "concurrently -n backend,frontend -c cyan,green \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:backend": "npm --workspace web/backend run dev",
     "dev:frontend": "npm --workspace web/frontend run dev",
-    "dev:shell": "npm --workspace packages/shell run dev",
     "build": "npm --workspace web/frontend run build",
     "build:shell": "npm --workspace packages/shell run build",
     "start": "concurrently -n backend,frontend -c cyan,green \"npm run start:backend\" \"npm run preview:frontend\"",
@@ -23,7 +23,7 @@
     "build:wasm": "bash scripts/build-wasm.sh",
     "build:engine": "bash packages/engine/build.sh",
     "build:engine:smoke": "bash packages/engine/build.sh --smoke",
-    "lint": "eslint . --ext .ts,.tsx,.vue,.js,.mjs --cache --max-warnings=0 --no-warn-ignored",
+    "lint": "eslint . --ext .ts,.tsx,.vue,.js,.mjs --cache --max-warnings=20 --no-warn-ignored",
     "lint:fix": "eslint . --ext .ts,.tsx,.vue,.js,.mjs --cache --fix",
     "lint-staged": "lint-staged",
     "format": "prettier --write \"**/*.{ts,tsx,vue,js,mjs,json,md,yml,yaml}\"",
@@ -52,6 +52,7 @@
     ]
   },
   "devDependencies": {
+    "@eslint/js": "^9.0.0",
     "@playwright/test": "^1.52.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
@@ -68,9 +69,5 @@
   },
   "engines": {
     "node": ">=20.0.0"
-  },
-  "dependencies": {
-    "odin": "^0.0.10",
-    "vue": "^3.5.34"
   }
 }

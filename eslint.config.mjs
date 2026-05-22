@@ -15,11 +15,15 @@ export default [
   {
     ignores: [
       'node_modules/**',
+      '**/node_modules/**',
       'dist/**',
+      '**/dist/**',
       'build/**',
+      '**/build/**',
       '.odin-sdk/**',
       '**/*.wasm',
       'web/frontend/public/**',
+      'web/legacy-frontend/**',
       'packages/shell/public/**',
       'students_workfolder/**',
       'mmt-trade/**',

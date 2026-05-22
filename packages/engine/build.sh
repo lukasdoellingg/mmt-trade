@@ -31,13 +31,23 @@ mkdir -p "$OUT_DIR_SHELL" "$OUT_DIR_LEGACY"
 # ── Parse args ────────────────────────────────────────────────────
 SMOKE_MODE=0
 DEBUG_MODE=0
+# Render backend: webgl2 (default, broadest support) or wgpu (mmt.gg target).
+# Switch with --wgpu or `RENDER_BACKEND=wgpu npm run build:engine`.
+RENDER_BACKEND="${RENDER_BACKEND:-webgl2}"
 for arg in "$@"; do
   case "$arg" in
     --smoke) SMOKE_MODE=1 ;;
     --debug) DEBUG_MODE=1 ;;
+    --wgpu|--webgpu) RENDER_BACKEND=wgpu ;;
+    --webgl2) RENDER_BACKEND=webgl2 ;;
     *) echo "Unknown arg: $arg"; exit 64 ;;
   esac
 done
+
+case "$RENDER_BACKEND" in
+  webgl2|wgpu) ;;
+  *) echo "[engine] ERROR: unknown RENDER_BACKEND=$RENDER_BACKEND (expected webgl2 or wgpu)"; exit 65 ;;
+esac
 
 # ── Activate Emscripten ───────────────────────────────────────────
 if ! command -v emcc >/dev/null 2>&1; then
@@ -132,7 +142,7 @@ else
   ODIN_FLAGS+=(-o:speed)
 fi
 
-echo "[engine] odin build ${TARGET_SRC}"
+echo "[engine] odin build ${TARGET_SRC} (render=${RENDER_BACKEND})"
 odin build "$TARGET_SRC" -file "${ODIN_FLAGS[@]}"
 
 # ── Compile Sokol C / cimgui ──────────────────────────────────────
@@ -142,8 +152,12 @@ EMCC_COMMON=(
   -I "$VENDOR_DIR/cimgui"
   -I "$VENDOR_DIR/cimgui/imgui"
   -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS
-  -DSOKOL_GLES3
 )
+if [[ "$RENDER_BACKEND" == "wgpu" ]]; then
+  EMCC_COMMON+=(-DSOKOL_WGPU)
+else
+  EMCC_COMMON+=(-DSOKOL_GLES3)
+fi
 if (( DEBUG_MODE == 1 )); then
   EMCC_COMMON+=(-g -O0)
 else
@@ -186,8 +200,6 @@ fi
 # (atomics + bulk-memory features are not emitted by the freestanding Odin
 # build) and keeps the smoke binary under the 1 MB acceptance gate.
 LINK_FLAGS=(
-  -sUSE_WEBGL2=1
-  -sFULL_ES3=1
   -sALLOW_MEMORY_GROWTH=1
   -sINITIAL_MEMORY=67108864          # 64 MiB
   -sMAXIMUM_MEMORY=268435456         # 256 MiB headroom for full layer set
@@ -200,6 +212,11 @@ LINK_FLAGS=(
   -sEXPORT_ES6=1
   -sEXPORT_NAME=createTerminalModule
 )
+if [[ "$RENDER_BACKEND" == "wgpu" ]]; then
+  LINK_FLAGS+=(-sUSE_WEBGPU=1)
+else
+  LINK_FLAGS+=(-sUSE_WEBGL2=1 -sFULL_ES3=1)
+fi
 
 SMOKE_EXPORTS="_app_init,_app_step,_app_resize,_app_set_gl_framebuffer,_malloc,_free"
 FULL_EXPORTS="${SMOKE_EXPORTS},_input_bridge_bind_storage,_mmt_feed_heatmap_frame,_mmt_feed_column_count,_app_debug_frame_count,_app_set_gl_framebuffer"

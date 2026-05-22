@@ -82,5 +82,6 @@ export function decodeHeatmapFrame(data: ArrayBuffer): HeatmapFrame | null {
       break;
     }
   }
+  if (!levels.length) return null;
   return { ts, levels };
 }

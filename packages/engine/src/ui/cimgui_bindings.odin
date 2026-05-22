@@ -88,7 +88,7 @@ foreign {
     checkbox :: proc(label: cstring, value: ^bool) -> bool ---
 
     @(link_name="igTextUnformatted")
-    text :: proc(label: cstring) ---
+    text_unformatted :: proc(text_begin: cstring, text_end: cstring) ---
 
     @(link_name="igDockSpaceOverViewport")
     dockspace_over_viewport :: proc(viewport: rawptr, flags: u32, window_class: rawptr, dock_id: ImGuiID) -> ImGuiID ---
@@ -105,6 +105,10 @@ foreign {
 
 imgui_enable_docking :: proc "contextless" () {
     mmt_imgui_enable_docking()
+}
+
+text :: proc "contextless" (label: cstring) {
+    text_unformatted(label, nil)
 }
 
 imgui_main_dockspace :: proc "contextless" () {

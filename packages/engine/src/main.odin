@@ -1,11 +1,14 @@
 // MMT-Trade Terminal — Odin/Emscripten entry point
+//
+// Phase 3 baseline: chart + heatmap preview only. Indicator package (EMA/VWAP)
+// is intentionally absent — see roadmap "Three hard rules", we keep the surface
+// minimal for the WebGPU/ImGui cutover.
 package mmt_terminal
 
 import "app"
 import "chart"
 import "data"
 import "gfx"
-import "indicators"
 import "ui"
 
 MAX_CHART_CANDLES :: 5000
@@ -14,13 +17,6 @@ MAX_CHART_CANDLES :: 5000
 @(private="file") candle_store_state: data.CandleStore
 @(private="file") candle_backing_buffer: [MAX_CHART_CANDLES * data.CANDLE_FIELD_COUNT]f64
 @(private="file") workspace_layout: app.LayoutMetrics
-@(private="file") ema_fast_buffer: [MAX_CHART_CANDLES]f64
-@(private="file") ema_slow_buffer: [MAX_CHART_CANDLES]f64
-@(private="file") ema_buffers_state: indicators.EmaBuffers
-@(private="file") vwap_rolling_state: indicators.VwapRollingState
-@(private="file") indicator_layer_output: chart.CandleLayerOutput
-@(private="file") indicator_instance_positions: [app.INDICATOR_QUAD_CAPACITY * 4]f32
-@(private="file") indicator_instance_colors: [app.INDICATOR_QUAD_CAPACITY * 4]f32
 @(private="file") debug_frame_count: i32
 
 @(export)
@@ -49,14 +45,6 @@ app_init :: proc "c" (width_pixels, height_pixels: i32, device_pixel_ratio: f32)
     data.candle_store_bind_buffer(&candle_store_state, &candle_backing_buffer[0])
     data.demo_candles_seed(&candle_store_state, data.DEMO_CANDLE_COUNT)
     app.mmt_feed_reset()
-
-    indicators.ema_buffers_init(&ema_buffers_state, &ema_fast_buffer[0], &ema_slow_buffer[0], MAX_CHART_CANDLES)
-    indicators.ema_recompute_full(&ema_buffers_state, &candle_store_state)
-    indicators.vwap_rolling_state_init(&vwap_rolling_state)
-
-    indicator_layer_output.instancePositionsF32 = &indicator_instance_positions[0]
-    indicator_layer_output.instanceColorsF32    = &indicator_instance_colors[0]
-    indicator_layer_output.capacityInstances    = app.INDICATOR_QUAD_CAPACITY
 
     chart.widget_init(&chart_widget_state, &candle_store_state)
     chart.viewport_set_total_candles(
