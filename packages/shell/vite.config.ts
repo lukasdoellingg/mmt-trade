@@ -7,37 +7,13 @@ import { defineConfig } from 'vite';
  *  - `.wasm` assets are served as-is and excluded from optimizeDeps.
  *  - HMR is off — reloading the WASM module from scratch is faster than HMR for our needs.
  */
-// Strict CSP for the terminal shell. We pin every connect-src origin we
-// actually reach so a stray fetch (or compromised dep) can't beacon out
-// to anywhere else. `connect-src 'self'` covers the local backend proxy;
-// the remote MMT v2 WS endpoint is whitelisted for the direct-mode path.
-const TERMINAL_CSP = [
-  "default-src 'self'",
-  "script-src 'self' 'wasm-unsafe-eval'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
-  "font-src 'self' data:",
-  // Backend proxy (HTTP+WS) on same origin + direct MMT v2 WS.
-  "connect-src 'self' ws: wss: https://eu-central-2.mmt.gg wss://eu-central-2.mmt.gg",
-  "worker-src 'self' blob:",
-  "frame-ancestors 'none'",
-  "base-uri 'self'",
-].join('; ');
-
-const SECURITY_HEADERS = {
-  'Cross-Origin-Opener-Policy': 'same-origin',
-  'Cross-Origin-Embedder-Policy': 'require-corp',
-  'Cross-Origin-Resource-Policy': 'same-origin',
-  'Content-Security-Policy': TERMINAL_CSP,
-  'X-Content-Type-Options': 'nosniff',
-  'Referrer-Policy': 'strict-origin-when-cross-origin',
-};
-
 export default defineConfig({
   server: {
-    port: 5174,
+    port: 5173,
     headers: {
-      ...SECURITY_HEADERS,
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+      'Cross-Origin-Resource-Policy': 'same-origin',
       'Cache-Control': 'no-store',
     },
     proxy: {
@@ -46,7 +22,10 @@ export default defineConfig({
     },
   },
   preview: {
-    headers: SECURITY_HEADERS,
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
   },
   assetsInclude: ['**/*.wasm'],
   optimizeDeps: {

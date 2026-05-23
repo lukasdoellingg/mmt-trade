@@ -1,9 +1,5 @@
 # `engine.wasm` bauen (Odin → WebAssembly)
 
-> **Note:** This folder builds the **legacy chart WASM** used by `web/frontend`.
-> The full MMT-style terminal rewrite lives in `packages/engine/` → `terminal.wasm`.
-> See `packages/engine/README.md` for the Emscripten/Sokol build.
-
 Der Heatmap-Chart braucht die Datei **`web/frontend/public/engine.wasm`**. Ohne frischen Build passen Speicher-Layouts (z. B. 8000 Kerzen) nicht zur TypeScript-Bridge → Fehler beim Start.
 
 ## Voraussetzung: Odin-Compiler

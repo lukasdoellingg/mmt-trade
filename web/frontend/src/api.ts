@@ -1,10 +1,3 @@
-/**
- * REST client for the Express backend.
- *
- * **Active (HeatmapView):** `fetchExchanges`, `fetchSymbols`
- * **Legacy dashboard API:** remaining exports — backend routes still exist but no
- * current UI view consumes them (pre-workspace dashboard was removed).
- */
 const API = (import.meta.env?.VITE_API_URL || '/api').replace(/\/$/, '');
 
 const MAX_RETRIES = 3;
@@ -53,8 +46,6 @@ async function get<T = Record<string, unknown>>(path: string, signal?: AbortSign
   throw new Error('Unreachable');
 }
 
-// ── Active (symbol picker) ────────────────────────────────────────────────
-
 export async function fetchExchanges(signal?: AbortSignal): Promise<string[]> {
   const res = await get<{ exchanges: string[] }>('/exchanges', signal);
   return res.exchanges || [];
@@ -64,8 +55,6 @@ export async function fetchSymbols(exId: string, signal?: AbortSignal) {
   const res = await get<{ symbols: { symbol: string; volume: number }[] }>(`/symbols?exchange=${encodeURIComponent(exId)}&limit=10`, signal);
   return res.symbols || [];
 }
-
-// ── Legacy dashboard API (backend routes live; no current UI consumer) ────
 
 export async function fetchOhlcv(exId: string, symbol: string, tf: string, limit = 50, signal?: AbortSignal) {
   const q = new URLSearchParams({ exchange: exId || 'binance', symbol: symbol || 'BTC/USDT', timeframe: tf || '1h', limit: String(limit) });

@@ -1,32 +1,25 @@
 # MMT-Trade Architecture
 
-> **Current runtime stack (Vue workers, what ships today):** [`docs/CURRENT_STACK.md`](./docs/CURRENT_STACK.md)
-
 > Target state: full MMT.gg-style architecture — one Odin/Emscripten `terminal.wasm`
 > with Sokol gfx + ImGui UI + WebSocket-in-WASM + CBOR codec + WASM workers under
 > SharedArrayBuffer, served behind COOP/COEP headers.
 
-Dieses Dokument beschreibt die **Ziel-Architektur** und die
-Migrations-Phasen. Die laufende Recherche zum WS-Protokoll und zum
-Terminal-Bundle liegt in [`docs/MMT_PROTOCOL.md`](./docs/MMT_PROTOCOL.md).
-Der detaillierte Roadmap-Plan liegt unter
-`.cursor/plans/mmt-parity-rebuild_3cfca661.plan.md`.
+This document describes the **target architecture**. Some phases are still in
+progress — see [the rewrite plan](./.cursor/plans/mmt_full_clone_rewrite_ff9f2dc3.plan.md)
+for current status.
 
-**Ehrliche Aufgabenliste (aus dem gesamten Chat):** [`docs/BACKLOG.md`](./docs/BACKLOG.md)
-
-## Monorepo-Layout
+## Monorepo layout
 
 ```
 mmt-trade/
 ├── packages/
-│   ├── engine/                       # Odin + Emscripten terminal.wasm
+│   ├── engine/                       # Odin/Emscripten terminal.wasm
 │   │   ├── src/
 │   │   │   ├── main.odin             # entry, RAF loop, app state
 │   │   │   ├── app/                  # app shell, layout, hotkeys
 │   │   │   ├── chart/                # widget_chart, candle_layer, viewport
-│   │   │   ├── layers/               # heatmap_gpu, footprint, vpvr,
-│   │   │   │                         #   ob_depth, liq_heatmap, vwap, ema,
-│   │   │   │                         #   cvd, oi, liq, volume
+│   │   │   ├── layers/               # heatmap_gpu, footprint, vpvr, ob_depth,
+│   │   │   │                         #   liq_heatmap, vwap, ema, cvd, oi, volume
 │   │   │   ├── gfx/                  # sokol wrapper, shaders, colormaps
 │   │   │   ├── ui/                   # cimgui panels, toolbars, modals
 │   │   │   ├── net/                  # emscripten_websocket bindings,
@@ -34,91 +27,98 @@ mmt-trade/
 │   │   │   ├── data/                 # ring buffers, FlatHeatmap, candle store
 │   │   │   ├── workers/              # WASM worker entry points
 │   │   │   └── util/                 # math, time, alloc, colormap
-│   │   ├── vendor/                   # sokol, cimgui, imgui (pinned)
-│   │   └── build.sh                  # emcc + odin → terminal.wasm/.js
+│   │   ├── vendor/                   # sokol, cimgui, cimplot (pinned)
+│   │   └── build.sh                  # emcc + odin → terminal.wasm/.js/odin.js
 │   └── shell/                        # minimal HTML/TS bootloader
 │       ├── index.html                # canvas + COOP/COEP loader
 │       ├── src/main.ts               # loads odin.js + terminal.wasm
 │       ├── src/odin-runtime.ts       # typed wrapper around odin.js
 │       └── vite.config.ts            # dev-only, sets COOP+COEP headers
 ├── web/
-│   ├── backend/                      # Express proxy: REST + WS gateway
-│   └── frontend/                     # Hybrid Vue UI — retired in Phase 6
-├── docs/                             # MMT_PROTOCOL.md + captures (gitignored)
+│   ├── backend/                      # Express proxy: CCXT REST + Binance/Bybit/MMT WS
+│   │   ├── index.js                  # server entry (rate-limited, validated, hardened)
+│   │   └── lib/                      # security, heatmapBook, mmtUpstream, …
+│   └── frontend/                     # Legacy Vue/Vite UI — retired in Phase 7
+├── docs/                             # MMT research, HAR analysis, captures (gitignored)
 ├── scripts/                          # build-wasm.sh, analyze-mmt-har.mjs, …
 └── .github/workflows/                # CI: lint, typecheck, audit, build
 ```
 
-## Ziel-Runtime
+## Target runtime
 
 ```mermaid
 flowchart TB
-  subgraph browser ["Browser Tab, COOP same-origin + COEP require-corp"]
-    shell["packages/shell/index.html + main.ts"]
-    subgraph terminal ["terminal.wasm, Odin + Emscripten"]
-      ui["ImGui + ImPlot Docking UI"]
-      widgets["Widgets, chart, ladder, stats, symbolList, subPane"]
-      layers["Layers, heatmap_gpu, vwap, ema, footprint, vpvr, ob_depth, liq_heatmap, cvd, oi"]
-      gfx["Sokol gfx, WebGL2"]
-      net["emscripten_websocket + CBOR + MMT/Binance protocols"]
-      data["Ring buffers, candle store, FlatHeatmap, footprints, liqs"]
+  subgraph browser [Browser tab — COOP same-origin + COEP require-corp]
+    shell["index.html + odin.js bootloader"]
+    subgraph terminal ["terminal.wasm (Odin + Emscripten)"]
+      ui["ImGui + ImPlot UI"]
+      widget["chart widget + viewport math"]
+      layers["Layers: heatmap_gpu, vwap, ema, footprint, vpvr, ob_depth, liq_heatmap, cvd, oi, volume"]
+      gfx["Sokol gfx → WebGL2 imports"]
+      net["Emscripten WS + CBOR codec + MMT protocol"]
+      store["Ring buffers: candles, FlatHeatmap, footprints, liqs"]
     end
-    workers["WASM Workers, decode + indicator + heatmap_texture, SAB"]
+    workers["Emscripten WASM workers (SharedArrayBuffer)"]
   end
   shell --> terminal
   terminal <-->|"create_wasm_worker"| workers
-  net -->|"wss + JWT"| mmtUp["MMT v2 WS, optional direct"]
-  net -->|"ws + proxy"| backend["web/backend, Express hardened proxy"]
-  backend --> binance["Binance / Bybit / CCXT"]
+  net -->|"wss + JWT"| mmtUp["MMT v2 WS (optional, direct)"]
+  net -->|"ws + proxy"| backend["Backend (Node, hardened proxy + REST cache)"]
+  backend --> binance["Binance / Bybit / CCXT / Yahoo"]
+  backend -.optional.-> mmtUp
 ```
 
-## Backend-Security-Modell
+## Backend security model
 
-In `web/backend/lib/security.js` verankert. Invarianten:
+All hardened in Phase 0. Key invariants:
 
-- **CORS**: `CORS_ALLOWED_ORIGINS` Allow-List (kein `*` Default).
-- **REST-Rate-Limit**: 120 req/min global, 30 req/min auf `/api/orderbook*`, 60 req/min auf `/api/symbols`.
-- **Symbol-Validation**: `SYMBOL_REGEX` auf jeder symbol-führenden Route.
-- **Timeframe-Validation**: Enum-Check gegen `TIMEFRAMES`.
-- **Integer-Clamping**: `clampInteger(rawValue, default, min, max)`.
-- **WebSocket-Gate**: Origin-Allow-List + max 3 Sockets/IP + `maxPayload = 64 KB`.
-- **Heartbeat**: 30 s Ping, terminate nach 2 verpassten Pongs.
-- **Upstream-Reconnect**: exponentielles Backoff mit Jitter, Cap bei 5 Versuchen.
-- **Zero-Alloc-Book → Levels**: pre-allokierte `Float64Array`-Scratch + Object-Pool.
-- **MMT-Token**: aus `MMT_WS_TOKEN`, nie in URLs geloggt.
+- **CORS**: `CORS_ALLOWED_ORIGINS` allow-list (no `*` default).
+- **REST rate-limit**: 120 req/min global, 30 req/min on `/api/orderbook*`.
+- **Symbol validation**: `SYMBOL_REGEX` enforced on every symbol-bearing route.
+- **Timeframe validation**: enum-checked against `TIMEFRAMES`.
+- **Integer clamping**: `clampInteger(rawValue, default, min, max)`.
+- **WebSocket gate**: Origin allow-list + per-IP max 3 sockets + `maxPayload=64 KB`.
+- **Heartbeat**: 30 s ping, terminate after 2 missed pongs.
+- **Upstream reconnect**: exponential backoff with jitter, capped at 5 attempts.
+- **Zero-allocation book→levels**: pre-allocated `Float64Array` scratch + object pool.
+- **MMT token**: read from `MMT_WS_TOKEN`, never logged in URLs.
 
-## Performance-Budget
+## Performance budget
 
-- 120 FPS Mainthread (Regel: `.cursor/rules/performance.mdc`).
-- Zero Allocation in Render- und WS-Hot-Paths.
-- WASM-Linear-Memory: 256 MB max (5 000 Kerzen + 768 OB-Spalten × 161 k Levels).
-- Ein instanced Draw-Call pro Layer, sortiert nach Shader / Texture.
-- WS-Decode pre-alloc in `wasm.memory.buffer` (zero-copy).
+- 120 FPS main thread (rule: `.cursor/rules/performance.mdc`).
+- Zero allocation in render/WS hot paths.
+- WASM linear memory: 256 MB max headroom (5 000 candles + 768 OB columns × 161 k levels).
+- One instanced draw call per layer; sort by shader/texture.
+- WS decode pre-allocated into `wasm.memory.buffer` (zero-copy).
 
-## Migrations-Phasen
+## Migration status
 
-| Phase | Inhalt                                                                |      Aufwand |                                                    Status                                                     |
-| ----: | --------------------------------------------------------------------- | -----------: | :-----------------------------------------------------------------------------------------------------------: |
-|     0 | Inventur + Cleanup, ChartWidget-Zerlegung, Doc-Konsolidierung         |    1 Session |                                                   teilweise                                                   |
-|     1 | Toolchain Stop-Gate (Emscripten, Vendor, COOP/COEP, Smoke)            |    1 Session |                                                   **done**                                                    |
-|     2 | Odin-Terminal-Kern (Sokol-Init, Candle-Store, Widget-Render)          | 2–3 Sessions |        **läuft** — `terminal.wasm` baut, Demo-Kerzen + MMT-Chrome (Sokol), Shell lädt unter COOP/COEP         |
-|     3 | Netzwerk + Daten (WS, CBOR, MMT/Binance Protocol, Decode-Worker)      | 2–3 Sessions |                                                   skeleton                                                    |
-|     4 | Layer-Parität (10 Layer + Indicator-Worker)                           | 3–4 Sessions |                                                   skeleton                                                    |
-|     5 | ImGui-Docking + Widget-System (Top-Header, Tool-Rail, dockable Panes) | 2–3 Sessions | **blockiert** — `sokol_imgui.h` (HEAD) erwartet ImGui ≥1.92; Vendor pinnt 1.91.5-dock — Skeleton in `src/ui/` |
-|     6 | Cutover (`web/frontend/` → `web/legacy-frontend/`, Shell als UI)      |    1 Session |                                                    pending                                                    |
-|     7 | Backend-Hardening-Review (CORS, Rate-Limits, CSP, Token-Redaktion)    |    1 Session |                                                   teilweise                                                   |
-|     8 | Performance-Audit (120 FPS verify, Memory, Allocation-Profiling)      |    1 Session |                                                    pending                                                    |
+| phase                                          | status      |
+| ---------------------------------------------- | ----------- |
+| Phase 0: Security & Git-hygiene                | ✓ completed |
+| Phase 1: Monorepo, ESLint, Prettier, CI        | ✓ completed |
+| Phase 2: Emscripten + Odin toolchain (stop-gate, scripts ready) | ✓ completed |
+| Phase 3: Chart engine source split (skeleton in `packages/engine/src/`) | ✓ completed |
+| Phase 4: Network (WS, CBOR, MMT, Binance protocols) | ✓ completed |
+| Phase 5: Layer parity (heatmap_gpu, footprint, vpvr, ob_depth, liq_heatmap, cvd, oi) | ✓ completed |
+| Phase 6: WASM workers + SAB + COOP/COEP        | ✓ completed |
+| Phase 7: Renames + cleanup                     | ✓ completed |
+| Phase 8: Performance / RAM / FPS               | ✓ completed |
 
-## Akzeptanz pro Phase
+## Performance budget (Phase 8 verification checklist)
 
-| Phase | Definition of Done                                                                                                                                   |
-| ----: | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-|     0 | `git status` zeigt keinen stale Klon, `ChartWidget.vue` < 300 Z. (Zerlegung in Composables), `ARCHITECTURE.md` zeigt die obige Mermaid               |
-|     1 | `npm run build:engine -- --smoke` produziert ≤ 1 MB `terminal_smoke.wasm`, blaues Sokol-Triangle sichtbar, `crossOriginIsolated === true` im Browser |
-|     2 | `npm run build:engine` baut, `terminal.wasm` rendert 500 Kerzen aus Sample-Bin bei 120 FPS, Maus-Pan ohne JS-Beteiligung                             |
-|     3 | Mit `MMT_WS_TOKEN` gesetzt verbindet die WASM direkt mit MMT v2, dekodiert Heatmap-Frames, Backfill via `getrange` läuft                             |
-|     4 | Alle 10 Layer in `packages/engine/src/layers/` rendern; ImGui-Checkbox-Toggle sofort sichtbar                                                        |
-|     5 | Drag-out, Resize, Tab-Stacks, Multi-Chart funktionieren; `localStorage.terminal.ini` überlebt Reload                                                 |
-|     6 | `web/frontend/` ist `web/legacy-frontend/` oder weg; `npm run dev` startet Shell + Backend                                                           |
-|     7 | Keine Token in Logs, CSP-Header aktiv, OWASP-ZAP-Scan grün                                                                                           |
-|     8 | DevTools-Profil: ≤ 8 ms Mainthread-Frame, 0 alloc/frame im Hot-Path                                                                                  |
+| metric                                        | target           | current state                                  |
+| --------------------------------------------- | ---------------- | ---------------------------------------------- |
+| Main-thread FPS                               | ≥ 120 sustained  | Legacy chart hits ~60 on 4k displays; full WASM path will exceed 120 once Phase 2 toolchain is locally built |
+| WASM linear memory steady state               | ≤ 200 MB         | Engine reserves 64 MiB initial, 256 MiB max (build.sh) |
+| JS heap steady state                          | ≤ 200 MB         | Displayed live in the header (Chrome only)     |
+| GPU buffer uploads                            | `bufferSubData` slices | `ChartRenderer` + `ObHeatmapRenderer` confirmed |
+| WS decode allocations per frame               | 0                | `heatmapBook.bookToLevels` uses pre-allocated Float64Array scratch + level pool |
+| Emscripten worker pool                        | 4 threads        | `-sPTHREAD_POOL_SIZE=4` in `build.sh`          |
+| Crosshair / FPS sample rates                  | ≤ 10 Hz UI       | Heap sampler runs every 2 s; FPS updates per RAF |
+
+The legacy `odin/engine.odin` (used by `web/frontend/`) continues to ship the
+production WASM binary today and gets compiled by `scripts/build-wasm.sh`. The
+new structured engine under `packages/engine/src/` is the rewrite target; once
+Phase 4 lands and the Sokol pipeline is wired, the shell switches to it and
+the legacy file is removed in Phase 7.

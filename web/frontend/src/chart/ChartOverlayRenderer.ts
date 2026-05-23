@@ -38,7 +38,7 @@ export class ChartOverlayRenderer {
 
   p2y(p: number, dispMin: number, dispMax: number, PH: number): number {
     if (dispMax <= dispMin) return PH / 2;
-    return (((dispMax - p) / (dispMax - dispMin)) * PH + 0.5) | 0;
+    return ((dispMax - p) / (dispMax - dispMin)) * PH + 0.5 | 0;
   }
 
   y2p(y: number, dispMin: number, dispMax: number, plotH: number): number {
@@ -57,13 +57,8 @@ export class ChartOverlayRenderer {
     }
     if (tf === '1h' || tf === '30m' || tf === '15m') {
       return (
-        this.pad(d.getMonth() + 1) +
-        '/' +
-        this.pad(d.getDate()) +
-        ' ' +
-        this.pad(d.getHours()) +
-        ':' +
-        this.pad(d.getMinutes())
+        this.pad(d.getMonth() + 1) + '/' + this.pad(d.getDate()) + ' ' +
+        this.pad(d.getHours()) + ':' + this.pad(d.getMinutes())
       );
     }
     return this.pad(d.getHours()) + ':' + this.pad(d.getMinutes());
@@ -75,15 +70,8 @@ export class ChartOverlayRenderer {
       return d.getFullYear() + '-' + this.pad(d.getMonth() + 1) + '-' + this.pad(d.getDate());
     }
     return (
-      this.pad(d.getMonth() + 1) +
-      '/' +
-      this.pad(d.getDate()) +
-      ' ' +
-      this.pad(d.getHours()) +
-      ':' +
-      this.pad(d.getMinutes()) +
-      ':' +
-      this.pad(d.getSeconds())
+      this.pad(d.getMonth() + 1) + '/' + this.pad(d.getDate()) + ' ' +
+      this.pad(d.getHours()) + ':' + this.pad(d.getMinutes()) + ':' + this.pad(d.getSeconds())
     );
   }
 
@@ -97,8 +85,8 @@ export class ChartOverlayRenderer {
     visEnd: number,
     candleSnapshotBuffer: Float64Array,
     candleSnapshotCount: number,
-    _cf: number,
-    _tf: string,
+    cf: number,
+    tf: string,
   ): void {
     const { W, H, PW, PH, DPR } = L;
     ctx.clearRect(0, 0, W, H);
@@ -224,7 +212,7 @@ export class ChartOverlayRenderer {
       lastBarX: number;
     },
   ): void {
-    const { PW, PH, DPR } = L;
+    const { W, PW, PH, DPR } = L;
 
     if (opts.midPrice > 0 && opts.dispMin > 0 && opts.dispMax > opts.dispMin) {
       const my = this.p2y(opts.midPrice, opts.dispMin, opts.dispMax, PH);
@@ -343,7 +331,14 @@ export class ChartOverlayRenderer {
     return (n <= 1.5 ? 1 : n <= 3 ? 2 : n <= 7 ? 5 : 10) * mag;
   }
 
-  private rrect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  private rrect(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    r: number,
+  ): void {
     ctx.beginPath();
     ctx.moveTo(x + r, y);
     ctx.lineTo(x + w - r, y);

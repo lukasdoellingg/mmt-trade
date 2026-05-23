@@ -1,24 +1,39 @@
 <script setup lang="ts">
-/**
- * mmt.gg-style root shell.
- *
- * The legacy multi-view router (Dashboard/Trade/TradFi/CME) was retired with
- * the move to a single workspace surface. All UI now lives inside
- * `HeatmapView` (the workspace shell) which composes the topbar, tool-rail,
- * and the draggable widget grid (chart, ladders, ...).
- *
- * This file stays intentionally thin: bootstraps the workspace and forwards
- * symbol selections from the topbar to the global chart-settings store.
- */
-import { shallowRef } from 'vue';
+import { ref, computed, markRaw, shallowRef } from 'vue';
+import DashHeader from './components/DashHeader.vue';
+import DashboardView from './views/DashboardView.vue';
+import TradeView from './views/TradeView.vue';
+import TradFiView from './views/TradFiView.vue';
+import TradFiMarketsView from './views/TradFiMarketsView.vue';
 import HeatmapView from './views/HeatmapView.vue';
-import { DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_TIMEFRAME } from './core/defaults';
+import {
+  DEFAULT_EXCHANGE,
+  DEFAULT_SYMBOL,
+  DEFAULT_TIMEFRAME,
+  DEFAULT_VIEW,
+} from './core/defaults';
+import type { AppView } from './core/types';
 
+const VIEW_MAP = {
+  futures: markRaw(DashboardView),
+  chart: markRaw(TradeView),
+  cme: markRaw(TradFiView),
+  tradfi: markRaw(TradFiMarketsView),
+  heatmap: markRaw(HeatmapView),
+};
+
+const view = ref<AppView>(DEFAULT_VIEW);
 const exchange = shallowRef(DEFAULT_EXCHANGE);
 const symbol = shallowRef(DEFAULT_SYMBOL);
 const timeframe = shallowRef(DEFAULT_TIMEFRAME);
 
-function onSymbolChange(payload: { exchange: string; symbol: string }): void {
+const viewComponent = computed(() => VIEW_MAP[view.value] || VIEW_MAP.heatmap);
+
+function onNavigate(v: string) {
+  if (v in VIEW_MAP) view.value = v as AppView;
+}
+
+function onSymbolChange(payload: { exchange: string; symbol: string }) {
   exchange.value = payload.exchange;
   symbol.value = payload.symbol;
 }
@@ -26,44 +41,30 @@ function onSymbolChange(payload: { exchange: string; symbol: string }): void {
 
 <template>
   <div class="app">
-    <HeatmapView
+    <DashHeader
       :symbol="symbol"
-      :exchange="exchange"
-      :timeframe="timeframe"
-      @symbol-change="onSymbolChange"
+      :view="view"
+      @navigate="onNavigate"
     />
+    <KeepAlive>
+      <component
+        :is="viewComponent"
+        :symbol="symbol"
+        :exchange="exchange"
+        :timeframe="timeframe"
+        :key="view"
+        @symbol-change="onSymbolChange"
+      />
+    </KeepAlive>
   </div>
 </template>
 
 <style>
-* {
-  box-sizing: border-box;
-}
-html,
-body {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-  overflow: hidden;
-  background: #06060b;
-  color: #aebcce;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-}
-#app {
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#08080c;color:#b8e6b8;font-family:'IBM Plex Mono',monospace;font-size:13px}
+#app{height:100vh;display:flex;flex-direction:column;overflow:hidden}
 </style>
 
 <style scoped>
-.app {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  overflow: hidden;
-}
+.app{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden}
 </style>

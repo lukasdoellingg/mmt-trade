@@ -1,6 +1,6 @@
 /**
  * Minimal protobuf decoder for backend HeatmapFrame (proto3).
- * Matches web/backend/lib/runtime.js HEATMAP_PROTO — keep in sync with packages/shell/src/heatmap-proto.ts.
+ * Matches web/backend/index.js HEATMAP_PROTO — no protobufjs on hot path.
  */
 
 export interface HeatmapLevel {

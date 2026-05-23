@@ -2,8 +2,6 @@
  * MMT-style Footprint — per-candle buy/sell bins (Binance aggTrade).
  */
 export {}; // make this file a module so its top-level consts don't clash with other workers
-import { parseBinanceAggTrade } from './binanceWsParse';
-import { createFloatColumnPool } from './columnBufferPool';
 const MARGIN_RIGHT = 80;
 const MARGIN_BOTTOM = 32;
 const CANDLE_FIELD_STRIDE = 7;
@@ -12,13 +10,8 @@ const FP_FIELDS = 2;
 const SNAPSHOT_CAP = 3000;
 
 const TF_MS: Record<string, number> = {
-  '1m': 60e3,
-  '15m': 9e5,
-  '30m': 18e5,
-  '1h': 36e5,
-  '4h': 144e5,
-  '1D': 864e5,
-  '1W': 6048e5,
+  '1m': 60e3, '15m': 9e5, '30m': 18e5, '1h': 36e5,
+  '4h': 144e5, '1D': 864e5, '1W': 6048e5,
 };
 
 let symbol = 'btcusdt';
@@ -44,7 +37,6 @@ let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let animId = 0;
 
 const snapshotByTs = new Map<number, Float32Array>();
-const fpPool = createFloatColumnPool(PRICE_BINS * FP_FIELDS);
 let liveTs = 0;
 let liveFp: Float32Array | undefined = undefined;
 let refVolume = 1;
@@ -54,26 +46,14 @@ function candleOpenTs(ts: number): number {
 }
 
 function emptyFp(): Float32Array {
-  return fpPool.take();
-}
-
-function storeFpSnapshot(ts: number, src: Float32Array) {
-  const prev = snapshotByTs.get(ts);
-  if (prev) fpPool.release(prev);
-  const snap = fpPool.take();
-  snap.set(src);
-  snapshotByTs.set(ts, snap);
+  return new Float32Array(PRICE_BINS * FP_FIELDS);
 }
 
 function finalizeLive() {
-  if (liveTs > 0 && liveFp) storeFpSnapshot(liveTs, liveFp);
+  if (liveTs > 0 && liveFp) snapshotByTs.set(liveTs, liveFp.slice());
   if (snapshotByTs.size > SNAPSHOT_CAP) {
     const keys = [...snapshotByTs.keys()].sort((a, b) => a - b);
-    for (let i = 0; i < keys.length - SNAPSHOT_CAP; i++) {
-      const col = snapshotByTs.get(keys[i]);
-      if (col) fpPool.release(col);
-      snapshotByTs.delete(keys[i]);
-    }
+    for (let i = 0; i < keys.length - SNAPSHOT_CAP; i++) snapshotByTs.delete(keys[i]);
   }
 }
 
@@ -139,10 +119,7 @@ function draw() {
       const buy = fp[b * FP_FIELDS];
       const sell = fp[b * FP_FIELDS + 1];
       const tot = buy + sell;
-      if (tot > maxTot) {
-        maxTot = tot;
-        pocBin = b;
-      }
+      if (tot > maxTot) { maxTot = tot; pocBin = b; }
     }
 
     for (let b = 0; b < PRICE_BINS; b++) {
@@ -151,9 +128,9 @@ function draw() {
       const total = buy + sell;
       if (total <= 0) continue;
 
-      const midP = maxPrice - ((b + 0.5) / PRICE_BINS) * (maxPrice - minPrice);
+      const midP = maxPrice - (b + 0.5) / PRICE_BINS * (maxPrice - minPrice);
       const y = (maxPrice - midP) * invPr;
-      const bh = Math.max(1.5, ((invPr * (maxPrice - minPrice)) / PRICE_BINS) * 0.9);
+      const bh = Math.max(1.5, invPr * (maxPrice - minPrice) / PRICE_BINS * 0.9);
       const delta = buy - sell;
       const intensity = Math.min(1, total / (refVolume * 0.12 + 1e-6));
 
@@ -187,24 +164,20 @@ function openWs() {
   const s = symbol.toLowerCase();
   socket = new WebSocket(`wss://fstream.binance.com/ws/${s}@aggTrade`);
   socket.onmessage = (ev) => {
-    const raw = ev.data as string;
-    const t = parseBinanceAggTrade(raw);
-    if (!t) return;
-    onAggTrade(t.ts, t.price, t.qty, t.isSell);
+    try {
+      const d = JSON.parse(ev.data as string);
+      if (d.e !== 'aggTrade') return;
+      const ts = d.T || d.E || Date.now();
+      onAggTrade(ts, +d.p, +d.q, d.m === true);
+    } catch { /* ignore */ }
   };
-  socket.onclose = () => {
-    if (running) setTimeout(openWs, 2000);
-  };
+  socket.onclose = () => { if (running) setTimeout(openWs, 2000); };
 }
 
 function closeWs() {
   if (socket) {
     socket.onclose = null;
-    try {
-      socket.close();
-    } catch {
-      /* ignore */
-    }
+    try { socket.close(); } catch { /* ignore */ }
   }
   socket = null;
 }
@@ -290,10 +263,7 @@ self.onmessage = async (ev: MessageEvent) => {
       break;
     case 'pause':
       running = false;
-      if (animId) {
-        cancelAnimationFrame(animId);
-        animId = 0;
-      }
+      if (animId) { cancelAnimationFrame(animId); animId = 0; }
       closeWs();
       break;
     case 'resume':

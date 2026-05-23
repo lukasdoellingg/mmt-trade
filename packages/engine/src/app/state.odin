@@ -71,23 +71,9 @@ signal_engine_ready :: proc "contextless" () {
     application_state().engineReadySignaled = true
 }
 
-// Drained once per RAF from the SAB-shared input ring (see input_bridge.odin).
-// We forward to a `handle_input_event` callback that the chart widget binds
-// at boot time — that keeps app/ free of chart-specific symbols and avoids
-// circular imports.
-@(private="file") input_event_handler: proc "contextless" (event: ^InputEvent) = default_input_handler
-
-@(private="file")
-default_input_handler :: proc "contextless" (event: ^InputEvent) {
-    _ = event
-}
-
-set_input_event_handler :: proc "contextless" (handler: proc "contextless" (event: ^InputEvent)) {
-    input_event_handler = handler
-}
-
+// Phase 4 will populate these by reading from a SAB-shared input queue
+// written by the JS shell (mouse, wheel, keyboard).
 poll_input_events :: proc "contextless" () {
-    _ = poll_input_ring(input_event_handler)
 }
 
 flush_ui_events_to_layers :: proc "contextless" () {
