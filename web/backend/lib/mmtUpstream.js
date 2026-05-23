@@ -1,5 +1,5 @@
 /**
- * MMT.gg v2 WebSocket upstream — CBOR decode, getrange backfill, Protobuf to clients.
+ * MMT. qgg v2 WebSocket upstream — CBOR decode, getrange backfill, Protobuf to clients.
  *
  * Requires env MMT_WS_TOKEN (JWT from app.mmt.gg DevTools WS URL). Reconnects on
  * close with exponential backoff + jitter, capped at MMT_RECONNECT_ATTEMPTS.
