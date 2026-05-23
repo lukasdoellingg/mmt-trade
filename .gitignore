@@ -35,8 +35,13 @@ secrets/
 *.log
 logs/
 data/
+!packages/engine/src/data/
+!packages/engine/src/data/**
 *.db
 *.sqlite
+
+# ── Emscripten SDK (local toolchain, not vendored) ────────────────
+packages/engine/.emsdk/
 
 # ── OS ────────────────────────────────────────────────────────────
 .DS_Store
