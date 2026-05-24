@@ -18,6 +18,7 @@ import {
 import { decodeMmtHeatmapMessage, capLevels } from './mmtCbor.js';
 import { encodeHeatmapFrame, broadcastToClients } from './heatmapBook.js';
 import { createBackoffController } from './security.js';
+import { safeCloseWebSocket } from './wsTeardown.js';
 
 const PING_INTERVAL_MS = 25_000;
 const SNAPSHOT_CAP = 5000;
@@ -199,5 +200,6 @@ export function closeMmtUpstream(upstream) {
     clearTimeout(upstream.reconnectTimer);
     upstream.reconnectTimer = null;
   }
-  try { upstream.ws?.close(); } catch { /* ignore */ }
+  safeCloseWebSocket(upstream.ws);
+  upstream.ws = null;
 }

@@ -82,6 +82,60 @@ natural_log :: #force_inline proc "contextless" (value: f64) -> f64 {
     return guess
 }
 
+// Draws the latest heatmap columns as faint vertical strips (Phase 4 MVP).
+heatmap_gpu_render_columns :: proc "contextless" (
+    heatmap: ^data.FlatHeatmap,
+    chart_width, chart_height: f32,
+    min_price, max_price: f64,
+) {
+    if heatmap.columnCount <= 0 || heatmap.volumeCells == nil { return }
+    price_range := max_price - min_price
+    if price_range < 1e-9 { return }
+    inverse := 1.0 / price_range
+
+    columns_to_draw := heatmap.columnCount
+    if columns_to_draw > 128 { columns_to_draw = 128 }
+    column_width := chart_width / f32(columns_to_draw)
+    if column_width < 1 { column_width = 1 }
+
+    start_logical := heatmap.columnCount - columns_to_draw
+    if start_logical < 0 { start_logical = 0 }
+    active_levels := data.flat_heatmap_active_levels_per_column(heatmap)
+
+    for draw_slot in 0..<columns_to_draw {
+        logical_column := start_logical + draw_slot
+        physical := data.flat_heatmap_physical_index(heatmap, logical_column)
+        base := data.flat_heatmap_physical_column_offset(heatmap, physical)
+
+        min_level: i32 = active_levels
+        max_level: i32 = -1
+        for level_index: i32 = 0; level_index < active_levels; level_index += 1 {
+            if heatmap.volumeCells[base + level_index] <= 0 { continue }
+            if level_index < min_level { min_level = level_index }
+            if level_index > max_level { max_level = level_index }
+        }
+        if max_level < min_level { continue }
+
+        price_high := heatmap.bucketPriceMin + f64(max_level) * heatmap.bucketPriceStep
+        price_low := heatmap.bucketPriceMin + f64(min_level) * heatmap.bucketPriceStep
+        y_top := f32(f64(chart_height) - (price_high - min_price) * inverse * f64(chart_height))
+        y_bottom := f32(f64(chart_height) - (price_low - min_price) * inverse * f64(chart_height))
+        if y_bottom < y_top {
+            tmp := y_bottom
+            y_bottom = y_top
+            y_top = tmp
+        }
+        quad_height := y_bottom - y_top
+        if quad_height < 1 { quad_height = 1 }
+
+        x_pixels := f32(draw_slot) * column_width
+        color := [4]f32{ 0.2, 0.45, 0.95, 0.42 }
+        gfx.candle_pipeline_append_pixel_quad(
+            x_pixels, y_top, column_width, quad_height, color, chart_width, chart_height,
+        )
+    }
+}
+
 @(private)
 negative_exp :: #force_inline proc "contextless" (x: f64) -> f64 {
     // Taylor approximation around 0; fine for our ratio-of-logs use.

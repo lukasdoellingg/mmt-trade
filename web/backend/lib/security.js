@@ -46,7 +46,12 @@ export function validateSymbol(rawSymbol, fallback = 'BTC/USDT') {
 
 export function validateHeatmapSymbol(rawSymbol) {
   if (typeof rawSymbol !== 'string') return null;
-  const upper = rawSymbol.toUpperCase();
+  let upper = rawSymbol.toUpperCase().replace(/\s/g, '');
+  if (upper.includes('/')) {
+    const slashPart = upper.split(':')[0];
+    const [base, quote = 'USDT'] = slashPart.split('/');
+    upper = `${base}${quote}`.replace(/[^A-Z0-9]/g, '');
+  }
   return HEATMAP_SYMBOL_REGEX.test(upper) ? upper : null;
 }
 

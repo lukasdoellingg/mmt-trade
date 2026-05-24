@@ -37,6 +37,14 @@ main :: proc "c" () -> i32 {
     return 0
 }
 
+// Debug snapshot for shell (10 f64 slots). See packages/shell debug monitor.
+@(export)
+app_get_heatmap_column_count :: proc "c" () -> i32 {
+    heatmap := net.feed_hub_flat_heatmap()
+    if heatmap == nil { return 0 }
+    return heatmap.columnCount
+}
+
 // Per-frame step driven by emscripten_request_animation_frame_loop.
 @(export)
 step :: proc "c" (delta_seconds: f32) {

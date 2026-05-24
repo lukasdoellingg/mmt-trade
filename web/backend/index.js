@@ -12,6 +12,11 @@ import {
 } from './lib/heatmapAggregate.js';
 import { bookToLevels, encodeHeatmapFrame, broadcastToClients } from './lib/heatmapBook.js';
 import { startMmtHeatmapUpstream, closeMmtUpstream } from './lib/mmtUpstream.js';
+import {
+  cancelUpstreamIdleClose,
+  scheduleUpstreamIdleClose,
+  safeCloseWebSocket,
+} from './lib/wsTeardown.js';
 import { timeframeToMs, candleOpenMs } from './lib/candleTime.js';
 import { timeframeToSec } from './lib/mmtProtocol.js';
 import {
@@ -1127,7 +1132,25 @@ function startBinanceHeatmap(symbolKey, timeframeMs = 3600e3) {
 function closeBinanceUpstream(upstream) {
   if (!upstream) return;
   upstream.destroyed = true;
-  try { upstream.ws?.close(); } catch { /* ignore */ }
+  safeCloseWebSocket(upstream.ws);
+  upstream.ws = null;
+}
+
+function releaseHeatmapUpstream(upstreamKey, upstream, { mmtMode, useAgg }) {
+  if (mmtMode) {
+    closeMmtUpstream(upstream);
+    heatmapUpstreams.delete(upstreamKey);
+    return;
+  }
+  if (useAgg) {
+    closeAggregatedUpstream(upstream);
+    heatmapUpstreams.delete(upstreamKey);
+    return;
+  }
+  if (upstream.ws) {
+    closeBinanceUpstream(upstream);
+    heatmapUpstreams.delete(upstreamKey);
+  }
 }
 
 // --------------- Graceful shutdown & server start ---------------
@@ -1218,23 +1241,16 @@ wss.on('connection', (socket, req) => {
     }
   }
 
+  cancelUpstreamIdleClose(upstream);
   upstream.clients.add(socket);
 
   socket.on('close', () => {
     webSocketGate.trackClose(clientIp);
     upstream.clients.delete(socket);
-    if (!upstream.clients.size) {
-      if (mmtMode) {
-        closeMmtUpstream(upstream);
-        heatmapUpstreams.delete(upstreamKey);
-      } else if (useAgg) {
-        closeAggregatedUpstream(upstream);
-        heatmapUpstreams.delete(upstreamKey);
-      } else if (upstream.ws) {
-        closeBinanceUpstream(upstream);
-        heatmapUpstreams.delete(upstreamKey);
-      }
-    }
+    if (upstream.clients.size > 0) return;
+    scheduleUpstreamIdleClose(upstream, () => {
+      releaseHeatmapUpstream(upstreamKey, upstream, { mmtMode, useAgg });
+    });
   });
 });
 
@@ -1242,7 +1258,9 @@ function shutdown(signal) {
   console.log(`\n${signal} received, shutting down gracefully...`);
   for (const [, ex] of exchangeCache) { try { ex.close?.(); } catch { /* ignore */ } }
   for (const [, upstream] of heatmapUpstreams) {
-    try { upstream.ws?.close(); } catch { /* ignore */ }
+    cancelUpstreamIdleClose(upstream);
+    if (upstream.sources?.length) closeAggregatedUpstream(upstream);
+    else safeCloseWebSocket(upstream.ws);
     for (const client of upstream.clients) { try { client.close(1001, 'server shutdown'); } catch { /* ignore */ } }
   }
   heatmapUpstreams.clear();

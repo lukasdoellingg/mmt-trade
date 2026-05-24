@@ -14,9 +14,11 @@ FeedHub :: struct {
     urlBytes:             [FEED_HUB_MAX_URL_BYTES]u8,
     urlLength:            i32,
     isMmtConnected:       bool,
+    useBackendProxy:      bool,
     pendingSubscribeCount: i32,
     framesReceived:       u64,
     framesQueuedForDecode: u64,
+    framesDecodeFailures: u64,
 }
 
 @(private="file")
@@ -31,9 +33,11 @@ feed_hub_init :: proc "contextless" (hub: ^FeedHub) {
     hub.mmtSocket = {}
     hub.urlLength = 0
     hub.isMmtConnected = false
+    hub.useBackendProxy = false
     hub.pendingSubscribeCount = 0
     hub.framesReceived = 0
     hub.framesQueuedForDecode = 0
+    hub.framesDecodeFailures = 0
 }
 
 // Symbol key "BTCUSDT" → "btc/usd" (MMT pair form).
@@ -133,6 +137,10 @@ feed_hub_on_mmt_binary_frame :: proc "contextless" (
     length: u32,
 ) {
     if payload == nil || length == 0 { return }
+    if hub.useBackendProxy {
+        feed_hub_on_backend_binary_frame(hub, payload, length)
+        return
+    }
     hub.framesReceived += 1
     hub.framesQueuedForDecode += 1
     // Phase 5: workers.decode_worker_push_frame(payload, length)
@@ -151,6 +159,10 @@ feed_hub_flush_pending_subscribes :: proc "contextless" (hub: ^FeedHub) {
 
 // Called when Emscripten WS opens (from JS bridge or native callback).
 feed_hub_on_mmt_open :: proc "contextless" (hub: ^FeedHub) {
+    if hub.useBackendProxy {
+        feed_hub_on_backend_open(hub)
+        return
+    }
     hub.isMmtConnected = true
     hub.mmtSocket.isOpen = true
     builder: MmtRpcBuilder
@@ -173,8 +185,15 @@ feed_hub_on_mmt_close :: proc "contextless" (hub: ^FeedHub) {
 
 // Per-frame maintenance (ping, pending subscribes).
 feed_hub_tick :: proc "contextless" (hub: ^FeedHub, delta_seconds: f32) {
-    _ = delta_seconds
-    if !hub.isMmtConnected && hub.pendingSubscribeCount > 0 {
-        return
+    if !hub.isMmtConnected { return }
+    if hub.useBackendProxy { return }
+    feed_hub_ping_accumulator += delta_seconds
+    if feed_hub_ping_accumulator < 25.0 { return }
+    feed_hub_ping_accumulator = 0
+    builder: MmtRpcBuilder
+    builder.backingBytes = &hub.rpcBuffer[0]
+    builder.capacity = FEED_HUB_RPC_BUFFER_BYTES
+    if mmt_build_ping(&builder) {
+        send_rpc(hub, &builder)
     }
 }

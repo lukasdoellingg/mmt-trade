@@ -6,6 +6,7 @@ import { WebSocket } from 'ws';
 import { bookToLevels, encodeHeatmapFrame, broadcastToClients, HEATMAP_MAX_BOOK_SIZE } from './heatmapBook.js';
 import { candleOpenMs } from './candleTime.js';
 import { createBackoffController } from './security.js';
+import { safeCloseWebSocket } from './wsTeardown.js';
 
 const UPSTREAM_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 
@@ -258,6 +259,7 @@ export function closeAggregatedUpstream(upstream) {
   if (!upstream) return;
   upstream.destroyed = true;
   for (const src of upstream.sources) {
-    try { src.ws?.close(); } catch { /* ignore */ }
+    safeCloseWebSocket(src.ws);
+    src.ws = null;
   }
 }
