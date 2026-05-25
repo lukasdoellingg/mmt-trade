@@ -7,7 +7,6 @@ export const RUNTIME_PLOT_VERSION = 1;
 export const RUNTIME_PLOT_VERSION_ROLES = 2;
 export const MAX_RUNTIME_PLOT_PRICES = 64;
 
-const plotPriceScratch = new Float64Array(MAX_RUNTIME_PLOT_PRICES);
 const plotIdDecoder = new TextDecoder();
 
 export type RuntimePlotParsed = {
@@ -53,8 +52,7 @@ export function parseRuntimePlotPayload(
   const parsed = parseScriptRuntimePayload(text, streamKey);
   if (!parsed) return null;
   const runtimeId =
-    parsed.runtimeId ??
-    (streamKey?.startsWith('runtime:') ? streamKey.slice('runtime:'.length) : '');
+    parsed.runtimeId ?? (streamKey?.startsWith('runtime:') ? streamKey.slice('runtime:'.length) : '');
   const count = plotLinesToPrices(parsed.lines, outPrices, max);
   if (count <= 0 && !runtimeId) return null;
   return { runtimeId, count };

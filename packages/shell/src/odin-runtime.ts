@@ -51,14 +51,9 @@ interface TerminalModule {
   _free?: (ptr: number) => void;
 }
 
-const BUILD_REQUIRED_MESSAGE =
-  'terminal.wasm not built — run `npm run build:engine` from the repo root.';
+const BUILD_REQUIRED_MESSAGE = 'terminal.wasm not built — run `npm run build:engine` from the repo root.';
 
-function resizeCanvasToDisplaySize(
-  canvas: HTMLCanvasElement,
-  dpr: number,
-  module: TerminalModule,
-): void {
+function resizeCanvasToDisplaySize(canvas: HTMLCanvasElement, dpr: number, module: TerminalModule): void {
   const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
   const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
   if (canvas.width !== width || canvas.height !== height) {
@@ -106,9 +101,8 @@ export async function loadTerminal(options: TerminalRuntimeOptions): Promise<Ter
     });
   }
 
-  const ensureGl = (
-    globalThis as { __mmtEnsureWebGL2?: (canvas: HTMLCanvasElement) => void }
-  ).__mmtEnsureWebGL2;
+  const ensureGl = (globalThis as { __mmtEnsureWebGL2?: (canvas: HTMLCanvasElement) => void })
+    .__mmtEnsureWebGL2;
   if (!ensureGl) {
     throw new Error('terminal.js missing __mmtEnsureWebGL2 — run npm run build:engine');
   }

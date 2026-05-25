@@ -5,14 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const chartWidget = readFileSync(
-  join(root, 'web/frontend/src/widgets/ChartWidget.vue'),
-  'utf8',
-);
-const chartWorker = readFileSync(
-  join(root, 'web/frontend/src/workers/chartEngineWorker.ts'),
-  'utf8',
-);
+const chartWidget = readFileSync(join(root, 'web/frontend/src/widgets/ChartWidget.vue'), 'utf8');
+const chartWorker = readFileSync(join(root, 'web/frontend/src/workers/chartEngineWorker.ts'), 'utf8');
 
 test('ChartWidget pause keeps chart worker alive (KeepAlive)', () => {
   const pauseFn = chartWidget.match(/function pause\(\) \{[\s\S]*?\n\}/);

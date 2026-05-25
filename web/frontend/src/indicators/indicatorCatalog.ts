@@ -2,11 +2,7 @@
  * MMT.gg-style indicator declarations — native layers vs script runtimes.
  * Script ids must match backend `SCRIPT_IDS` in runtimeLimits.js.
  */
-export const SCRIPT_INDICATOR_IDS = [
-  'key-levels',
-  'net-positioning',
-  'aggregated-ob-imbalance',
-] as const;
+export const SCRIPT_INDICATOR_IDS = ['key-levels', 'net-positioning', 'aggregated-ob-imbalance'] as const;
 
 export type ScriptIndicatorId = (typeof SCRIPT_INDICATOR_IDS)[number];
 
@@ -22,8 +18,15 @@ export interface NativeIndicatorDecl {
   label: string;
   /** chartSettings boolean key */
   settingsKey:
-    | 'vwapDaily' | 'vwapWeekly' | 'vwapMonthly' | 'vwapBands'
-    | 'ema' | 'liquidations' | 'obHeatmap' | 'footprint' | 'vpvr';
+    | 'vwapDaily'
+    | 'vwapWeekly'
+    | 'vwapMonthly'
+    | 'vwapBands'
+    | 'ema'
+    | 'liquidations'
+    | 'obHeatmap'
+    | 'footprint'
+    | 'vpvr';
   pane: 'overlay';
 }
 
@@ -105,11 +108,17 @@ export function scriptDeclById(id: ScriptIndicatorId): ScriptIndicatorDecl | und
   return SCRIPT_INDICATORS.find((d) => d.id === id);
 }
 
-export function scriptSettingsKey(id: ScriptIndicatorId): keyof import('../chart/chartSettings').ChartSettings | null {
+import type { ChartSettings } from '../chart/chartSettings';
+
+export function scriptSettingsKey(id: ScriptIndicatorId): keyof ChartSettings | null {
   switch (id) {
-    case 'key-levels': return 'scriptKeyLevels';
-    case 'net-positioning': return 'scriptNetPositioning';
-    case 'aggregated-ob-imbalance': return 'scriptObImbalance';
-    default: return null;
+    case 'key-levels':
+      return 'scriptKeyLevels';
+    case 'net-positioning':
+      return 'scriptNetPositioning';
+    case 'aggregated-ob-imbalance':
+      return 'scriptObImbalance';
+    default:
+      return null;
   }
 }

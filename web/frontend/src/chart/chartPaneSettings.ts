@@ -32,12 +32,25 @@ export type PaneChartSettings = Pick<
 >;
 
 const PANE_KEYS: (keyof PaneChartSettings)[] = [
-  'symbol', 'exchange', 'timeframe',
-  'vwapDaily', 'vwapWeekly', 'vwapMonthly', 'vwapBands',
-  'ema', 'liquidations',
-  'obHeatmap', 'obBinMode', 'obAggregate', 'obPeak', 'obLow',
-  'footprint', 'vpvr',
-  'scriptKeyLevels', 'scriptNetPositioning', 'scriptObImbalance',
+  'symbol',
+  'exchange',
+  'timeframe',
+  'vwapDaily',
+  'vwapWeekly',
+  'vwapMonthly',
+  'vwapBands',
+  'ema',
+  'liquidations',
+  'obHeatmap',
+  'obBinMode',
+  'obAggregate',
+  'obPeak',
+  'obLow',
+  'footprint',
+  'vpvr',
+  'scriptKeyLevels',
+  'scriptNetPositioning',
+  'scriptObImbalance',
 ];
 
 export function paneDefaults(): PaneChartSettings {
@@ -110,9 +123,7 @@ function resolveActiveChartId(
   store: { widgets: { id: string; type: string }[] },
   activeChartId: { value: string | null },
 ): string | null {
-  return activeChartId.value
-    ?? store.widgets.find((w) => w.type === 'chart')?.id
-    ?? null;
+  return activeChartId.value ?? store.widgets.find((w) => w.type === 'chart')?.id ?? null;
 }
 
 function paneProxy(
@@ -156,11 +167,7 @@ export function usePaneSettings(widgetId: string): PaneChartSettings {
 /** Active chart pane for ChartTopBar / tool rail (last focused chart). */
 export function useActivePaneSettings(): PaneChartSettings {
   const { store, activeChartId, updateProps } = useWorkspace();
-  return paneProxy(
-    () => resolveActiveChartId(store, activeChartId),
-    store,
-    updateProps,
-  );
+  return paneProxy(() => resolveActiveChartId(store, activeChartId), store, updateProps);
 }
 
 /** Read-only snapshot of active pane (for computed titles). */

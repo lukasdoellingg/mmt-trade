@@ -41,8 +41,16 @@ const ROLE_STRENGTH = {
 
 function periodBarsForTf(tf) {
   const map = {
-    '1m': 60, '5m': 48, '15m': 32, '30m': 24,
-    '1h': 24, '4h': 12, '1D': 2, '1d': 2, '1W': 2, '1w': 2,
+    '1m': 60,
+    '5m': 48,
+    '15m': 32,
+    '30m': 24,
+    '1h': 24,
+    '4h': 12,
+    '1D': 2,
+    '1d': 2,
+    '1W': 2,
+    '1w': 2,
   };
   return map[tf] ?? 24;
 }

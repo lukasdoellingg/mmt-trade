@@ -44,9 +44,7 @@ export function parseAggregateExchanges(param) {
  * @param {string[]} backendExchangeIds
  */
 export function backendExchangesToMmtString(backendExchangeIds) {
-  const list = (backendExchangeIds || ['binance'])
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean);
+  const list = (backendExchangeIds || ['binance']).map((e) => e.trim().toLowerCase()).filter(Boolean);
   if (list.length === 1) return list[0];
   return [...list].sort().join(':');
 }

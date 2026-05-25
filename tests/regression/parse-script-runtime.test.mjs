@@ -6,7 +6,11 @@ function isFinitePrice(v) {
 
 function parseScriptRuntimePayload(text, streamRuntimeId) {
   let msg;
-  try { msg = JSON.parse(text); } catch { return null; }
+  try {
+    msg = JSON.parse(text);
+  } catch {
+    return null;
+  }
   const data = msg.data && typeof msg.data === 'object' ? msg.data : msg;
   const runtimeId =
     (typeof data.runtime_id === 'string' ? data.runtime_id : null) ??

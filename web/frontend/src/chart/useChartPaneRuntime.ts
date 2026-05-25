@@ -15,14 +15,9 @@ import {
   chartPaneRemoveMount,
 } from '../app/chartObjectTree';
 import { useScriptRuntime } from '../chart/scriptRuntime';
-import {
-  SCRIPT_INDICATORS,
-  scriptSettingsKey,
-  type ScriptIndicatorId,
-} from '../indicators/indicatorCatalog';
+import { SCRIPT_INDICATORS, scriptSettingsKey, type ScriptIndicatorId } from '../indicators/indicatorCatalog';
 import { USE_SESSION_MUX } from '../config/featureFlags';
 import { useWorkspace } from '../workspace/useWorkspace';
-
 
 /**
  * Eager create_runtime for a detached script-indicator window.
@@ -36,6 +31,7 @@ export function mountScriptWindowRuntime(
   symbol: string,
   timeframe: string,
 ): string {
+  if (!USE_SESSION_MUX) return '';
   const scriptRuntime = useScriptRuntime();
   const { updateProps } = useWorkspace();
   const key = scriptRuntime.mount(
@@ -59,10 +55,7 @@ export function mountScriptWindowRuntime(
   return key;
 }
 
-export function useChartPaneRuntime(
-  widget: WidgetState,
-  settings: PaneChartSettings,
-) {
+export function useChartPaneRuntime(widget: WidgetState, settings: PaneChartSettings) {
   const scriptRuntime = useScriptRuntime();
   const { updateProps, store } = useWorkspace();
   const scopeId = widget.id;
@@ -138,14 +131,7 @@ export function useChartPaneRuntime(
   }
 
   function attachScriptWindow(scriptId: ScriptIndicatorId, windowWidgetId: string, localId: string): void {
-    mountScriptWindowRuntime(
-      windowWidgetId,
-      scopeId,
-      scriptId,
-      localId,
-      settings.symbol,
-      settings.timeframe,
-    );
+    mountScriptWindowRuntime(windowWidgetId, scopeId, scriptId, localId, settings.symbol, settings.timeframe);
   }
 
   function detachScriptWindow(windowWidgetId: string, localId: string): void {
@@ -191,7 +177,7 @@ export function spawnIndicatorWindow(
   bringToFront(w.id);
 
   const chartId = parentChartWidgetId ?? (props.parentChartWidgetId as string | undefined);
-  if (chartId && type === 'script-indicator-pane') {
+  if (chartId && type === 'script-indicator-pane' && USE_SESSION_MUX) {
     const pane = usePaneSettings(chartId);
     mountScriptWindowRuntime(
       w.id,

@@ -2,8 +2,7 @@
  * Sanitized client error reports → POST /api/client-errors (prod or opt-in).
  */
 
-let reportingEnabled =
-  import.meta.env.PROD || import.meta.env.VITE_ERROR_REPORTING === '1';
+let reportingEnabled = import.meta.env.PROD || import.meta.env.VITE_ERROR_REPORTING === '1';
 
 const recentKeys = new Map<string, number>();
 const DEDUPE_MS = 60_000;

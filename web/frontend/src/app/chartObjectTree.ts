@@ -4,7 +4,10 @@
  */
 import { ref } from 'vue';
 import { activeChartId } from '../workspace/useWorkspace';
-import type { ChartRuntimeAttachment, ChartWidgetRuntimeProps } from '../features/chart-runtime/chartRuntimeTypes';
+import type {
+  ChartRuntimeAttachment,
+  ChartWidgetRuntimeProps,
+} from '../features/chart-runtime/chartRuntimeTypes';
 import { parseChartRuntimeProps } from '../features/chart-runtime/serialize';
 import type { ScriptIndicatorId } from '../indicators/indicatorCatalog';
 
@@ -75,9 +78,7 @@ export function chartPaneSyncScriptMounts(
 ): ChartRuntimeAttachment[] {
   const node = panes.get(widgetId);
   if (!node) return [];
-  const parsed = parseChartRuntimeProps(
-    props as unknown as Record<string, unknown> | undefined,
-  );
+  const parsed = parseChartRuntimeProps(props as unknown as Record<string, unknown> | undefined);
   node.scriptMounts = parsed.runtimes ?? [];
   bumpTreeRevision();
   return node.scriptMounts;
@@ -126,10 +127,12 @@ export function chartPaneRemoveMount(widgetId: string, localId: string): ChartRu
   return node.scriptMounts.slice();
 }
 
-export function chartPaneFindMountByRuntimeId(runtimeId: string): {
-  widgetId: string;
-  mount: ChartRuntimeAttachment;
-} | undefined {
+export function chartPaneFindMountByRuntimeId(runtimeId: string):
+  | {
+      widgetId: string;
+      mount: ChartRuntimeAttachment;
+    }
+  | undefined {
   for (const node of panes.values()) {
     const mount = node.scriptMounts.find((m) => m.runtimeId === runtimeId);
     if (mount) return { widgetId: node.widgetId, mount };
@@ -141,9 +144,9 @@ export function chartPaneOverlayMount(
   widgetId: string,
   scriptId: ScriptIndicatorId,
 ): ChartRuntimeAttachment | undefined {
-  return panes.get(widgetId)?.scriptMounts.find(
-    (m) => m.scriptId === scriptId && (m.pane ?? 'overlay') === 'overlay',
-  );
+  return panes
+    .get(widgetId)
+    ?.scriptMounts.find((m) => m.scriptId === scriptId && (m.pane ?? 'overlay') === 'overlay');
 }
 
 export function chartPaneWindowMounts(widgetId: string): ChartRuntimeAttachment[] {

@@ -35,12 +35,14 @@ export function createSessionWebSocket(webSocketGate) {
     mux.addClient(socket);
     socket._runtimeCount = 0;
 
-    socket.send(JSON.stringify({
-      type: 'hello',
-      endpoint: '/ws/session',
-      version: 2,
-      provider: 'local',
-    }));
+    socket.send(
+      JSON.stringify({
+        type: 'hello',
+        endpoint: '/ws/session',
+        version: 2,
+        provider: 'local',
+      }),
+    );
 
     socket.on('message', (raw) => {
       const text = typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8');
@@ -60,7 +62,11 @@ export function createSessionWebSocket(webSocketGate) {
 /** @param {object} socket @param {import('./infoStream/multiplexer.js').InfoStreamMultiplexer} mux @param {string} text */
 function handleJsonMessage(socket, mux, text) {
   let msg;
-  try { msg = JSON.parse(text); } catch { return; }
+  try {
+    msg = JSON.parse(text);
+  } catch {
+    return;
+  }
 
   if (msg.op === 'ping') {
     socket.send(JSON.stringify({ type: 'pong' }));
@@ -82,11 +88,13 @@ function handleJsonMessage(socket, mux, text) {
     }
 
     if (stream === STREAM_HEATMAP_AGG) {
-      socket.send(JSON.stringify({
-        type: 'subscribed',
-        key: `heatmap:${sym}:${timeframeSec}:${bucketGroup}`,
-        note: 'use /ws/heatmap for order-book heatmap',
-      }));
+      socket.send(
+        JSON.stringify({
+          type: 'subscribed',
+          key: `heatmap:${sym}:${timeframeSec}:${bucketGroup}`,
+          note: 'use /ws/heatmap for order-book heatmap',
+        }),
+      );
       return;
     }
 
@@ -116,29 +124,25 @@ function handleJsonMessage(socket, mux, text) {
     }
 
     socket._runtimeCount = count + 1;
-    mountLocalRuntime(
-      socket,
-      scriptId,
-      sym,
-      tf,
-      msg.context ?? {},
-      createToken,
-      mux,
-    ).then((result) => {
-      if (!result) {
+    mountLocalRuntime(socket, scriptId, sym, tf, msg.context ?? {}, createToken, mux)
+      .then((result) => {
+        if (!result) {
+          socket._runtimeCount = Math.max(0, (socket._runtimeCount ?? 1) - 1);
+          socket.send(JSON.stringify({ type: 'error', message: 'create_runtime failed', createToken }));
+          return;
+        }
+        socket.send(
+          JSON.stringify({
+            type: 'runtime_created',
+            runtime_id: result.runtimeId,
+            createToken: result.createToken,
+          }),
+        );
+      })
+      .catch(() => {
         socket._runtimeCount = Math.max(0, (socket._runtimeCount ?? 1) - 1);
         socket.send(JSON.stringify({ type: 'error', message: 'create_runtime failed', createToken }));
-        return;
-      }
-      socket.send(JSON.stringify({
-        type: 'runtime_created',
-        runtime_id: result.runtimeId,
-        createToken: result.createToken,
-      }));
-    }).catch(() => {
-      socket._runtimeCount = Math.max(0, (socket._runtimeCount ?? 1) - 1);
-      socket.send(JSON.stringify({ type: 'error', message: 'create_runtime failed', createToken }));
-    });
+      });
     return;
   }
 

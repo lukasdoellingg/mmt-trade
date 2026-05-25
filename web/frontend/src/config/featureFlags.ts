@@ -1,10 +1,10 @@
 /**
  * Script indicators + bar stats via backend /ws/session (localEngine).
  * Default on unless VITE_USE_SESSION_MUX=0 (dev and production builds).
+ * Normalized at Vite startup in vite.config.js (loadEnv + define).
  */
 export const USE_SESSION_MUX =
-  import.meta.env.VITE_USE_SESSION_MUX !== '0' &&
-  import.meta.env.VITE_USE_SESSION_MUX !== 'false';
+  import.meta.env.VITE_USE_SESSION_MUX !== '0' && import.meta.env.VITE_USE_SESSION_MUX !== 'false';
 
 export const USE_CHART_RUNTIME_INDICATORS =
   import.meta.env.VITE_USE_CHART_RUNTIME_INDICATORS === '1' ||

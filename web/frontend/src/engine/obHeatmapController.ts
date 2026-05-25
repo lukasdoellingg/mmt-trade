@@ -17,10 +17,7 @@ const MARGIN_BOTTOM = 32;
 const CANDLE_FIELD_STRIDE = 7;
 const SNAPSHOT_CAP = 5000;
 
-const TF_MS: Record<string, number> = {
-  '1m': 60e3, '15m': 9e5, '30m': 18e5, '1h': 36e5,
-  '4h': 144e5, '1D': 864e5, '1W': 6048e5,
-};
+import { timeframeToMs } from '@shared/timeframes';
 
 export type ObHeatmapStats = {
   levels: number;
@@ -128,10 +125,7 @@ export class ObHeatmapController {
 
     const cols = Math.min(TIME_COLS, Math.max(1, span));
     for (let c = 0; c < cols; c++) {
-      const candleIdx =
-        span <= TIME_COLS
-          ? this.visStart + c
-          : this.visStart + Math.floor((c * span) / cols);
+      const candleIdx = span <= TIME_COLS ? this.visStart + c : this.visStart + Math.floor((c * span) / cols);
       if (candleIdx < 0 || candleIdx >= this.lastCandleCount) continue;
 
       let openTs = 0;
@@ -147,10 +141,7 @@ export class ObHeatmapController {
       }
       if (!colData) continue;
 
-      const texCol =
-        span <= TIME_COLS
-          ? c
-          : Math.floor((c * TIME_COLS) / cols);
+      const texCol = span <= TIME_COLS ? c : Math.floor((c * TIME_COLS) / cols);
       const displayCol = prepareColumnForDisplay(colData, this.binMode);
       this.renderer.blitColumn(texCol, displayCol);
     }
@@ -166,7 +157,7 @@ export class ObHeatmapController {
     }
     if (!this.frameDirty || !this.renderer) return;
     this.frameDirty = false;
-    this.renderer.uploadTexture();
+    this.renderer.uploadDirtyColumns();
     const p = this.plotRect();
     this.renderer.render(p.x, p.y, p.w, p.h, this.intensityMul);
   }
@@ -201,7 +192,7 @@ export class ObHeatmapController {
   setTimeframe(tf: string): void {
     if (tf === this.timeframe) return;
     this.timeframe = tf;
-    this.timeframeMs = TF_MS[tf] || 36e5;
+    this.timeframeMs = timeframeToMs(tf);
     this.resetSnapshots();
   }
 
@@ -253,6 +244,10 @@ export class ObHeatmapController {
     this.renderer?.resize(w, h);
     this.timeAxisDirty = true;
     this.frameDirty = true;
+  }
+
+  isDirty(): boolean {
+    return this.running && (this.frameDirty || this.timeAxisDirty);
   }
 
   pause(): void {

@@ -55,7 +55,7 @@ web/frontend/src/
 │   ├── chartRuntimeBridge.ts # Emscripten chart_runtime loader
 │   └── rings/                # FrameRing / FlatHeatmap / Indicator handoff
 ├── indicators/               # Registry + optional sub-workers
-└── views/HeatmapView.vue     # Compose layers + toolbar
+└── features/heatmap/HeatmapView.vue  # Compose layers + toolbar
 ```
 
 ## Was du lokal ausführen musst

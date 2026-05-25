@@ -7,8 +7,12 @@ export function symKeyFromSymbol(pair: string): string {
 }
 
 export const EXCHANGE_IDS: Record<string, string> = {
-  Binance: 'binance', Coinbase: 'coinbase', Bybit: 'bybit',
-  OKX: 'okx', Deribit: 'deribit', Hyperliquid: 'hyperliquid',
+  Binance: 'binance',
+  Coinbase: 'coinbase',
+  Bybit: 'bybit',
+  OKX: 'okx',
+  Deribit: 'deribit',
+  Hyperliquid: 'hyperliquid',
 };
 
 export const FUTURES_EXCHANGES = ['binance', 'bybit', 'okx', 'deribit', 'hyperliquid'] as const;

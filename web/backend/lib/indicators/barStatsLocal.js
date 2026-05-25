@@ -1,9 +1,9 @@
 /**
  * Local bar stats — Binance aggTrade → per-candle buy/sell/delta (replaces MMT stream 13).
  */
-import { WebSocket } from 'ws';
 import { timeframeToMs, candleOpenMs } from '../candleTime.js';
 import { buildBarStatsStreamKey } from '../streamProtocol.js';
+import { subscribeAggTradeMessages } from '../chartBinanceFeed.js';
 import { setSessionDeltaMap } from './localEngine.js';
 
 const MAX_BARS = 120;
@@ -16,6 +16,9 @@ const sessionDeltaMap = new Map();
 /** @type {Map<string, BarStatsHub>} */
 const hubs = new Map();
 
+/** @type {Map<string, { hubs: Set<BarStatsHub>, unsubscribe: () => void }>} */
+const symbolAggTrade = new Map();
+
 /**
  * @typedef {object} BarStatsHub
  * @property {string} symbol
@@ -25,7 +28,6 @@ const hubs = new Map();
  * @property {Map<number, { ts: number, buyVol: number, sellVol: number, delta: number, pct: number }>} barsByTs
  * @property {number} lastPrice
  * @property {Set<object>} clients
- * @property {import('ws').WebSocket | null} ws
  * @property {ReturnType<typeof setInterval> | null} pushTimer
  * @property {number} refCount
  */
@@ -35,9 +37,7 @@ function hubKey(symbol, timeframeSec, bucketGroup) {
 }
 
 function snapshotBars(hub) {
-  return [...hub.barsByTs.values()]
-    .sort((a, b) => a.ts - b.ts)
-    .slice(-MAX_BARS);
+  return [...hub.barsByTs.values()].sort((a, b) => a.ts - b.ts).slice(-MAX_BARS);
 }
 
 function pushPayload(hub) {
@@ -87,28 +87,38 @@ function onAggTrade(hub, ts, price, qty, isSell) {
   syncSessionDelta(hub);
 }
 
-function connectBinance(hub) {
-  const sym = hub.symbol.toLowerCase();
-  const ws = new WebSocket(`wss://fstream.binance.com/ws/${sym}@aggTrade`);
-  hub.ws = ws;
+function dispatchAggTradeForSymbol(sym, raw) {
+  try {
+    const m = JSON.parse(raw);
+    const price = +m.p;
+    const qty = +m.q;
+    const ts = m.T || m.E || Date.now();
+    const isSell = !!m.m;
+    const entry = symbolAggTrade.get(sym);
+    if (!entry) return;
+    for (const hub of entry.hubs) onAggTrade(hub, ts, price, qty, isSell);
+  } catch {
+    /* ignore */
+  }
+}
 
-  ws.on('message', (raw) => {
-    try {
-      const m = JSON.parse(raw.toString());
-      const price = +m.p;
-      const qty = +m.q;
-      const ts = m.T || m.E || Date.now();
-      const isSell = !!m.m;
-      onAggTrade(hub, ts, price, qty, isSell);
-    } catch { /* ignore */ }
-  });
+function ensureSymbolAggTrade(sym) {
+  const key = sym.toUpperCase();
+  if (symbolAggTrade.has(key)) return symbolAggTrade.get(key);
+  const entry = {
+    hubs: new Set(),
+    unsubscribe: subscribeAggTradeMessages(key, (raw) => dispatchAggTradeForSymbol(key, raw)),
+  };
+  symbolAggTrade.set(key, entry);
+  return entry;
+}
 
-  ws.on('close', () => {
-    hub.ws = null;
-    if (hub.refCount > 0) setTimeout(() => connectBinance(hub), 2000);
-  });
-
-  ws.on('error', () => { /* reconnect via close */ });
+function releaseSymbolAggTrade(sym) {
+  const key = sym.toUpperCase();
+  const entry = symbolAggTrade.get(key);
+  if (!entry || entry.hubs.size > 0) return;
+  entry.unsubscribe();
+  symbolAggTrade.delete(key);
 }
 
 /**
@@ -127,12 +137,11 @@ export function acquireBarStats(mux, client, symbol, tf, timeframeSec, bucketGro
       barsByTs: new Map(),
       lastPrice: 0,
       clients: new Set(),
-      ws: null,
       pushTimer: null,
       refCount: 0,
     };
     hubs.set(key, hub);
-    connectBinance(hub);
+    ensureSymbolAggTrade(sym).hubs.add(hub);
     hub.pushTimer = setInterval(() => {
       if (!hub.clients.size) return;
       const text = pushPayload(hub);
@@ -161,8 +170,10 @@ export function releaseBarStats(client, streamKey) {
     hub.refCount = Math.max(0, hub.refCount - 1);
     if (hub.refCount <= 0 && hub.clients.size === 0) {
       if (hub.pushTimer) clearInterval(hub.pushTimer);
-      if (hub.ws) {
-        try { hub.ws.close(); } catch { /* ignore */ }
+      const entry = symbolAggTrade.get(hub.symbol);
+      if (entry) {
+        entry.hubs.delete(hub);
+        releaseSymbolAggTrade(hub.symbol);
       }
       hubs.delete(key);
     }
@@ -173,9 +184,8 @@ export function releaseBarStats(client, streamKey) {
 export function shutdownAllBarStats() {
   for (const [, hub] of hubs) {
     if (hub.pushTimer) clearInterval(hub.pushTimer);
-    if (hub.ws) {
-      try { hub.ws.close(); } catch { /* ignore */ }
-    }
   }
   hubs.clear();
+  for (const [, entry] of symbolAggTrade) entry.unsubscribe();
+  symbolAggTrade.clear();
 }

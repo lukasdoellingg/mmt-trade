@@ -85,7 +85,6 @@ export function buildKeyLevelPlotLines(
 ): ScriptPlotOverlayLine[] {
   if (!prices?.length) return [];
   const n = prices.length;
-  const ref = midPrice > 0 ? midPrice : (typeof prices[0] === 'number' ? prices[0] : prices[0]);
   const lines: ScriptPlotOverlayLine[] = [];
   let labelBudget = maxLabels;
 
@@ -95,12 +94,13 @@ export function buildKeyLevelPlotLines(
     const role = roles && i < roles.length ? roles[i] : 0;
     const color = keyLevelColor(role);
     let label: string | undefined;
-    const isMajor = role === KEY_LEVEL_ROLE.PREV_HIGH
-      || role === KEY_LEVEL_ROLE.PREV_LOW
-      || role === KEY_LEVEL_ROLE.PIVOT_R1
-      || role === KEY_LEVEL_ROLE.PIVOT_S1
-      || role === KEY_LEVEL_ROLE.SESSION_HIGH
-      || role === KEY_LEVEL_ROLE.SESSION_LOW;
+    const isMajor =
+      role === KEY_LEVEL_ROLE.PREV_HIGH ||
+      role === KEY_LEVEL_ROLE.PREV_LOW ||
+      role === KEY_LEVEL_ROLE.PIVOT_R1 ||
+      role === KEY_LEVEL_ROLE.PIVOT_S1 ||
+      role === KEY_LEVEL_ROLE.SESSION_HIGH ||
+      role === KEY_LEVEL_ROLE.SESSION_LOW;
     if (labelBudget > 0 && (isMajor || labelBudget > n - i)) {
       label = `${roleLabel(role)} ${fmtCompact(price)}`;
       labelBudget--;

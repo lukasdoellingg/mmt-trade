@@ -47,9 +47,7 @@ async function bootstrap(): Promise<void> {
     return;
   }
   if (!ensureCrossOriginIsolation()) {
-    setLoaderMessage(
-      'crossOriginIsolated=false — server must send COOP same-origin + COEP require-corp.',
-    );
+    setLoaderMessage('crossOriginIsolated=false — server must send COOP same-origin + COEP require-corp.');
     return;
   }
 
@@ -91,6 +89,9 @@ async function bootstrap(): Promise<void> {
         onPlot: (runtimeId, jsonText) => {
           runtimeHandle?.applyScriptRuntimeJson(runtimeId, jsonText);
         },
+      });
+      window.addEventListener('beforeunload', () => {
+        releaseSessionFeed?.();
       });
     }
   } catch (loadError) {

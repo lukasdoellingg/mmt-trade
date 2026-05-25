@@ -83,9 +83,7 @@ export class InfoStreamMultiplexer {
     const streamKey = streamKeyOrRuntimeId.startsWith('runtime:')
       ? streamKeyOrRuntimeId
       : buildRuntimeStreamKey(streamKeyOrRuntimeId);
-    const payload = Buffer.isBuffer(payloadUtf8)
-      ? payloadUtf8
-      : Buffer.from(payloadUtf8, 'utf8');
+    const payload = Buffer.isBuffer(payloadUtf8) ? payloadUtf8 : Buffer.from(payloadUtf8, 'utf8');
     const frame = encodeSessionEnvelope(streamKey, payload);
 
     const runtimeId = streamKey.slice('runtime:'.length);
@@ -102,9 +100,7 @@ export class InfoStreamMultiplexer {
 
   /** @param {object} client @param {string} streamKey @param {string|Buffer} payloadUtf8 */
   sendEnvelopeToClient(client, streamKey, payloadUtf8) {
-    const payload = Buffer.isBuffer(payloadUtf8)
-      ? payloadUtf8
-      : Buffer.from(payloadUtf8, 'utf8');
+    const payload = Buffer.isBuffer(payloadUtf8) ? payloadUtf8 : Buffer.from(payloadUtf8, 'utf8');
     if (client.readyState === 1) {
       client.send(encodeSessionEnvelope(streamKey, payload));
     }

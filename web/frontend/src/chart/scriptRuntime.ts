@@ -17,10 +17,7 @@ import {
 import { USE_SESSION_MUX } from '../config/featureFlags';
 import type { ScriptIndicatorId } from '../indicators/indicatorCatalog';
 import { symKeyFromSymbol } from '../constants';
-import {
-  chartPaneFindMountByRuntimeId,
-  chartPaneUpsertMount,
-} from '../app/chartObjectTree';
+import { chartPaneFindMountByRuntimeId, chartPaneUpsertMount } from '../app/chartObjectTree';
 
 export type ScriptRuntimeMount = {
   /** Scoped key `${scopeId}:${localId}`. */
@@ -55,8 +52,14 @@ const MOUNT_TIMEOUT_MS = 15_000;
 
 function timeframeToSec(tf: string): number {
   const map: Record<string, number> = {
-    '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
-    '1h': 3600, '4h': 14400, '1D': 86400, '1d': 86400,
+    '1m': 60,
+    '5m': 300,
+    '15m': 900,
+    '30m': 1800,
+    '1h': 3600,
+    '4h': 14400,
+    '1D': 86400,
+    '1d': 86400,
   };
   return map[tf] ?? 3600;
 }
@@ -80,6 +83,7 @@ function clearMountTimeout(token: number): void {
 
 function scheduleMountTimeout(token: number): void {
   clearMountTimeout(token);
+  if (sessionConnectionStatus.value !== 'live') return;
   mountTimeouts.set(
     token,
     setTimeout(() => {
@@ -101,6 +105,51 @@ function scheduleMountTimeout(token: number): void {
   );
 }
 
+function schedulePendingMountTimeouts(): void {
+  for (const mount of mounts.value.values()) {
+    if (mount.status === 'mounting' && !mountTimeouts.has(mount.createToken)) {
+      scheduleMountTimeout(mount.createToken);
+    }
+  }
+}
+
+function parseCreateTokenFromRuntimeId(runtimeId: string): number | null {
+  const last = runtimeId.split(':').pop();
+  if (!last) return null;
+  const n = Number(last);
+  return Number.isFinite(n) ? n : null;
+}
+
+function ensureRuntimeSubscription(runtimeId: string): void {
+  if (!runtimeUnsubs.has(runtimeId)) {
+    runtimeUnsubs.set(runtimeId, subscribeRuntimeStream(runtimeId));
+  }
+}
+
+function promoteMountLive(
+  next: Map<string, ScriptRuntimeMount>,
+  id: string,
+  mount: ScriptRuntimeMount,
+  runtimeId: string,
+): void {
+  clearMountTimeout(mount.createToken);
+  next.set(id, { ...mount, runtimeId, status: 'live' });
+  ensureRuntimeSubscription(runtimeId);
+  const found = chartPaneFindMountByRuntimeId(runtimeId);
+  if (!found) {
+    const chartWidgetId = mount.parentChartWidgetId ?? mount.scopeId;
+    chartPaneUpsertMount(chartWidgetId, {
+      localId: mount.localId,
+      scriptId: mount.templateId,
+      runtimeId,
+      status: 'live',
+      createToken: mount.createToken,
+      pane: mount.pane,
+      windowWidgetId: mount.pane === 'window' ? mount.scopeId : undefined,
+    });
+  }
+}
+
 function releaseRuntimeSubscription(runtimeId: string): void {
   const unsub = runtimeUnsubs.get(runtimeId);
   if (unsub) {
@@ -112,11 +161,20 @@ function releaseRuntimeSubscription(runtimeId: string): void {
 function applyPlotToMount(runtimeId: string, prices: Float64Array, roles?: Uint8Array): void {
   const next = new Map(mounts.value);
   let changed = false;
+  const tokenFromId = parseCreateTokenFromRuntimeId(runtimeId);
   for (const [id, mount] of next) {
-    if (mount.runtimeId === runtimeId) {
-      next.set(id, { ...mount, plotPrices: prices, plotRoles: roles ?? null });
-      changed = true;
+    const byRuntime = mount.runtimeId === runtimeId;
+    const byToken =
+      mount.status === 'mounting' &&
+      tokenFromId != null &&
+      mount.createToken === tokenFromId;
+    if (!byRuntime && !byToken) continue;
+    if (byToken && !mount.runtimeId) {
+      promoteMountLive(next, id, mount, runtimeId);
     }
+    const cur = next.get(id)!;
+    next.set(id, { ...cur, plotPrices: prices, plotRoles: roles ?? null, status: 'live' });
+    changed = true;
   }
   if (changed) mounts.value = next;
 }
@@ -126,28 +184,7 @@ function syncRuntimeCreated(runtimeId: string, createToken: number): void {
   const next = new Map(mounts.value);
   for (const [id, mount] of next) {
     if (mount.createToken === createToken) {
-      next.set(id, { ...mount, runtimeId, status: 'live' });
-      if (!runtimeUnsubs.has(runtimeId)) {
-        runtimeUnsubs.set(runtimeId, subscribeRuntimeStream(runtimeId));
-      }
-      const found = chartPaneFindMountByRuntimeId(runtimeId);
-      if (!found) {
-        for (const [, m] of next) {
-          if (m.createToken === createToken) {
-            const chartWidgetId = m.parentChartWidgetId ?? m.scopeId;
-            chartPaneUpsertMount(chartWidgetId, {
-              localId: m.localId,
-              scriptId: m.templateId,
-              runtimeId,
-              status: 'live',
-              createToken,
-              pane: m.pane,
-              windowWidgetId: m.pane === 'window' ? m.scopeId : undefined,
-            });
-            break;
-          }
-        }
-      }
+      promoteMountLive(next, id, mount, runtimeId);
     }
   }
   mounts.value = next;
@@ -159,6 +196,7 @@ function ensureListeners(): void {
     statusListenerInstalled = true;
     onSessionStatus((status) => {
       sessionConnectionStatus.value = status;
+      if (status === 'live') schedulePendingMountTimeouts();
     });
   }
   if (!jsonListenerInstalled) {
@@ -187,7 +225,9 @@ function ensureListeners(): void {
           }
           if (matched) mounts.value = next;
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     });
   }
   if (!plotListenerInstalled) {
@@ -221,6 +261,26 @@ export function useScriptRuntime() {
         return key;
       }
 
+      if (!USE_SESSION_MUX) {
+        const next = new Map(mounts.value);
+        next.set(key, {
+          key,
+          scopeId,
+          localId: lid,
+          runtimeId: null,
+          templateId,
+          createToken: 0,
+          streamKey: '',
+          status: 'error',
+          errorMessage: 'Script session disabled in build (set VITE_USE_SESSION_MUX=1)',
+          pane,
+          parentChartWidgetId: pane === 'window' ? parentChartWidgetId : undefined,
+          plotPrices: null,
+        });
+        mounts.value = next;
+        return key;
+      }
+
       const createToken = nextCreateToken();
       const next = new Map(mounts.value);
       next.set(key, {
@@ -237,15 +297,17 @@ export function useScriptRuntime() {
         plotPrices: null,
       });
       mounts.value = next;
-      if (USE_SESSION_MUX) {
-        scheduleMountTimeout(createToken);
-        createScriptRuntime(templateId, {
+      scheduleMountTimeout(createToken);
+      createScriptRuntime(
+        templateId,
+        {
           symbol: symKeyFromSymbol(symbol),
           tf: timeframe,
           bucket_group: bucketGroup,
           createToken,
-        }, createToken);
-      }
+        },
+        createToken,
+      );
       return key;
     },
 
@@ -324,7 +386,9 @@ export function useScriptRuntime() {
         (_key, buffer) => {
           try {
             onJson(new TextDecoder().decode(new Uint8Array(buffer)));
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         },
       );
     },

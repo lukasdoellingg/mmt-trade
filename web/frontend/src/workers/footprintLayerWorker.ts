@@ -10,10 +10,7 @@ const PRICE_BINS = 128;
 const FP_FIELDS = 2;
 const SNAPSHOT_CAP = 3000;
 
-const TF_MS: Record<string, number> = {
-  '1m': 60e3, '15m': 9e5, '30m': 18e5, '1h': 36e5,
-  '4h': 144e5, '1D': 864e5, '1W': 6048e5,
-};
+import { timeframeToMs } from '@shared/timeframes';
 
 let symbol = 'btcusdt';
 let timeframe = '1h';
@@ -120,7 +117,10 @@ function draw() {
       const buy = fp[b * FP_FIELDS];
       const sell = fp[b * FP_FIELDS + 1];
       const tot = buy + sell;
-      if (tot > maxTot) { maxTot = tot; pocBin = b; }
+      if (tot > maxTot) {
+        maxTot = tot;
+        pocBin = b;
+      }
     }
 
     for (let b = 0; b < PRICE_BINS; b++) {
@@ -129,9 +129,9 @@ function draw() {
       const total = buy + sell;
       if (total <= 0) continue;
 
-      const midP = maxPrice - (b + 0.5) / PRICE_BINS * (maxPrice - minPrice);
+      const midP = maxPrice - ((b + 0.5) / PRICE_BINS) * (maxPrice - minPrice);
       const y = (maxPrice - midP) * invPr;
-      const bh = Math.max(1.5, invPr * (maxPrice - minPrice) / PRICE_BINS * 0.9);
+      const bh = Math.max(1.5, ((invPr * (maxPrice - minPrice)) / PRICE_BINS) * 0.9);
       const delta = buy - sell;
       const intensity = Math.min(1, total / (refVolume * 0.12 + 1e-6));
 
@@ -169,15 +169,23 @@ function openWs() {
       if (d.e !== 'aggTrade') return;
       const ts = d.T || d.E || Date.now();
       onAggTrade(ts, +d.p, +d.q, d.m === true);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   };
-  socket.onclose = () => { if (running) setTimeout(openWs, 2000); };
+  socket.onclose = () => {
+    if (running) setTimeout(openWs, 2000);
+  };
 }
 
 function closeWs() {
   if (socket) {
     socket.onclose = null;
-    try { socket.close(); } catch { /* ignore */ }
+    try {
+      socket.close();
+    } catch {
+      /* ignore */
+    }
   }
   socket = null;
 }
@@ -200,7 +208,7 @@ self.onmessage = async (ev: MessageEvent) => {
     case 'init': {
       symbol = (msg.symbol || 'btcusdt').toLowerCase();
       timeframe = msg.tf || '1h';
-      timeframeMs = TF_MS[timeframe] || 36e5;
+      timeframeMs = timeframeToMs(timeframe);
       canvasW = msg.w || 800;
       canvasH = msg.h || 600;
       devicePR = msg.dpr || 1;
@@ -230,7 +238,7 @@ self.onmessage = async (ev: MessageEvent) => {
     }
     case 'setTimeframe':
       timeframe = msg.tf || timeframe;
-      timeframeMs = TF_MS[timeframe] || timeframeMs;
+      timeframeMs = timeframeToMs(timeframe, timeframeMs);
       snapshotByTs.clear();
       liveTs = 0;
       liveFp = undefined;
@@ -263,7 +271,10 @@ self.onmessage = async (ev: MessageEvent) => {
       break;
     case 'pause':
       running = false;
-      if (animId) { cancelAnimationFrame(animId); animId = 0; }
+      if (animId) {
+        cancelAnimationFrame(animId);
+        animId = 0;
+      }
       closeWs();
       break;
     case 'resume':

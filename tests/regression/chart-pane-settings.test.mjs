@@ -5,18 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const paneSettings = readFileSync(
-  join(root, 'web/frontend/src/chart/chartPaneSettings.ts'),
-  'utf8',
-);
-const workspace = readFileSync(
-  join(root, 'web/frontend/src/workspace/useWorkspace.ts'),
-  'utf8',
-);
-const chartSettings = readFileSync(
-  join(root, 'web/frontend/src/chart/chartSettings.ts'),
-  'utf8',
-);
+const paneSettings = readFileSync(join(root, 'web/frontend/src/chart/chartPaneSettings.ts'), 'utf8');
+const workspace = readFileSync(join(root, 'web/frontend/src/workspace/useWorkspace.ts'), 'utf8');
+const chartSettings = readFileSync(join(root, 'web/frontend/src/chart/chartSettings.ts'), 'utf8');
 
 test('per-chart pane settings module exists', () => {
   assert.match(paneSettings, /usePaneSettings/);

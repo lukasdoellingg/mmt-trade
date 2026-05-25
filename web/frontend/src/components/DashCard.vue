@@ -1,5 +1,5 @@
 <script setup lang="ts">
-const props = defineProps({
+defineProps({
   title: { type: String, default: '' },
   loading: { type: Boolean, default: false },
   tfOptions: { type: Array, default: null },
@@ -18,19 +18,25 @@ const emit = defineEmits(['update:tfValue', 'update:toggleValue']);
         <slot name="controls" />
         <div v-if="toggleOptions" class="toggle-group">
           <button
-            v-for="opt in toggleOptions" :key="opt.value"
+            v-for="opt in toggleOptions"
+            :key="opt.value"
             class="toggle-btn"
             :class="{ active: toggleValue === opt.value }"
             @click="emit('update:toggleValue', opt.value)"
-          >{{ opt.label }}</button>
+          >
+            {{ opt.label }}
+          </button>
         </div>
         <div v-if="tfOptions" class="tf-group">
           <button
-            v-for="tf in tfOptions" :key="tf"
+            v-for="tf in tfOptions"
+            :key="tf"
             class="tf-btn"
             :class="{ active: tfValue === tf }"
             @click="emit('update:tfValue', tf)"
-          >{{ tf }}</button>
+          >
+            {{ tf }}
+          </button>
         </div>
       </div>
     </div>
@@ -63,10 +69,10 @@ const emit = defineEmits(['update:tfValue', 'update:toggleValue']);
   gap: 6px;
 }
 .card-title {
-  font-size: .6rem;
+  font-size: 0.6rem;
   color: #7a8a9a;
   text-transform: uppercase;
-  letter-spacing: .4px;
+  letter-spacing: 0.4px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -79,27 +85,35 @@ const emit = defineEmits(['update:tfValue', 'update:toggleValue']);
   gap: 4px;
   flex-shrink: 0;
 }
-.tf-group, .toggle-group {
+.tf-group,
+.toggle-group {
   display: flex;
   gap: 1px;
   background: #1a1a24;
   border-radius: 3px;
   overflow: hidden;
 }
-.tf-btn, .toggle-btn {
+.tf-btn,
+.toggle-btn {
   background: transparent;
   border: none;
   color: #5a6a7a;
   font: inherit;
-  font-size: .55rem;
+  font-size: 0.55rem;
   padding: 2px 5px;
   cursor: pointer;
   text-transform: uppercase;
-  letter-spacing: .3px;
-  transition: background .15s, color .15s;
+  letter-spacing: 0.3px;
+  transition:
+    background 0.15s,
+    color 0.15s;
 }
-.tf-btn:hover, .toggle-btn:hover { color: #a0b0c0; }
-.tf-btn.active, .toggle-btn.active {
+.tf-btn:hover,
+.toggle-btn:hover {
+  color: #a0b0c0;
+}
+.tf-btn.active,
+.toggle-btn.active {
   background: #2a2a3a;
   color: #d0e0f0;
 }
@@ -115,6 +129,6 @@ const emit = defineEmits(['update:tfValue', 'update:toggleValue']);
   justify-content: center;
   height: 100%;
   color: #5a7a5a;
-  font-size: .7rem;
+  font-size: 0.7rem;
 }
 </style>

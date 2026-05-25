@@ -12,7 +12,10 @@
 import { ref, shallowRef } from 'vue';
 
 export type DrawingType = 'trendline' | 'hline' | 'vline' | 'rect';
-export interface DrawingAnchor { t: number; p: number }
+export interface DrawingAnchor {
+  t: number;
+  p: number;
+}
 export interface Drawing {
   id: string;
   type: DrawingType;
@@ -39,22 +42,30 @@ export interface DrawingsApi {
   /** Clear everything. */
   clear(): void;
   /** Render committed + pending drawings into 2D ctx. */
-  render(ctx: CanvasRenderingContext2D, xy: (a: DrawingAnchor) => [number, number], plotW: number, plotH: number, dpr: number): void;
+  render(
+    ctx: CanvasRenderingContext2D,
+    xy: (a: DrawingAnchor) => [number, number],
+    plotW: number,
+    plotH: number,
+    dpr: number,
+  ): void;
 }
 
 let _idSeed = 0;
-function nextId(): string { return 'd' + (_idSeed++).toString(36); }
+function nextId(): string {
+  return 'd' + (_idSeed++).toString(36);
+}
 
 const ANCHOR_COUNTS: Record<DrawingType, number> = {
   trendline: 2,
-  hline:     1,
-  vline:     1,
-  rect:      2,
+  hline: 1,
+  vline: 1,
+  rect: 2,
 };
 
 export function useDrawings(): DrawingsApi {
   const drawings = shallowRef<Drawing[]>([]);
-  const pending  = ref<Drawing | null>(null);
+  const pending = ref<Drawing | null>(null);
   const isDrawing = ref(false);
 
   function addAnchor(type: DrawingType, t: number, p: number, color: string): boolean {
@@ -104,16 +115,21 @@ export function useDrawings(): DrawingsApi {
   }
 
   function distPointSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-    const dx = bx - ax, dy = by - ay;
+    const dx = bx - ax,
+      dy = by - ay;
     const len2 = dx * dx + dy * dy;
     if (len2 === 0) {
-      const ex = px - ax, ey = py - ay;
+      const ex = px - ax,
+        ey = py - ay;
       return Math.sqrt(ex * ex + ey * ey);
     }
     let t = ((px - ax) * dx + (py - ay) * dy) / len2;
-    if (t < 0) t = 0; else if (t > 1) t = 1;
-    const qx = ax + t * dx, qy = ay + t * dy;
-    const ex = px - qx, ey = py - qy;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+    const qx = ax + t * dx,
+      qy = ay + t * dy;
+    const ex = px - qx,
+      ey = py - qy;
     return Math.sqrt(ex * ex + ey * ey);
   }
 
@@ -135,11 +151,19 @@ export function useDrawings(): DrawingsApi {
       } else if (d.type === 'rect' && d.pts.length === 2) {
         const [x1, y1] = xy(d.pts[0]);
         const [x2, y2] = xy(d.pts[1]);
-        const xmin = Math.min(x1, x2), xmax = Math.max(x1, x2);
-        const ymin = Math.min(y1, y2), ymax = Math.max(y1, y2);
+        const xmin = Math.min(x1, x2),
+          xmax = Math.max(x1, x2);
+        const ymin = Math.min(y1, y2),
+          ymax = Math.max(y1, y2);
         // Hit if near any edge (not interior — interior hit would block panning)
-        const nearLR = (Math.abs(x - xmin) <= tolPx || Math.abs(x - xmax) <= tolPx) && y >= ymin - tolPx && y <= ymax + tolPx;
-        const nearTB = (Math.abs(y - ymin) <= tolPx || Math.abs(y - ymax) <= tolPx) && x >= xmin - tolPx && x <= xmax + tolPx;
+        const nearLR =
+          (Math.abs(x - xmin) <= tolPx || Math.abs(x - xmax) <= tolPx) &&
+          y >= ymin - tolPx &&
+          y <= ymax + tolPx;
+        const nearTB =
+          (Math.abs(y - ymin) <= tolPx || Math.abs(y - ymax) <= tolPx) &&
+          x >= xmin - tolPx &&
+          x <= xmax + tolPx;
         hit = nearLR || nearTB;
       }
       if (hit) {
@@ -157,18 +181,15 @@ export function useDrawings(): DrawingsApi {
   function hexToRgb(hex: string): [number, number, number] {
     const h = hex.replace(/^#/, '');
     if (h.length !== 6) return [240, 192, 75];
-    return [
-      parseInt(h.slice(0, 2), 16),
-      parseInt(h.slice(2, 4), 16),
-      parseInt(h.slice(4, 6), 16),
-    ];
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
   }
 
   function strokeShape(
     ctx: CanvasRenderingContext2D,
     d: Drawing,
     xy: (a: DrawingAnchor) => [number, number],
-    plotW: number, plotH: number,
+    plotW: number,
+    plotH: number,
     dpr: number,
   ) {
     ctx.strokeStyle = d.color;
@@ -180,18 +201,29 @@ export function useDrawings(): DrawingsApi {
     if (d.type === 'trendline' && d.pts.length === 2) {
       const [x1, y1] = xy(d.pts[0]);
       const [x2, y2] = xy(d.pts[1]);
-      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
     } else if (d.type === 'hline' && d.pts.length >= 1) {
       const [, y] = xy(d.pts[0]);
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(plotW, y); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(plotW, y);
+      ctx.stroke();
     } else if (d.type === 'vline' && d.pts.length >= 1) {
       const [x] = xy(d.pts[0]);
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, plotH); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, plotH);
+      ctx.stroke();
     } else if (d.type === 'rect' && d.pts.length === 2) {
       const [x1, y1] = xy(d.pts[0]);
       const [x2, y2] = xy(d.pts[1]);
-      const x = Math.min(x1, x2), y = Math.min(y1, y2);
-      const w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
+      const x = Math.min(x1, x2),
+        y = Math.min(y1, y2);
+      const w = Math.abs(x2 - x1),
+        h = Math.abs(y2 - y1);
       const [r, g, b] = hexToRgb(d.color);
       ctx.fillStyle = `rgba(${r},${g},${b},0.12)`;
       ctx.fillRect(x, y, w, h);
@@ -199,7 +231,13 @@ export function useDrawings(): DrawingsApi {
     }
   }
 
-  function render(ctx: CanvasRenderingContext2D, xy: (a: DrawingAnchor) => [number, number], plotW: number, plotH: number, dpr: number) {
+  function render(
+    ctx: CanvasRenderingContext2D,
+    xy: (a: DrawingAnchor) => [number, number],
+    plotW: number,
+    plotH: number,
+    dpr: number,
+  ) {
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, 0, plotW, plotH);

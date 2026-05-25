@@ -59,10 +59,36 @@ const roles = computed(() => mount.value?.plotRoles ?? null);
 const sessionOff = computed(() => !USE_SESSION_MUX);
 const sessionConn = computed(() => scriptRuntime.sessionConnectionStatus.value);
 
+const displayBadge = computed(() => {
+  if (sessionOff.value) return 'off';
+  if (
+    (sessionConn.value === 'disconnected' || sessionConn.value === 'error') &&
+    status.value === 'mounting'
+  ) {
+    return sessionConn.value;
+  }
+  return status.value;
+});
+
+const sessionConnLabel = computed(() => {
+  if (sessionOff.value) return '';
+  const c = sessionConn.value;
+  if (c === 'live') return 'session live';
+  if (c === 'disconnected') return 'session disconnected';
+  if (c === 'error') return 'session error';
+  return 'session connecting…';
+});
+
 const emptyMessage = computed(() => {
-  if (sessionOff) return 'Script session disabled in build (set VITE_USE_SESSION_MUX=1)';
+  if (sessionOff.value) {
+    const base = 'Script session disabled in build (set VITE_USE_SESSION_MUX=1 in .env.development).';
+    if (import.meta.env.DEV) {
+      return `${base} Restart Vite and hard-refresh (Cmd+Shift+R). In console: __MMT_FLAGS__.USE_SESSION_MUX should be true.`;
+    }
+    return base;
+  }
   if (sessionConn.value === 'disconnected' || sessionConn.value === 'error') {
-    return 'Backend /ws/session unreachable — start web/backend';
+    return 'Backend /ws/session unreachable — run npm run dev (backend on port 3001).';
   }
   if (status.value === 'error') {
     return mount.value?.errorMessage ?? 'Runtime error — check backend /ws/session';
@@ -89,6 +115,15 @@ const levelRows = computed(() => {
   rows.sort((a, b) => b.price - a.price);
   return rows;
 });
+
+const showEmptyState = computed(
+  () =>
+    sessionOff.value ||
+    sessionConn.value === 'disconnected' ||
+    sessionConn.value === 'error' ||
+    status.value === 'error' ||
+    (status.value === 'mounting' && !levelRows.value.length),
+);
 
 function fmtPrice(price: number): string {
   return price.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -175,18 +210,23 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <WorkspaceWidget :widget="widget" :title="label" :badge="status">
+  <WorkspaceWidget :widget="widget" :title="label" :badge="displayBadge">
     <div class="sip-root">
       <div class="sip-head">
         <span class="sip-dot" :style="{ background: color }"></span>
-        <span class="sip-st">{{ status }}</span>
+        <span class="sip-st">{{ displayBadge }}</span>
+        <span v-if="sessionConnLabel" class="sip-conn">{{ sessionConnLabel }}</span>
         <span class="sip-meta">{{ linkedSymbol }} · {{ linkedTimeframe }}</span>
       </div>
-      <div v-if="sessionOff || sessionConn === 'disconnected' || sessionConn === 'error' || status === 'error' || (status === 'mounting' && !levelRows.length)" class="sip-empty">{{ emptyMessage }}</div>
+      <div v-if="showEmptyState" class="sip-empty">
+        {{ emptyMessage }}
+      </div>
       <div v-else-if="levelRows.length" class="sip-levels">
         <div v-for="(row, i) in levelRows" :key="i" class="sip-row">
           <span class="sip-tag" :style="{ color: row.color }">{{ row.label.split(' · ')[0] }}</span>
-          <span class="sip-price" :style="{ color: row.color }">{{ row.label.includes(' · ') ? row.label.split(' · ')[1] : fmtPrice(row.price) }}</span>
+          <span class="sip-price" :style="{ color: row.color }">{{
+            row.label.includes(' · ') ? row.label.split(' · ')[1] : fmtPrice(row.price)
+          }}</span>
         </div>
       </div>
       <div v-else class="sip-empty">{{ emptyMessage }}</div>
@@ -195,14 +235,70 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.sip-root{position:absolute;inset:0;display:flex;flex-direction:column;background:#06060b;color:#aebcce;font:10px/1.3 Consolas,monospace;}
-.sip-head{display:flex;align-items:center;gap:6px;padding:4px 8px;background:#0c0c12;border-bottom:1px solid #15151f;font-size:9px;color:#6a7888;}
-.sip-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.sip-st{text-transform:uppercase;color:#cad8e8}
-.sip-meta{margin-left:auto;color:#5a6878}
-.sip-levels{flex:1;overflow:auto;padding:4px 0}
-.sip-row{display:flex;justify-content:space-between;padding:2px 10px;font-variant-numeric:tabular-nums}
-.sip-tag{color:#7a8a9c;min-width:52px}
-.sip-price{font-weight:600}
-.sip-empty{flex:1;display:flex;align-items:center;justify-content:center;color:#5a6878;padding:12px;text-align:center}
+.sip-root {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #06060b;
+  color: #aebcce;
+  font:
+    10px/1.3 Consolas,
+    monospace;
+}
+.sip-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: #0c0c12;
+  border-bottom: 1px solid #15151f;
+  font-size: 9px;
+  color: #6a7888;
+}
+.sip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.sip-st {
+  text-transform: uppercase;
+  color: #cad8e8;
+}
+.sip-conn {
+  color: #5a6878;
+  font-size: 8px;
+}
+.sip-meta {
+  margin-left: auto;
+  color: #5a6878;
+}
+.sip-levels {
+  flex: 1;
+  overflow: auto;
+  padding: 4px 0;
+}
+.sip-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 10px;
+  font-variant-numeric: tabular-nums;
+}
+.sip-tag {
+  color: #7a8a9c;
+  min-width: 52px;
+}
+.sip-price {
+  font-weight: 600;
+}
+.sip-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #5a6878;
+  padding: 12px;
+  text-align: center;
+}
 </style>

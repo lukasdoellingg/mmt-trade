@@ -216,9 +216,12 @@ mmt-trade/
             │       └── HighchartsChart.vue  # Highcharts Chart Wrapper
             │
             ├── views/        # Haupt-Views
-            │   ├── DashboardView.vue     # Futures Dashboard (12 Charts)
             │   ├── TradeView.vue         # Trading View (Chart + Order Books)
             │   └── TradFiView.vue        # TradFi Dashboard (CME, Indizes, ETFs)
+            │
+            ├── features/
+            │   ├── futures/FuturesWorkspaceView.vue  # Futures Dashboard (12 Charts)
+            │   └── heatmap/HeatmapView.vue           # Heatmap workspace
             │
             ├── composables/  # Vue Composables
             │   └── useChartData.js        # VWAP-Berechnungen

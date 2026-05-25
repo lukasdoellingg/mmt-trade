@@ -8,11 +8,6 @@ const CANDLE_FIELD_STRIDE = 7;
 const PRICE_BINS = 96;
 const PROFILE_WIDTH_RATIO = 0.12;
 
-const TF_MS: Record<string, number> = {
-  '1m': 60e3, '15m': 9e5, '30m': 18e5, '1h': 36e5,
-  '4h': 144e5, '1D': 864e5, '1W': 6048e5,
-};
-
 let running = false;
 let canvasW = 800;
 let canvasH = 600;
@@ -87,7 +82,10 @@ function draw() {
   let maxV = 0;
   let poc = 0;
   for (let i = 0; i < PRICE_BINS; i++) {
-    if (volBins[i] > maxV) { maxV = volBins[i]; poc = i; }
+    if (volBins[i] > maxV) {
+      maxV = volBins[i];
+      poc = i;
+    }
   }
   if (maxV <= 0) return;
 
@@ -99,14 +97,15 @@ function draw() {
   for (let b = 0; b < PRICE_BINS; b++) {
     const v = volBins[b];
     if (v <= 0) continue;
-    const y = (maxPrice - (b + 0.5) / PRICE_BINS * (maxPrice - minPrice)) * invPr;
+    const y = (maxPrice - ((b + 0.5) / PRICE_BINS) * (maxPrice - minPrice)) * invPr;
     const bw = (v / maxV) * pw;
     const buyR = buyBins[b] / v;
     const g = 0.25 + buyR * 0.55;
     const r = 0.85 - buyR * 0.55;
-    ctx.fillStyle = b === poc
-      ? `rgba(240,193,75,${0.35 + (v / maxV) * 0.45})`
-      : `rgba(${Math.floor(r * 80)},${Math.floor(g * 200)},${Math.floor((1 - buyR) * 80)},${0.2 + (v / maxV) * 0.55})`;
+    ctx.fillStyle =
+      b === poc
+        ? `rgba(240,193,75,${0.35 + (v / maxV) * 0.45})`
+        : `rgba(${Math.floor(r * 80)},${Math.floor(g * 200)},${Math.floor((1 - buyR) * 80)},${0.2 + (v / maxV) * 0.55})`;
     ctx.fillRect(px + pw - bw, y - rowH * 0.5, bw, Math.max(1, rowH * 0.92));
   }
 }
@@ -168,7 +167,10 @@ self.onmessage = (ev: MessageEvent) => {
       break;
     case 'pause':
       running = false;
-      if (animId) { cancelAnimationFrame(animId); animId = 0; }
+      if (animId) {
+        cancelAnimationFrame(animId);
+        animId = 0;
+      }
       break;
     case 'resume':
       if (running) break;

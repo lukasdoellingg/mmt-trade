@@ -1,8 +1,4 @@
-export const SCRIPT_IDS = new Set([
-  'key-levels',
-  'net-positioning',
-  'aggregated-ob-imbalance',
-]);
+export const SCRIPT_IDS = new Set(['key-levels', 'net-positioning', 'aggregated-ob-imbalance']);
 
 export const RUNTIME_LIMITS = {
   maxRuntimesPerClient: 10,

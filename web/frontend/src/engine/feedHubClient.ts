@@ -5,6 +5,7 @@
 import FeedHubWorker from '../workers/feedHubWorker.ts?worker';
 import { feedHubSetMetrics } from './feedHubMetrics';
 import { parseAggregateExchanges, backendExchangesToMmtString } from '@shared/exchangeIds';
+import { timeframeToSec } from '@shared/timeframes';
 
 export type FeedSubscribeSpec = {
   symbol: string;
@@ -50,14 +51,6 @@ export function streamKeyFromSpec(spec: FeedSubscribeSpec): string {
   return `${exchange}:${symbol}:${stream}:${tfSec}:${bg}`;
 }
 
-function timeframeToSec(tf: string): number {
-  const map: Record<string, number> = {
-    '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
-    '1h': 3600, '4h': 14400, '1D': 86400, '1d': 86400, '1W': 604800,
-  };
-  return map[tf] ?? 3600;
-}
-
 function ensureWorker(): Worker {
   if (worker) return worker;
   worker = new FeedHubWorker();
@@ -76,9 +69,8 @@ function ensureWorker(): Worker {
       return;
     }
     if (msg.type === 'script_plot_update' && typeof msg.runtimeId === 'string' && msg.prices) {
-      const prices = msg.prices instanceof Float64Array
-        ? msg.prices
-        : new Float64Array(msg.prices as ArrayLike<number>);
+      const prices =
+        msg.prices instanceof Float64Array ? msg.prices : new Float64Array(msg.prices as ArrayLike<number>);
       const roles = msg.roles instanceof Uint8Array ? msg.roles : undefined;
       for (const h of plotHandlers) h(msg.runtimeId, prices, roles);
       return;
@@ -121,7 +113,11 @@ export function detachFeedPort(port: MessagePort): void {
   feedPortIds.delete(port);
   feedPorts.delete(port);
   worker?.postMessage({ type: 'detach', portId });
-  try { port.close(); } catch { /* ignore */ }
+  try {
+    port.close();
+  } catch {
+    /* ignore */
+  }
 }
 
 /** @deprecated Use attachFeedPort */
@@ -155,7 +151,10 @@ export function subscribeFeedStream(spec: FeedSubscribeSpec, onFrame?: FrameHand
       },
     });
   }
-  feedHubSetMetrics(streamRefCount.size, [...streamRefCount.values()].reduce((a, b) => a + b, 0));
+  feedHubSetMetrics(
+    streamRefCount.size,
+    [...streamRefCount.values()].reduce((a, b) => a + b, 0),
+  );
   return () => {
     if (onFrame) mainHandlers.get(key)?.delete(onFrame);
     const n = (streamRefCount.get(key) ?? 1) - 1;
@@ -166,7 +165,10 @@ export function subscribeFeedStream(spec: FeedSubscribeSpec, onFrame?: FrameHand
     } else {
       streamRefCount.set(key, n);
     }
-    feedHubSetMetrics(streamRefCount.size, [...streamRefCount.values()].reduce((a, b) => a + b, 0));
+    feedHubSetMetrics(
+      streamRefCount.size,
+      [...streamRefCount.values()].reduce((a, b) => a + b, 0),
+    );
   };
 }
 
@@ -207,10 +209,7 @@ export function subscribeRuntimeStream(runtimeId: string): () => void {
   };
 }
 
-export function updateScriptInputs(
-  runtimeId: string,
-  overrides: Record<string, unknown>,
-): void {
+export function updateScriptInputs(runtimeId: string, overrides: Record<string, unknown>): void {
   ensureWorker();
   worker!.postMessage({ type: 'update_inputs', runtime_id: runtimeId, overrides });
 }

@@ -32,7 +32,11 @@ function buildUrl(symbol: string, timeframe: string, aggregate: string): string 
 
 function dispatchFrame(slot: HubSlot, buffer: ArrayBuffer): void {
   for (const handler of slot.handlers) {
-    try { handler(buffer); } catch { /* subscriber fault */ }
+    try {
+      handler(buffer);
+    } catch {
+      /* subscriber fault */
+    }
   }
 }
 
@@ -53,7 +57,11 @@ function openSocket(key: string, symbol: string, timeframe: string, aggregate: s
   if (!slot || slot.refcount <= 0) return;
   if (slot.ws) {
     slot.ws.onclose = null;
-    try { slot.ws.close(); } catch { /* ignore */ }
+    try {
+      slot.ws.close();
+    } catch {
+      /* ignore */
+    }
     slot.ws = null;
   }
   let ws: WebSocket;
@@ -65,11 +73,15 @@ function openSocket(key: string, symbol: string, timeframe: string, aggregate: s
     return;
   }
   slot.ws = ws;
-  ws.onopen = () => { slot.reconnectMs = 3000; };
+  ws.onopen = () => {
+    slot.reconnectMs = 3000;
+  };
   ws.onmessage = (ev: MessageEvent) => {
     if (ev.data instanceof ArrayBuffer) dispatchFrame(slot, ev.data);
   };
-  ws.onerror = () => { /* close drives reconnect */ };
+  ws.onerror = () => {
+    /* close drives reconnect */
+  };
   ws.onclose = () => {
     slot.ws = null;
     if (slot.refcount > 0) scheduleReconnect(key, symbol, timeframe, aggregate);
@@ -123,7 +135,11 @@ export function releaseHeatmapFeed(
   }
   if (slot.ws) {
     slot.ws.onclose = null;
-    try { slot.ws.close(); } catch { /* ignore */ }
+    try {
+      slot.ws.close();
+    } catch {
+      /* ignore */
+    }
     slot.ws = null;
   }
   slots.delete(key);

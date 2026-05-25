@@ -10,8 +10,8 @@ if (process.env.SKIP_WS_SMOKE === '1') {
   process.exit(0);
 }
 
-const url = process.env.WS_TEST_URL
-  || 'ws://localhost:3001/ws/heatmap?symbol=BTCUSDT&tf=1h&aggregate=binancef,bybitf';
+const url =
+  process.env.WS_TEST_URL || 'ws://localhost:3001/ws/heatmap?symbol=BTCUSDT&tf=1h&aggregate=binancef,bybitf';
 
 await new Promise((resolve, reject) => {
   const ws = new WebSocket(url);
@@ -21,7 +21,11 @@ await new Promise((resolve, reject) => {
     if (settled) return;
     settled = true;
     clearTimeout(timer);
-    try { ws.close(); } catch { /* ignore */ }
+    try {
+      ws.close();
+    } catch {
+      /* ignore */
+    }
     if (err) reject(err);
     else resolve(null);
   };

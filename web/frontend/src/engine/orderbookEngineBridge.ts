@@ -54,17 +54,24 @@ let wasmBytesCache: ArrayBuffer | null = null;
 async function loadWasmBytes(): Promise<ArrayBuffer> {
   if (wasmBytesCache) return wasmBytesCache;
   const cacheBust = '?v=' + Date.now();
-  const wasmUrl = typeof location !== 'undefined'
-    ? new URL('/orderbook_engine.wasm' + cacheBust, location.origin).href
-    : '/orderbook_engine.wasm' + cacheBust;
+  const wasmUrl =
+    typeof location !== 'undefined'
+      ? new URL('/orderbook_engine.wasm' + cacheBust, location.origin).href
+      : '/orderbook_engine.wasm' + cacheBust;
   let resp: Response;
   try {
     resp = await fetch(wasmUrl);
   } catch (e) {
-    throw new OrderbookWasmError('FETCH_FAILED', 'orderbook_engine.wasm fetch failed: ' + (e instanceof Error ? e.message : String(e)));
+    throw new OrderbookWasmError(
+      'FETCH_FAILED',
+      'orderbook_engine.wasm fetch failed: ' + (e instanceof Error ? e.message : String(e)),
+    );
   }
   if (!resp.ok) {
-    throw new OrderbookWasmError('FETCH_FAILED', `orderbook_engine.wasm HTTP ${resp.status} ${resp.statusText}`);
+    throw new OrderbookWasmError(
+      'FETCH_FAILED',
+      `orderbook_engine.wasm HTTP ${resp.status} ${resp.statusText}`,
+    );
   }
   wasmBytesCache = await resp.arrayBuffer();
   return wasmBytesCache;
@@ -76,7 +83,15 @@ function readExports(instance: WebAssembly.Instance): WasmExports {
   if (!mem || !(mem.buffer instanceof ArrayBuffer)) {
     throw new OrderbookWasmError('MISSING_EXPORT', 'WASM missing export "memory"');
   }
-  for (const name of ['fill_ask_width_fracs', 'fill_bid_width_fracs', 'get_ask_in_offset', 'get_bid_in_offset', 'get_ask_width_frac_offset', 'get_bid_width_frac_offset', 'get_row_cap'] as const) {
+  for (const name of [
+    'fill_ask_width_fracs',
+    'fill_bid_width_fracs',
+    'get_ask_in_offset',
+    'get_bid_in_offset',
+    'get_ask_width_frac_offset',
+    'get_bid_width_frac_offset',
+    'get_row_cap',
+  ] as const) {
     if (typeof x[name] !== 'function') {
       throw new OrderbookWasmError('MISSING_EXPORT', `WASM missing export "${name}"`);
     }
@@ -91,7 +106,10 @@ function growMemory(mem: WebAssembly.Memory): void {
   try {
     mem.grow(delta);
   } catch (e) {
-    throw new OrderbookWasmError('MEMORY_GROW', 'WASM memory.grow failed: ' + (e instanceof Error ? e.message : String(e)));
+    throw new OrderbookWasmError(
+      'MEMORY_GROW',
+      'WASM memory.grow failed: ' + (e instanceof Error ? e.message : String(e)),
+    );
   }
 }
 
@@ -108,7 +126,10 @@ function assertLayout(mem: WebAssembly.Memory, exp: WasmExports): void {
   const wBytes = ROW_CAP * 4;
   const need = Math.max(askOff + askBytes, bidOff + bidBytes, askW + wBytes, bidW + wBytes);
   if (need > mem.buffer.byteLength) {
-    throw new OrderbookWasmError('LAYOUT', `WASM linear memory too small: need ${need} bytes, have ${mem.buffer.byteLength}`);
+    throw new OrderbookWasmError(
+      'LAYOUT',
+      `WASM linear memory too small: need ${need} bytes, have ${mem.buffer.byteLength}`,
+    );
   }
   if (bidOff < askOff + askBytes) {
     throw new OrderbookWasmError('LAYOUT', 'WASM BID_IN overlaps ASK_IN');
@@ -144,7 +165,10 @@ export async function createOrderbookEngine(): Promise<OrderbookEngineBridge> {
   try {
     instance = (await WebAssembly.instantiate(bytes, {})).instance;
   } catch (e) {
-    throw new OrderbookWasmError('INSTANTIATE', 'WebAssembly.instantiate failed: ' + (e instanceof Error ? e.message : String(e)));
+    throw new OrderbookWasmError(
+      'INSTANTIATE',
+      'WebAssembly.instantiate failed: ' + (e instanceof Error ? e.message : String(e)),
+    );
   }
 
   const exports = readExports(instance);

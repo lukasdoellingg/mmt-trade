@@ -161,12 +161,20 @@ export function installHeartbeat(webSocketServer) {
       if (!socket.isAlive) {
         socket.missedHeartbeats = (socket.missedHeartbeats || 0) + 1;
         if (socket.missedHeartbeats >= MISSED_HEARTBEATS_BEFORE_TERMINATE) {
-          try { socket.terminate(); } catch { /* ignore */ }
+          try {
+            socket.terminate();
+          } catch {
+            /* ignore */
+          }
           continue;
         }
       }
       socket.isAlive = false;
-      try { socket.ping(); } catch { /* ignore */ }
+      try {
+        socket.ping();
+      } catch {
+        /* ignore */
+      }
     }
   }, HEARTBEAT_INTERVAL_MS);
 
@@ -187,14 +195,20 @@ export function createBackoffController({
 } = {}) {
   let attemptCount = 0;
   return {
-    reset() { attemptCount = 0; },
-    isExhausted() { return attemptCount >= maxAttempts; },
+    reset() {
+      attemptCount = 0;
+    },
+    isExhausted() {
+      return attemptCount >= maxAttempts;
+    },
     nextDelayMs() {
       const exponentialDelay = Math.min(maxDelayMs, baseDelayMs * 2 ** attemptCount);
       const jitter = Math.random() * (exponentialDelay * 0.3);
       attemptCount += 1;
       return exponentialDelay + jitter;
     },
-    currentAttempt() { return attemptCount; },
+    currentAttempt() {
+      return attemptCount;
+    },
   };
 }

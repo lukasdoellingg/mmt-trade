@@ -6,8 +6,14 @@ import { safeCloseWebSocket } from './wsTeardown.js';
 import { createBackoffController } from './security.js';
 
 const BINANCE_INTERVALS = {
-  '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
-  '1h': '1h', '4h': '4h', '1D': '1d', '1W': '1w',
+  '1m': '1m',
+  '5m': '5m',
+  '15m': '15m',
+  '30m': '30m',
+  '1h': '1h',
+  '4h': '4h',
+  '1D': '1d',
+  '1W': '1w',
 };
 
 export const KLINES_MAX_LIMIT = 1500;
@@ -87,7 +93,9 @@ function connectChartUpstream(up) {
     }, delay);
   });
 
-  ws.on('error', () => { /* reconnect via close */ });
+  ws.on('error', () => {
+    /* reconnect via close */
+  });
 }
 
 export function acquireChartUpstream(symbol, interval, client) {
@@ -142,18 +150,24 @@ function aggTradeKey(symbol) {
   return symbol.toUpperCase();
 }
 
+/** @type {Map<string, Set<(raw: string) => void>>} */
+const aggTradeSubscribers = new Map();
+
 function connectAggTradeUpstream(up) {
   const sym = up.symbol.toLowerCase();
-  const ws = new WebSocket(
-    `wss://fstream.binance.com/ws/${sym}@aggTrade`,
-    { maxPayload: UPSTREAM_MAX_PAYLOAD },
-  );
+  const ws = new WebSocket(`wss://fstream.binance.com/ws/${sym}@aggTrade`, {
+    maxPayload: UPSTREAM_MAX_PAYLOAD,
+  });
   up.ws = ws;
 
   ws.on('message', (raw) => {
     const text = raw.toString();
     for (const client of up.clients) {
       if (client.readyState === 1) client.send(text);
+    }
+    const subs = aggTradeSubscribers.get(up.symbol);
+    if (subs) {
+      for (const fn of subs) fn(text);
     }
   });
 
@@ -170,7 +184,9 @@ function connectAggTradeUpstream(up) {
     }, delay);
   });
 
-  ws.on('error', () => { /* reconnect via close */ });
+  ws.on('error', () => {
+    /* reconnect via close */
+  });
 }
 
 export function acquireAggTradeUpstream(symbol, client) {
@@ -195,10 +211,45 @@ export function releaseAggTradeUpstream(symbol, client) {
   const up = aggTradeUpstreams.get(key);
   if (!up) return;
   up.clients.delete(client);
-  if (up.clients.size > 0) return;
+  if (up.clients.size > 0 || aggTradeSubscribers.has(key)) return;
   safeCloseWebSocket(up.ws);
   up.ws = null;
   aggTradeUpstreams.delete(key);
+}
+
+/**
+ * Internal subscriber for bar-stats / indicators — shares one upstream per symbol.
+ * @returns {() => void} unsubscribe
+ */
+export function subscribeAggTradeMessages(symbol, onMessage) {
+  const key = aggTradeKey(symbol);
+  let set = aggTradeSubscribers.get(key);
+  if (!set) {
+    set = new Set();
+    aggTradeSubscribers.set(key, set);
+  }
+  set.add(onMessage);
+  let up = aggTradeUpstreams.get(key);
+  if (!up) {
+    up = {
+      symbol: symbol.toUpperCase(),
+      clients: new Set(),
+      ws: null,
+      reconnectBackoff: createBackoffController({ maxAttempts: 8 }),
+    };
+    aggTradeUpstreams.set(key, up);
+    connectAggTradeUpstream(up);
+  }
+  return () => {
+    set.delete(onMessage);
+    if (set.size === 0) aggTradeSubscribers.delete(key);
+    const remaining = aggTradeUpstreams.get(key);
+    if (remaining && remaining.clients.size === 0 && !aggTradeSubscribers.has(key)) {
+      safeCloseWebSocket(remaining.ws);
+      remaining.ws = null;
+      aggTradeUpstreams.delete(key);
+    }
+  };
 }
 
 export function shutdownAllAggTradeUpstreams() {
@@ -207,4 +258,5 @@ export function shutdownAllAggTradeUpstreams() {
     up.ws = null;
   }
   aggTradeUpstreams.clear();
+  aggTradeSubscribers.clear();
 }

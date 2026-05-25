@@ -2,11 +2,7 @@
  * /ws/chart — Binance kline + forceOrder relay (refcount upstream per symbol/interval).
  */
 import { createDetachedWebSocketServer } from './wsUpgradeRouter.js';
-import {
-  acquireChartUpstream,
-  releaseChartUpstream,
-  chartIntervalToBinance,
-} from './chartBinanceFeed.js';
+import { acquireChartUpstream, releaseChartUpstream, chartIntervalToBinance } from './chartBinanceFeed.js';
 import { validateTimeframe, MAX_WEBSOCKET_PAYLOAD_BYTES } from './security.js';
 
 /**

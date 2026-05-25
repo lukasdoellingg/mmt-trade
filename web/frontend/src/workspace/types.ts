@@ -10,7 +10,27 @@
  * Layouts are persisted to localStorage as JSON.
  */
 
-export type WidgetType = 'chart' | 'orderflow-ladder' | 'bar-stats' | 'script-indicator-pane';
+export type WidgetType =
+  | 'chart'
+  | 'orderflow-ladder'
+  | 'bar-stats'
+  | 'script-indicator-pane'
+  | 'coin-scanner'
+  | 'futures-metric-pane';
+
+export type FuturesMetricKind =
+  | 'funding'
+  | 'oi-snap'
+  | 'oi-hist'
+  | 'cvd'
+  | 'liquidations'
+  | 'basis'
+  | 'volume'
+  | 'returns-hour'
+  | 'returns-day'
+  | 'returns-cum';
+
+export type WorkspaceProfile = 'heatmap' | 'futures';
 
 export interface WidgetRect {
   x: number;

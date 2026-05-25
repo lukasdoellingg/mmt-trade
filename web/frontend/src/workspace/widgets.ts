@@ -3,10 +3,7 @@
  * shell wires component metadata into the registry without pulling in the
  * widget code itself (the components are lazy-loaded by WorkspaceGrid).
  */
-import {
-  DEFAULT_SPOT_AGGREGATE_CSV,
-  DEFAULT_PERP_AGGREGATE_CSV,
-} from '@shared/exchangeIds';
+import { DEFAULT_SPOT_AGGREGATE_CSV } from '@shared/exchangeIds';
 import { registerWidget } from './registry';
 
 registerWidget('chart', {
@@ -42,4 +39,18 @@ registerWidget('orderflow-ladder', {
     rowsPerSide: 25,
     quoteUsd: true,
   }),
+});
+
+registerWidget('coin-scanner', {
+  componentName: 'CoinScannerWidget',
+  label: 'Coin Scanner',
+  defaultSize: { w: 28, h: 90 },
+  defaultProps: () => ({}),
+});
+
+registerWidget('futures-metric-pane', {
+  componentName: 'FuturesMetricPaneWidget',
+  label: 'Futures Metric',
+  defaultSize: { w: 34, h: 28 },
+  defaultProps: () => ({ metric: 'funding', timeframe: '1w' }),
 });

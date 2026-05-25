@@ -28,7 +28,10 @@ self.onmessage = async (ev: MessageEvent) => {
           msg.h || 600,
           msg.dpr || 1,
         );
-        if (err) { post({ type: 'fatal', msg: err }); return; }
+        if (err) {
+          post({ type: 'fatal', msg: err });
+          return;
+        }
         post({ type: 'ready' });
       }
       animId = requestAnimationFrame(loop);
@@ -82,7 +85,10 @@ self.onmessage = async (ev: MessageEvent) => {
       break;
     case 'pause':
       controller.pause();
-      if (animId) { cancelAnimationFrame(animId); animId = 0; }
+      if (animId) {
+        cancelAnimationFrame(animId);
+        animId = 0;
+      }
       break;
     case 'resume':
       controller.resume();

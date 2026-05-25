@@ -8,6 +8,10 @@ This document describes the **target architecture**. Some phases are still in
 progress — see [the rewrite plan](./.cursor/plans/mmt_full_clone_rewrite_ff9f2dc3.plan.md)
 for current status.
 
+**Runtime / IPO audit (Ist-Stand):** [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md),
+[`docs/audit/PERFORMANCE_BASELINE.md`](./docs/audit/PERFORMANCE_BASELINE.md),
+[`docs/audit/MODULE_OWNERSHIP.md`](./docs/audit/MODULE_OWNERSHIP.md).
+
 ## Monorepo layout
 
 ```

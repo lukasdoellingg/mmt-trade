@@ -1,12 +1,29 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import vue from '@vitejs/plugin-vue';
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const frontendRoot = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(frontendRoot, '../..');
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, frontendRoot, '');
+  const muxRaw = env.VITE_USE_SESSION_MUX ?? '';
+  const sessionMuxOn = muxRaw !== '0' && muxRaw !== 'false';
+  if (mode === 'development' && !sessionMuxOn) {
+    console.warn(
+      '[vite] VITE_USE_SESSION_MUX=0 — script indicators and /ws/session are disabled in this dev build.',
+    );
+  } else if (mode === 'development') {
+    console.log('[vite] VITE_USE_SESSION_MUX enabled — /ws/session script runtimes active');
+  }
+
+  return {
+  envDir: frontendRoot,
   plugins: [vue()],
+  define: {
+    'import.meta.env.VITE_USE_SESSION_MUX': JSON.stringify(sessionMuxOn ? '1' : '0'),
+  },
   resolve: {
     alias: {
       '@shared': path.join(repoRoot, 'shared'),
@@ -32,6 +49,7 @@ export default defineConfig({
     },
   },
   build: {
+    chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
         manualChunks: {
@@ -55,4 +73,5 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['*.wasm'],
   },
+  };
 });

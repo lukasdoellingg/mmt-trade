@@ -39,8 +39,6 @@ export interface ChartSettings extends ChartShellSettings {
 
 export const TIMEFRAMES = ['1m', '15m', '30m', '1h', '4h', '1D', '1W'] as const;
 
-const SHELL_KEYS: (keyof ChartShellSettings)[] = ['quoteUsd', 'tool', 'settingsModalOpen'];
-
 function shellDefaults(): ChartShellSettings {
   return { quoteUsd: true, tool: 'crosshair', settingsModalOpen: false };
 }
@@ -74,13 +72,21 @@ function pickShell(parsed: Partial<ChartShellSettings>): Partial<ChartShellSetti
 const state = reactive<ChartShellSettings>(loadShell());
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
-watch(state, () => {
-  if (saveTimer !== null) return;
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { /* quota */ }
-  }, 200);
-}, { deep: true });
+watch(
+  state,
+  () => {
+    if (saveTimer !== null) return;
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch {
+        /* quota */
+      }
+    }, 200);
+  },
+  { deep: true },
+);
 
 export function useChartSettings(): ChartShellSettings {
   return state;

@@ -48,6 +48,10 @@ Details MMT: [`MMT_REPLICATION_CHECKLIST.md`](./MMT_REPLICATION_CHECKLIST.md).
 │ feedHubWorker MUX  │ │               │ │                      │
 └───────────────┘ └───────────────┘ └───────────────────────┘
 
+**Feed dedup (IPO audit):** `barStatsLocal` shares Binance `@aggTrade` via `chartBinanceFeed.subscribeAggTradeMessages`; heatmap upstreams are refcounted per symbol in the backend. Session MUX fan-out uses zero-copy transfer for single-port subscribers.
+
+Audit docs: [`audit/PERFORMANCE_BASELINE.md`](./audit/PERFORMANCE_BASELINE.md), [`audit/MODULE_OWNERSHIP.md`](./audit/MODULE_OWNERSHIP.md).
+
 ┌─────────────────────────────────────────────────────────────┐
 │  Backend (Express) — OB-Heatmap                             │
 │  /ws/heatmap Protobuf ← Binance depth (+ optional aggregate)│
@@ -86,7 +90,7 @@ web/frontend/src/
 │   ├── footprintLayerWorker.ts
 │   └── indicators/            # Sub-Workers
 ├── engine/            # WasmBridge, ChartRenderer, ObHeatmapRenderer
-├── views/HeatmapView.vue
+├── features/heatmap/HeatmapView.vue
 └── components/chart/
 ```
 

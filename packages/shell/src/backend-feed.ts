@@ -39,7 +39,8 @@ export function normalizeHeatmapSymbol(raw: string): string {
 export function parseBackendFeedParams(search: string): BackendFeedParams {
   const params = new URLSearchParams(search);
   const symbol = normalizeHeatmapSymbol(params.get('symbol') ?? DEFAULT_SYMBOL);
-  const timeframe = (params.get('timeframe') ?? params.get('tf') ?? DEFAULT_TIMEFRAME).trim() || DEFAULT_TIMEFRAME;
+  const timeframe =
+    (params.get('timeframe') ?? params.get('tf') ?? DEFAULT_TIMEFRAME).trim() || DEFAULT_TIMEFRAME;
   const aggregate = (params.get('aggregate') ?? DEFAULT_AGGREGATE).trim();
   return { symbol, timeframe, aggregate };
 }
@@ -49,4 +50,3 @@ export function buildBackendHeatmapWsUrl(feed: BackendFeedParams): string {
   if (feed.aggregate) q += `&aggregate=${encodeURIComponent(feed.aggregate)}`;
   return q;
 }
-

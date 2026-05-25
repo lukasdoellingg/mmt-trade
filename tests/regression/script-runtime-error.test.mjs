@@ -5,10 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const scriptRuntime = readFileSync(
-  join(root, 'web/frontend/src/chart/scriptRuntime.ts'),
-  'utf8',
-);
+const scriptRuntime = readFileSync(join(root, 'web/frontend/src/chart/scriptRuntime.ts'), 'utf8');
 const wsSession = readFileSync(join(root, 'web/backend/lib/wsSession.js'), 'utf8');
 
 test('scriptRuntime scopes session errors by createToken', () => {

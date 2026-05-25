@@ -31,11 +31,13 @@ test('runtime envelope round-trip header', () => {
 function decodePlot(buf) {
   const idLen = buf.readUInt16BE(1);
   let o = 3 + idLen;
-  const count = buf.readUInt16BE(o); o += 2;
+  const count = buf.readUInt16BE(o);
+  o += 2;
   const runtimeId = buf.toString('utf8', 3, 3 + idLen);
   const prices = [];
   for (let i = 0; i < count; i++) {
-    prices.push(buf.readDoubleBE(o)); o += 8;
+    prices.push(buf.readDoubleBE(o));
+    o += 8;
   }
   return { runtimeId, prices };
 }
@@ -54,8 +56,14 @@ test('destroyLocalRuntime export exists for session teardown', async () => {
 
 test('computeObImbalanceLevels from merged book maps', async () => {
   const { computeObImbalanceLevels } = await import('../../web/backend/lib/heatmapAggregate.js');
-  const bids = new Map([['100', 2], ['99', 1]]);
-  const asks = new Map([['101', 1], ['102', 1]]);
+  const bids = new Map([
+    ['100', 2],
+    ['99', 1],
+  ]);
+  const asks = new Map([
+    ['101', 1],
+    ['102', 1],
+  ]);
   const levels = computeObImbalanceLevels(bids, asks);
   assert.ok(levels.length >= 2);
   assert.ok(levels.every((p) => p > 0));

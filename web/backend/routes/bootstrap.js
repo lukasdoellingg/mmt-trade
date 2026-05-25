@@ -33,7 +33,12 @@ export function registerBootstrapRoutes(app, deps) {
       const tickers = await ex.fetchTickers();
       const list = [];
       for (const data of Object.values(tickers)) {
-        if (!String(data?.symbol || '').toUpperCase().endsWith('/USDT')) continue;
+        if (
+          !String(data?.symbol || '')
+            .toUpperCase()
+            .endsWith('/USDT')
+        )
+          continue;
         list.push({ symbol: data.symbol, volume: Number(data?.quoteVolume ?? 0) });
       }
       list.sort((a, b) => b.volume - a.volume);

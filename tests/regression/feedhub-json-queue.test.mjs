@@ -49,3 +49,11 @@ test('feedHubWorker supports detach and stream filter', () => {
   assert.match(src, /function detachPort/);
   assert.match(src, /e\.streams\.size === 0 \|\| e\.streams\.has/);
 });
+
+test('feedHubWorker replays session JSON and live status on port init', () => {
+  const src = readFileSync(join(root, 'web/frontend/src/workers/feedHubWorker.ts'), 'utf8');
+  assert.match(src, /sessionJsonReplay/);
+  assert.match(src, /replaySessionJsonToPort/);
+  assert.match(src, /notifyPortSessionStatus/);
+  assert.match(src, /registerPort/);
+});

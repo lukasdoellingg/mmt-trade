@@ -16,12 +16,7 @@ function isFinitePrice(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v) && v > 0;
 }
 
-function pushPrice(
-  lines: ScriptPlotLine[],
-  price: unknown,
-  color?: string,
-  label?: string,
-): void {
+function pushPrice(lines: ScriptPlotLine[], price: unknown, color?: string, label?: string): void {
   if (!isFinitePrice(price)) return;
   lines.push({ price, color, label });
 }
@@ -29,7 +24,8 @@ function pushPrice(
 function collectFromPlotObject(lines: ScriptPlotLine[], plot: Record<string, unknown>): void {
   const price = plot.price ?? plot.y ?? plot.value ?? plot.level;
   const color = typeof plot.color === 'string' ? plot.color : undefined;
-  const label = typeof plot.label === 'string' ? plot.label : typeof plot.text === 'string' ? plot.text : undefined;
+  const label =
+    typeof plot.label === 'string' ? plot.label : typeof plot.text === 'string' ? plot.text : undefined;
   pushPrice(lines, price, color, label);
   if (Array.isArray(plot.points)) {
     for (const pt of plot.points) {
@@ -72,7 +68,10 @@ function walkObject(lines: ScriptPlotLine[], obj: Record<string, unknown>, depth
 }
 
 /** Parse UTF-8 JSON from a runtime:* session envelope. */
-export function parseScriptRuntimePayload(text: string, streamRuntimeId?: string): ParsedScriptRuntimePayload | null {
+export function parseScriptRuntimePayload(
+  text: string,
+  streamRuntimeId?: string,
+): ParsedScriptRuntimePayload | null {
   let msg: Record<string, unknown>;
   try {
     msg = JSON.parse(text) as Record<string, unknown>;

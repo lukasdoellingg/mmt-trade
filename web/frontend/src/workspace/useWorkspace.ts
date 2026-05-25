@@ -1,36 +1,66 @@
 /**
  * Workspace layout composable. Backs reactive widget state with a localStorage
- * snapshot so layouts survive reloads. One instance shared per page.
+ * snapshot so layouts survive reloads. Supports heatmap and futures profiles
+ * with separate storage keys; futures adds four layout slots.
  */
 import { ref, shallowReactive, watch } from 'vue';
-import type { WidgetRect, WidgetState, WidgetType, WorkspaceLayout } from './types';
+import type { WidgetRect, WidgetState, WidgetType, WorkspaceLayout, WorkspaceProfile } from './types';
 import { getWidget } from './registry';
 import { busEmit } from './widgetBus';
 import { chartPaneUnregister } from '../app/chartObjectTree';
 import { snapshotPaneSettings } from '../chart/chartPaneSettings';
 
-const STORAGE_KEY = 'mmt-workspace-v1';
+const LEGACY_STORAGE_KEY = 'mmt-workspace-v1';
+const HEATMAP_STORAGE_KEY = 'mmt-workspace-heatmap-v1';
+const FUTURES_SLOT_KEY = 'mmt-futures-layout-slot';
+const FUTURES_STORAGE_PREFIX = 'mmt-workspace-futures-v1-slot-';
 const LAYOUT_VERSION = 4;
 /** Grid step in CSS pixels. Snap targets are integer multiples. */
 export const CELL_PX = 8;
+
+const BASE_WIDGET_TYPES = new Set<string>([
+  'chart',
+  'orderflow-ladder',
+  'bar-stats',
+  'script-indicator-pane',
+]);
+const FUTURES_WIDGET_TYPES = new Set<string>([...BASE_WIDGET_TYPES, 'coin-scanner', 'futures-metric-pane']);
 
 interface WorkspaceStore {
   widgets: WidgetState[];
   topZ: number;
 }
 
+interface ProfileRuntime {
+  nextSerial: number;
+  hydrated: boolean;
+}
+
 const store = shallowReactive<WorkspaceStore>({ widgets: [], topZ: 1 });
 /** Last chart widget that received focus (ChartTopBar edits this pane). */
 export const activeChartId = ref<string | null>(null);
 
-const hydrated = ref(false);
-let nextSerial = 1;
+export const activeWorkspaceProfile = ref<WorkspaceProfile>('heatmap');
+export const activeLayoutSlot = ref<1 | 2 | 3 | 4>(1);
+
+const profileRuntimes: Record<WorkspaceProfile, ProfileRuntime> = {
+  heatmap: { nextSerial: 1, hydrated: false },
+  futures: { nextSerial: 1, hydrated: false },
+};
+
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
-const WIDGET_TYPES = new Set(['chart', 'orderflow-ladder', 'bar-stats', 'script-indicator-pane']);
+function widgetTypesFor(profile: WorkspaceProfile): Set<string> {
+  return profile === 'futures' ? FUTURES_WIDGET_TYPES : BASE_WIDGET_TYPES;
+}
 
-function sanitizeWidget(w: WidgetState): WidgetState | null {
-  if (!w || typeof w.id !== 'string' || !WIDGET_TYPES.has(w.type)) return null;
+function storageKeyFor(profile: WorkspaceProfile, slot = activeLayoutSlot.value): string {
+  if (profile === 'heatmap') return HEATMAP_STORAGE_KEY;
+  return `${FUTURES_STORAGE_PREFIX}${slot}`;
+}
+
+function sanitizeWidget(w: WidgetState, profile: WorkspaceProfile): WidgetState | null {
+  if (!w || typeof w.id !== 'string' || !widgetTypesFor(profile).has(w.type)) return null;
   const rect = w.rect;
   if (!rect || typeof rect.x !== 'number' || typeof rect.y !== 'number') return null;
   return {
@@ -47,51 +77,140 @@ function sanitizeWidget(w: WidgetState): WidgetState | null {
   };
 }
 
-function safeLoad(): WorkspaceLayout | null {
+function migrateLegacyHeatmap(): void {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    if (localStorage.getItem(HEATMAP_STORAGE_KEY)) return;
+    const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!raw) return;
+    localStorage.setItem(HEATMAP_STORAGE_KEY, raw);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function readLayoutSlot(): 1 | 2 | 3 | 4 {
+  try {
+    const n = Number(localStorage.getItem(FUTURES_SLOT_KEY));
+    if (n >= 1 && n <= 4) return n as 1 | 2 | 3 | 4;
+  } catch {
+    /* ignore */
+  }
+  return 1;
+}
+
+function safeLoad(profile: WorkspaceProfile): WorkspaceLayout | null {
+  migrateLegacyHeatmap();
+  try {
+    const raw = localStorage.getItem(storageKeyFor(profile));
     if (!raw) return null;
     const j = JSON.parse(raw) as WorkspaceLayout;
     if (!j || j.version !== LAYOUT_VERSION || !Array.isArray(j.widgets)) return null;
-    const widgets = j.widgets.map(sanitizeWidget).filter(Boolean) as WidgetState[];
+    const widgets = j.widgets.map((w) => sanitizeWidget(w, profile)).filter(Boolean) as WidgetState[];
     if (!widgets.length) return null;
     return { ...j, widgets };
-  } catch { return null; }
+  } catch {
+    return null;
+  }
+}
+
+function flushSave(profile = activeWorkspaceProfile.value): void {
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  const rt = profileRuntimes[profile];
+  const snap: WorkspaceLayout = {
+    version: LAYOUT_VERSION,
+    widgets: store.widgets.map((w) => ({
+      id: w.id,
+      type: w.type,
+      rect: { ...w.rect },
+      z: w.z,
+      props: w.props,
+    })),
+    nextSerial: rt.nextSerial,
+  };
+  try {
+    localStorage.setItem(storageKeyFor(profile), JSON.stringify(snap));
+  } catch {
+    /* quota */
+  }
+  busEmit({ type: 'workspace:dirty' });
 }
 
 function scheduleSave(): void {
   if (saveTimer !== null) return;
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    const snap: WorkspaceLayout = {
-      version: LAYOUT_VERSION,
-      widgets: store.widgets.map((w) => ({
-        id: w.id, type: w.type, rect: { ...w.rect }, z: w.z, props: w.props,
-      })),
-      nextSerial,
-    };
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(snap)); } catch { /* quota — give up silently */ }
-    busEmit({ type: 'workspace:dirty' });
+    flushSave();
   }, 250);
 }
 
 watch(() => store.widgets.length, scheduleSave);
 
+function hydrateProfile(profile: WorkspaceProfile, force = false): void {
+  const rt = profileRuntimes[profile];
+  if (rt.hydrated && !force) return;
+  const loaded = safeLoad(profile);
+  if (loaded) {
+    store.widgets = loaded.widgets;
+    rt.nextSerial = Math.max(1, loaded.nextSerial | 0);
+    store.topZ = loaded.widgets.reduce((acc, w) => Math.max(acc, w.z | 0), 1);
+  } else {
+    store.widgets = [];
+    rt.nextSerial = 1;
+    store.topZ = 1;
+  }
+  activeChartId.value =
+    [...store.widgets].reverse().find((w) => w.type === 'chart')?.id ?? null;
+  rt.hydrated = true;
+}
+
+/** Switch active workspace profile (heatmap desk vs futures desk). */
+export function setWorkspaceProfile(profile: WorkspaceProfile): void {
+  if (activeWorkspaceProfile.value === profile && profileRuntimes[profile].hydrated) return;
+  if (profileRuntimes[activeWorkspaceProfile.value].hydrated) {
+    flushSave(activeWorkspaceProfile.value);
+  }
+  activeWorkspaceProfile.value = profile;
+  if (profile === 'futures') {
+    activeLayoutSlot.value = readLayoutSlot();
+  }
+  hydrateProfile(profile, true);
+}
+
+/** Futures-only: switch layout slot 1–4 (persists widgets per slot). */
+export function switchLayoutSlot(slot: 1 | 2 | 3 | 4): void {
+  if (activeWorkspaceProfile.value !== 'futures' || activeLayoutSlot.value === slot) return;
+  flushSave('futures');
+  activeLayoutSlot.value = slot;
+  try {
+    localStorage.setItem(FUTURES_SLOT_KEY, String(slot));
+  } catch {
+    /* ignore */
+  }
+  profileRuntimes.futures.hydrated = false;
+  hydrateProfile('futures', true);
+}
+
 export function useWorkspace() {
-  if (!hydrated.value) {
-    const loaded = safeLoad();
-    if (loaded) {
-      store.widgets = loaded.widgets;
-      nextSerial = Math.max(1, loaded.nextSerial | 0);
-      store.topZ = loaded.widgets.reduce((acc, w) => Math.max(acc, w.z | 0), 1);
+  if (!profileRuntimes[activeWorkspaceProfile.value].hydrated) {
+    if (activeWorkspaceProfile.value === 'futures') {
+      activeLayoutSlot.value = readLayoutSlot();
     }
-    hydrated.value = true;
+    hydrateProfile(activeWorkspaceProfile.value);
   }
 
-  function addWidget(type: WidgetType, rect?: Partial<WidgetRect>, props?: Record<string, unknown>): WidgetState | null {
+  function addWidget(
+    type: WidgetType,
+    rect?: Partial<WidgetRect>,
+    props?: Record<string, unknown>,
+  ): WidgetState | null {
     const reg = getWidget(type);
     if (!reg) return null;
-    const id = `${type}-${nextSerial++}`;
+    const rt = profileRuntimes[activeWorkspaceProfile.value];
+    const id = `${type}-${rt.nextSerial++}`;
     store.topZ++;
     const w: WidgetState = {
       id,
@@ -116,9 +235,6 @@ export function useWorkspace() {
     scheduleSave();
   }
 
-  /**
-   * Close a chart widget: detach script-indicator panes, update activeChartId, unregister tree.
-   */
   function closeChartWidget(chartId: string): void {
     const chart = store.widgets.find((w) => w.id === chartId && w.type === 'chart');
     if (!chart) return;
@@ -151,7 +267,6 @@ export function useWorkspace() {
     const w = store.widgets[idx];
     if (w.rect.x === rect.x && w.rect.y === rect.y && w.rect.w === rect.w && w.rect.h === rect.h) return;
     store.widgets[idx] = { ...w, rect };
-    // Re-assign array so shallowReactive triggers downstream watchers
     store.widgets = store.widgets.slice();
     scheduleSave();
   }
@@ -171,7 +286,10 @@ export function useWorkspace() {
     const w = store.widgets[idx];
     let changed = false;
     for (const [k, v] of Object.entries(patch)) {
-      if (w.props[k] !== v) { changed = true; break; }
+      if (w.props[k] !== v) {
+        changed = true;
+        break;
+      }
     }
     if (!changed) return;
     store.widgets[idx] = { ...w, props: { ...w.props, ...patch } };
@@ -179,16 +297,13 @@ export function useWorkspace() {
     scheduleSave();
   }
 
-  function ensureDefaults(defaults: { type: WidgetType; rect: WidgetRect; props?: Record<string, unknown> }[]): void {
+  function ensureDefaults(
+    defaults: { type: WidgetType; rect: WidgetRect; props?: Record<string, unknown> }[],
+  ): void {
     if (store.widgets.length > 0) return;
     for (const d of defaults) addWidget(d.type, d.rect, d.props);
   }
 
-  /**
-   * Fits the existing layout into a target viewport (in CSS pixels). Called
-   * once after mount so the default cell-grid coordinates auto-scale to the
-   * actual workspace canvas without falling off the right edge.
-   */
   function fitToViewport(widthCssPx: number, heightCssPx: number, designW = 1664, designH = 800): void {
     if (widthCssPx <= 0 || heightCssPx <= 0) return;
     const sx = widthCssPx / designW;
@@ -213,17 +328,17 @@ export function useWorkspace() {
 
   function resetWorkspace(): void {
     store.widgets = [];
-    nextSerial = 1;
+    const rt = profileRuntimes[activeWorkspaceProfile.value];
+    rt.nextSerial = 1;
     store.topZ = 1;
-    try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+    activeChartId.value = null;
+    try {
+      localStorage.removeItem(storageKeyFor(activeWorkspaceProfile.value));
+    } catch {
+      /* ignore */
+    }
   }
 
-  /**
-   * Find the next free top-left corner for a new widget of the given size,
-   * relative to the current viewport. Walks the grid in 4-cell steps and
-   * returns the first slot whose rectangle does not overlap any existing
-   * widget. Falls back to `(0, 0)` if nothing fits — the user can drag.
-   */
   function findFreeSlot(
     desiredW: number,
     desiredH: number,
@@ -240,8 +355,6 @@ export function useWorkspace() {
       }
       return false;
     };
-    // Scan column-major from the right edge inward — the user expects new
-    // widgets to dock on the right, not on top of the chart.
     for (let x = Math.max(0, viewportWCells - desiredW); x >= 0; x -= 4) {
       for (let y = 0; y + desiredH <= viewportHCells; y += 4) {
         if (!overlaps(x, y)) return { x, y };
@@ -253,6 +366,8 @@ export function useWorkspace() {
   return {
     store,
     activeChartId,
+    activeWorkspaceProfile,
+    activeLayoutSlot,
     addWidget,
     removeWidget,
     closeChartWidget,
@@ -263,5 +378,7 @@ export function useWorkspace() {
     fitToViewport,
     resetWorkspace,
     findFreeSlot,
+    switchLayoutSlot,
+    setWorkspaceProfile,
   };
 }

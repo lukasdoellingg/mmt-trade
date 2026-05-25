@@ -10,11 +10,13 @@ import {
 function decodePlot(buf) {
   const idLen = buf.readUInt16BE(1);
   let o = 3 + idLen;
-  const count = buf.readUInt16BE(o); o += 2;
+  const count = buf.readUInt16BE(o);
+  o += 2;
   const runtimeId = buf.toString('utf8', 3, 3 + idLen);
   const prices = [];
   for (let i = 0; i < count; i++) {
-    prices.push(buf.readDoubleBE(o)); o += 8;
+    prices.push(buf.readDoubleBE(o));
+    o += 8;
   }
   return { runtimeId, prices };
 }

@@ -11,7 +11,7 @@ function simulateFeedHub(streamCount, chartWorkers) {
   function subscribe(key) {
     streamRefCount.set(key, (streamRefCount.get(key) ?? 0) + 1);
   }
-  function unsubscribe(key) {
+  function _unsubscribe(key) {
     const n = (streamRefCount.get(key) ?? 1) - 1;
     if (n <= 0) streamRefCount.delete(key);
     else streamRefCount.set(key, n);

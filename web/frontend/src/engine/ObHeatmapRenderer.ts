@@ -56,6 +56,8 @@ export class ObHeatmapRenderer {
   private width = 0;
   private height = 0;
   private colIdx = 0;
+  private dirtyColMin = TIME_COLS;
+  private dirtyColMax = -1;
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
@@ -95,10 +97,7 @@ export class ObHeatmapRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(
-      gl.TEXTURE_2D, 0, gl.RG8, TIME_COLS, PRICE_ROWS, 0,
-      gl.RG, gl.UNSIGNED_BYTE, this.texData,
-    );
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, TIME_COLS, PRICE_ROWS, 0, gl.RG, gl.UNSIGNED_BYTE, this.texData);
 
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -117,10 +116,27 @@ export class ObHeatmapRenderer {
     this.texData.copyWithin(0, rowBytes, TIME_COLS * rowBytes);
     this.texData.fill(0, (TIME_COLS - 1) * rowBytes);
     this.colIdx = TIME_COLS - 1;
+    this.markAllColumnsDirty();
   }
 
   clearTexture() {
     this.texData.fill(0);
+    this.markAllColumnsDirty();
+  }
+
+  private markColumnDirty(colIndex: number) {
+    if (colIndex < this.dirtyColMin) this.dirtyColMin = colIndex;
+    if (colIndex > this.dirtyColMax) this.dirtyColMax = colIndex;
+  }
+
+  private markAllColumnsDirty() {
+    this.dirtyColMin = 0;
+    this.dirtyColMax = TIME_COLS - 1;
+  }
+
+  private clearDirtyColumns() {
+    this.dirtyColMin = TIME_COLS;
+    this.dirtyColMax = -1;
   }
 
   /** Copy a pre-binned column into texture column index [0, TIME_COLS). */
@@ -129,19 +145,45 @@ export class ObHeatmapRenderer {
     const base = colIndex * PRICE_ROWS * 2;
     const n = Math.min(PRICE_ROWS * 2, src.length);
     this.texData.set(src.subarray(0, n), base);
+    this.markColumnDirty(colIndex);
   }
 
   getTextureBuffer(): Uint8Array {
     return this.texData;
   }
 
+  /** Upload only columns marked dirty since last upload (partial texSubImage2D). */
+  uploadDirtyColumns() {
+    if (this.dirtyColMax < this.dirtyColMin) return 0;
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    const rowBytes = PRICE_ROWS * 2;
+    let bytes = 0;
+    for (let c = this.dirtyColMin; c <= this.dirtyColMax; c++) {
+      const base = c * rowBytes;
+      gl.texSubImage2D(
+        gl.TEXTURE_2D,
+        0,
+        c,
+        0,
+        1,
+        PRICE_ROWS,
+        gl.RG,
+        gl.UNSIGNED_BYTE,
+        this.texData.subarray(base, base + rowBytes),
+      );
+      bytes += rowBytes;
+    }
+    this.clearDirtyColumns();
+    return bytes;
+  }
+
+  /** Full texture upload — use only on init or explicit full rebuild. */
   uploadTexture() {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.texSubImage2D(
-      gl.TEXTURE_2D, 0, 0, 0, TIME_COLS, PRICE_ROWS,
-      gl.RG, gl.UNSIGNED_BYTE, this.texData,
-    );
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TIME_COLS, PRICE_ROWS, gl.RG, gl.UNSIGNED_BYTE, this.texData);
+    this.clearDirtyColumns();
   }
 
   render(plotX: number, plotY: number, plotW: number, plotH: number, intensity = 1.15) {

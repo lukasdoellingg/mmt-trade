@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import {
-  computeKeyLevelsDetailed,
-  KEY_LEVEL_ROLE,
-} from '../../web/backend/lib/indicators/keyLevels.js';
+import { computeKeyLevelsDetailed, KEY_LEVEL_ROLE } from '../../web/backend/lib/indicators/keyLevels.js';
 import {
   encodeRuntimePlotPayloadWithRoles,
   RUNTIME_PLOT_VERSION_ROLES,
@@ -13,7 +10,7 @@ test('computeKeyLevelsDetailed includes pivots and session range', () => {
   const klines = [];
   let p = 100_000;
   for (let i = 0; i < 48; i++) {
-    const swing = (i % 7 === 3) ? 800 : (i % 11 === 5) ? -600 : 0;
+    const swing = i % 7 === 3 ? 800 : i % 11 === 5 ? -600 : 0;
     klines.push({
       high: p + 400 + swing,
       low: p - 400 + swing,

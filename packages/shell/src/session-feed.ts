@@ -38,7 +38,10 @@ function plotToJson(runtimeId: string, count: number): string {
   return body;
 }
 
-function parseBinaryPlot(payload: ArrayBuffer, streamKey: string): { runtimeId: string; count: number } | null {
+function parseBinaryPlot(
+  payload: ArrayBuffer,
+  streamKey: string,
+): { runtimeId: string; count: number } | null {
   const view = new DataView(payload);
   if (payload.byteLength < 5 || view.getUint8(0) !== RUNTIME_PLOT_VERSION) return null;
   const idLen = view.getUint16(1, false);

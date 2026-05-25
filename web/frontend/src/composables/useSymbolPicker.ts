@@ -38,7 +38,9 @@ export function useSymbolPicker(initialExchange = DEFAULT_EXCHANGE, initialSymbo
     }
   }
 
-  watch(exchange, () => { loadSymbols(); });
+  watch(exchange, () => {
+    loadSymbols();
+  });
 
   function init() {
     return loadExchanges().then(loadSymbols);

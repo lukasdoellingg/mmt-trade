@@ -4,14 +4,13 @@
 import { RUNTIME_LIMITS, SCRIPT_IDS } from './runtimeLimits.js';
 import { timeframeToSec } from '../streamProtocol.js';
 import { parseAggregateExchanges } from '../../../../shared/exchangeIds.mjs';
+import { timeframeToMs, chartIntervalToBinance } from '../../../../shared/timeframes.mjs';
 import { acquireObBook, releaseObBook, snapshotObImbalance } from './obBookPool.js';
 import { encodeRuntimePlotPayload, encodeRuntimePlotPayloadWithRoles } from '../infoStream/runtimePlot.js';
 import { computeKeyLevelsDetailed } from './keyLevels.js';
 
-const BINANCE_INTERVALS = {
-  '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
-  '1h': '1h', '4h': '4h', '1D': '1d', '1W': '1w',
-};
+/** @type {Map<string, { at: number, klines: object[] }>} */
+const klineFetchCache = new Map();
 
 /** @type {Map<string, RuntimeSlot>} */
 const slots = new Map();
@@ -37,10 +36,15 @@ function slotKey(scriptId, symbol, tf, createToken) {
 }
 
 function binanceInterval(tf) {
-  return BINANCE_INTERVALS[tf] ?? '1h';
+  return chartIntervalToBinance(tf);
 }
 
 async function fetchKlines(symbol, tf) {
+  const key = cacheKey(symbol, tf || '1h');
+  const ttl = timeframeToMs(tf || '1h');
+  const hit = klineFetchCache.get(key);
+  if (hit && Date.now() - hit.at < ttl) return hit.klines;
+
   const interval = binanceInterval(tf);
   const sym = symbol.toUpperCase();
   const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${interval}&limit=${RUNTIME_LIMITS.klinesLimit}`;
@@ -48,11 +52,13 @@ async function fetchKlines(symbol, tf) {
   if (!res.ok) return null;
   const rows = await res.json();
   if (!Array.isArray(rows)) return null;
-  return rows.map((r) => ({
+  const klines = rows.map((r) => ({
     high: +r[2],
     low: +r[3],
     close: +r[4],
   }));
+  klineFetchCache.set(key, { at: Date.now(), klines });
+  return klines;
 }
 
 /** @type {Map<string, { prices: number[], roles: number[] }>} */
@@ -70,11 +76,7 @@ function computeNetPositioning(symbol, sessionDelta) {
   const ref = d.lastPrice > 0 ? d.lastPrice : 0;
   if (ref <= 0) return [];
   const bias = net / total;
-  return [
-    ref,
-    ref * (1 + bias * 0.0015),
-    ref * (1 - bias * 0.0015),
-  ].filter((p) => p > 0);
+  return [ref, ref * (1 + bias * 0.0015), ref * (1 - bias * 0.0015)].filter((p) => p > 0);
 }
 
 /** Shared session delta from bar-stats aggTrade (injected). */
@@ -115,14 +117,17 @@ function buildPlotPayload(runtimeId, prices, roles) {
  */
 function schedulePush(slot, mux) {
   if (slot.timer) clearInterval(slot.timer);
+  const pushMs =
+    slot.scriptId === 'key-levels'
+      ? Math.max(RUNTIME_LIMITS.pushIntervalMs, timeframeToMs(slot.tf || '1h'))
+      : RUNTIME_LIMITS.pushIntervalMs;
   slot.timer = setInterval(async () => {
     slot.levels = await computeLevels(slot.scriptId, slot.symbol, slot.tf, slot.inputs);
-    const roles = slot.scriptId === 'key-levels'
-      ? keyLevelCache.get(cacheKey(slot.symbol, slot.tf))?.roles
-      : undefined;
+    const roles =
+      slot.scriptId === 'key-levels' ? keyLevelCache.get(cacheKey(slot.symbol, slot.tf))?.roles : undefined;
     const payload = buildPlotPayload(slot.runtimeId, slot.levels, roles);
     mux.broadcastEnvelope(slot.runtimeId, payload);
-  }, RUNTIME_LIMITS.pushIntervalMs);
+  }, pushMs);
 }
 
 /**
@@ -139,18 +144,17 @@ export async function mountLocalRuntime(client, scriptId, symbol, tf, inputs, cr
   if (slots.size >= RUNTIME_LIMITS.maxRuntimesGlobal) return null;
 
   const sym = (symbol || 'BTCUSDT').toUpperCase();
-  const timeframeSec = typeof inputs?.timeframe === 'number'
-    ? inputs.timeframe
-    : timeframeToSec(tf || '1h');
+  const timeframeSec = typeof inputs?.timeframe === 'number' ? inputs.timeframe : timeframeToSec(tf || '1h');
   const key = slotKey(scriptId, sym, tf || '1h', createToken);
   const runtimeId = `local:${scriptId}:${sym}:${timeframeSec}:${createToken}`;
 
   let slot = slots.get(key);
   if (!slot) {
     const levels = await computeLevels(scriptId, sym, tf || '1h', inputs);
-    const obAgg = scriptId === 'aggregated-ob-imbalance'
-      ? parseAggregateExchanges(inputs?.aggregate ?? 'binance,bybit').join(',')
-      : undefined;
+    const obAgg =
+      scriptId === 'aggregated-ob-imbalance'
+        ? parseAggregateExchanges(inputs?.aggregate ?? 'binance,bybit').join(',')
+        : undefined;
     if (obAgg) acquireObBook(sym, obAgg);
     slot = {
       runtimeId,
@@ -173,9 +177,7 @@ export async function mountLocalRuntime(client, scriptId, symbol, tf, inputs, cr
   slot.clients.add(client);
   mux.subscribeRuntime(client, runtimeId);
 
-  const roles = scriptId === 'key-levels'
-    ? keyLevelCache.get(cacheKey(sym, tf || '1h'))?.roles
-    : undefined;
+  const roles = scriptId === 'key-levels' ? keyLevelCache.get(cacheKey(sym, tf || '1h'))?.roles : undefined;
   const payload = buildPlotPayload(runtimeId, slot.levels, roles);
   mux.broadcastEnvelope(runtimeId, payload);
 

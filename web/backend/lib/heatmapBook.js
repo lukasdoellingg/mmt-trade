@@ -114,7 +114,11 @@ export function broadcastToClients(clients, payload) {
   if (!payload) return;
   for (const client of clients) {
     if (client.readyState === 1) {
-      try { client.send(payload); } catch { /* ignore */ }
+      try {
+        client.send(payload);
+      } catch {
+        /* ignore */
+      }
     }
   }
 }

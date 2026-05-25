@@ -25,9 +25,12 @@ function encodeEnvelope(streamKey, payloadBytes) {
   const header = new ArrayBuffer(1 + 2 + keyBytes.length + 4);
   const view = new DataView(header);
   let off = 0;
-  view.setUint8(off, 1); off += 1;
-  view.setUint16(off, keyBytes.length, false); off += 2;
-  new Uint8Array(header, off, keyBytes.length).set(keyBytes); off += keyBytes.length;
+  view.setUint8(off, 1);
+  off += 1;
+  view.setUint16(off, keyBytes.length, false);
+  off += 2;
+  new Uint8Array(header, off, keyBytes.length).set(keyBytes);
+  off += keyBytes.length;
   view.setUint32(off, payloadBytes.length, false);
   const out = new Uint8Array(header.byteLength + payloadBytes.length);
   out.set(new Uint8Array(header), 0);

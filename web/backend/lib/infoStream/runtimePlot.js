@@ -17,12 +17,17 @@ export function encodeRuntimePlotPayload(runtimeId, prices) {
   const count = Math.min(prices?.length ?? 0, MAX_RUNTIME_PLOT_PRICES);
   const buf = Buffer.allocUnsafe(1 + 2 + idBytes.length + 2 + count * 8);
   let o = 0;
-  buf.writeUInt8(RUNTIME_PLOT_VERSION, o); o += 1;
-  buf.writeUInt16BE(idBytes.length, o); o += 2;
-  idBytes.copy(buf, o); o += idBytes.length;
-  buf.writeUInt16BE(count, o); o += 2;
+  buf.writeUInt8(RUNTIME_PLOT_VERSION, o);
+  o += 1;
+  buf.writeUInt16BE(idBytes.length, o);
+  o += 2;
+  idBytes.copy(buf, o);
+  o += idBytes.length;
+  buf.writeUInt16BE(count, o);
+  o += 2;
   for (let i = 0; i < count; i++) {
-    buf.writeDoubleBE(+prices[i], o); o += 8;
+    buf.writeDoubleBE(+prices[i], o);
+    o += 8;
   }
   return buf;
 }
@@ -38,15 +43,21 @@ export function encodeRuntimePlotPayloadWithRoles(runtimeId, prices, roles) {
   const count = Math.min(prices?.length ?? 0, MAX_RUNTIME_PLOT_PRICES);
   const buf = Buffer.allocUnsafe(1 + 2 + idBytes.length + 2 + count * 8 + count);
   let o = 0;
-  buf.writeUInt8(RUNTIME_PLOT_VERSION_ROLES, o); o += 1;
-  buf.writeUInt16BE(idBytes.length, o); o += 2;
-  idBytes.copy(buf, o); o += idBytes.length;
-  buf.writeUInt16BE(count, o); o += 2;
+  buf.writeUInt8(RUNTIME_PLOT_VERSION_ROLES, o);
+  o += 1;
+  buf.writeUInt16BE(idBytes.length, o);
+  o += 2;
+  idBytes.copy(buf, o);
+  o += idBytes.length;
+  buf.writeUInt16BE(count, o);
+  o += 2;
   for (let i = 0; i < count; i++) {
-    buf.writeDoubleBE(+prices[i], o); o += 8;
+    buf.writeDoubleBE(+prices[i], o);
+    o += 8;
   }
   for (let i = 0; i < count; i++) {
-    buf.writeUInt8((roles?.[i] ?? 0) & 0xff, o); o += 1;
+    buf.writeUInt8((roles?.[i] ?? 0) & 0xff, o);
+    o += 1;
   }
   return buf;
 }

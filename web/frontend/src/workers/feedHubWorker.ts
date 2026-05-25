@@ -26,6 +26,49 @@ const RECONNECT_BASE_MS = 1500;
 const RECONNECT_MAX_MS = 120_000;
 let reconnectDelayMs = RECONNECT_BASE_MS;
 const pendingJson: Record<string, unknown>[] = [];
+const SESSION_JSON_REPLAY_MAX = 32;
+const sessionJsonReplay: string[] = [];
+
+function pushSessionJsonReplay(text: string): void {
+  sessionJsonReplay.push(text);
+  if (sessionJsonReplay.length > SESSION_JSON_REPLAY_MAX) {
+    sessionJsonReplay.shift();
+  }
+}
+
+function deliverSessionJson(text: string): void {
+  pushSessionJsonReplay(text);
+  broadcast({ type: 'session_json', text });
+}
+
+function replaySessionJsonToPort(port: MessagePort): void {
+  for (let i = 0; i < sessionJsonReplay.length; i++) {
+    port.postMessage({ type: 'session_json', text: sessionJsonReplay[i] });
+  }
+}
+
+function notifyPortSessionStatus(port: MessagePort): void {
+  if (socket?.readyState === WebSocket.OPEN) {
+    port.postMessage({ type: 'session_status', status: 'live' });
+  }
+}
+
+function registerPort(id: number, port: MessagePort): void {
+  ports.set(id, { port, streams: new Set() });
+  port.onmessage = (pev: MessageEvent) => {
+    const inner = pev.data;
+    const entry = ports.get(id);
+    if (!entry) return;
+    if (inner.type === 'subscribe_stream') {
+      entry.streams.add(inner.streamKey);
+    } else if (inner.type === 'unsubscribe_stream') {
+      entry.streams.delete(inner.streamKey);
+    }
+  };
+  notifyPortSessionStatus(port);
+  replaySessionJsonToPort(port);
+  openSocket();
+}
 
 function wsBase(): string {
   const proto = self.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -53,9 +96,8 @@ function subscribeStream(key: SubKey, spec?: Record<string, unknown>): void {
   const n = (streamRefCount.get(key) ?? 0) + 1;
   streamRefCount.set(key, n);
   if (n === 1 && spec) {
-    const aggregate = typeof spec.aggregate === 'string' && spec.aggregate.trim()
-      ? spec.aggregate
-      : 'binance';
+    const aggregate =
+      typeof spec.aggregate === 'string' && spec.aggregate.trim() ? spec.aggregate : 'binance';
     sendJson({
       op: 'subscribe',
       symbol: spec.symbol,
@@ -124,11 +166,11 @@ function resubscribeAll(): void {
           tf: spec.tf,
           stream: spec.stream ?? 16,
           bucket_group: spec.bucket_group ?? 0,
-          aggregate: typeof spec.aggregate === 'string' && spec.aggregate.trim()
-            ? spec.aggregate
-            : 'binance',
+          aggregate: typeof spec.aggregate === 'string' && spec.aggregate.trim() ? spec.aggregate : 'binance',
         });
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
   }
 }
@@ -158,7 +200,7 @@ function openSocket(): void {
   socket.onmessage = (ev: MessageEvent) => {
     const data = ev.data;
     if (typeof data === 'string') {
-      broadcast({ type: 'session_json', text: data });
+      deliverSessionJson(data);
       return;
     }
     if (!(data instanceof ArrayBuffer)) return;
@@ -171,23 +213,29 @@ function openSocket(): void {
     }
 
     const entries = [...ports.values()];
-    const matching = entries.filter(
-      (e) => e.streams.size === 0 || e.streams.has(parsed.streamKey),
-    );
-    for (let i = 0; i < matching.length; i++) {
-      const entry = matching[i];
-      const payload = matching.length === 1 ? parsed.payload : parsed.payload.slice(0);
+    const matching = entries.filter((e) => e.streams.size === 0 || e.streams.has(parsed.streamKey));
+    if (matching.length === 1) {
+      const entry = matching[0];
+      const payload = parsed.payload;
       try {
         entry.port.postMessage(
-          {
-            type: 'session_frame' as const,
-            streamKey: parsed.streamKey,
-            buffer: payload,
-          },
+          { type: 'session_frame' as const, streamKey: parsed.streamKey, buffer: payload },
           [payload],
         );
       } catch {
-        /* port closed — drop */
+        /* port closed */
+      }
+      return;
+    }
+    for (let i = 0; i < matching.length; i++) {
+      const entry = matching[i];
+      const payload = parsed.payload.slice(0);
+      try {
+        entry.port.postMessage(
+          { type: 'session_frame' as const, streamKey: parsed.streamKey, buffer: payload },
+        );
+      } catch {
+        /* port closed */
       }
     }
   };
@@ -202,7 +250,11 @@ function broadcast(msg: Record<string, unknown>): void {
 function detachPort(id: number): void {
   const entry = ports.get(id);
   if (!entry) return;
-  try { entry.port.close(); } catch { /* ignore */ }
+  try {
+    entry.port.close();
+  } catch {
+    /* ignore */
+  }
   ports.delete(id);
 }
 
@@ -226,18 +278,7 @@ self.onmessage = (ev: MessageEvent<WorkerInMsg>) => {
   if (msg.type === 'init') {
     const id = typeof msg.portId === 'number' ? msg.portId : nextPortId++;
     if (id >= nextPortId) nextPortId = id + 1;
-    ports.set(id, { port: msg.port, streams: new Set() });
-    msg.port.onmessage = (pev: MessageEvent) => {
-      const inner = pev.data;
-      const entry = ports.get(id);
-      if (!entry) return;
-      if (inner.type === 'subscribe_stream') {
-        entry.streams.add(inner.streamKey);
-      } else if (inner.type === 'unsubscribe_stream') {
-        entry.streams.delete(inner.streamKey);
-      }
-    };
-    openSocket();
+    registerPort(id, msg.port);
     return;
   }
   if (msg.type === 'subscribe_spec') {

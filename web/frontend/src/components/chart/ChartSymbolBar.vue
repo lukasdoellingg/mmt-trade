@@ -12,10 +12,7 @@ const emit = defineEmits<{
   change: [payload: { exchange: string; symbol: string }];
 }>();
 
-const { exchange, symbol, exchanges, symbols, loading, init } = useSymbolPicker(
-  props.exchange,
-  props.symbol,
-);
+const { exchange, symbol, exchanges, symbols, loading, init } = useSymbolPicker(props.exchange, props.symbol);
 
 onMounted(() => init());
 
@@ -42,7 +39,11 @@ function onSymbolChange() {
 </template>
 
 <style scoped>
-.sym-bar { display: flex; align-items: center; gap: 6px; }
+.sym-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .sym-select {
   background: #111118;
   color: #d0e0f0;
@@ -54,6 +55,10 @@ function onSymbolChange() {
   cursor: pointer;
   max-width: 120px;
 }
-.sym-pair { max-width: 160px; }
-.sym-select:disabled { opacity: 0.5; }
+.sym-pair {
+  max-width: 160px;
+}
+.sym-select:disabled {
+  opacity: 0.5;
+}
 </style>

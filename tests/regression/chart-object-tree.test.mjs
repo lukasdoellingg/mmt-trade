@@ -9,7 +9,9 @@ describe('chartObjectTree revision contract', () => {
   it('treeRevision increments on register and upsert (logic mirror)', () => {
     let revision = 0;
     const panes = new Map();
-    const bump = () => { revision++; };
+    const bump = () => {
+      revision++;
+    };
 
     function register(id) {
       if (!panes.has(id)) panes.set(id, { scriptMounts: [] });

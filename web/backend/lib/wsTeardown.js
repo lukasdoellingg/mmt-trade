@@ -13,11 +13,19 @@ export function safeCloseWebSocket(ws) {
   // Swallow ws "closed before established" during CONNECTING teardown (dev reload / probe).
   ws.on('error', () => {});
   if (readyState === WebSocket.CONNECTING) {
-    try { ws.terminate(); } catch { /* ignore */ }
+    try {
+      ws.terminate();
+    } catch {
+      /* ignore */
+    }
     return;
   }
   ws.removeAllListeners('error');
-  try { ws.close(1000, 'shutdown'); } catch { /* ignore */ }
+  try {
+    ws.close(1000, 'shutdown');
+  } catch {
+    /* ignore */
+  }
 }
 
 export function cancelUpstreamIdleClose(upstream) {

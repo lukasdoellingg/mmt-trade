@@ -3,7 +3,7 @@
  */
 import { WebSocket } from 'ws';
 
-import { bookToLevels, encodeHeatmapFrame, broadcastToClients, HEATMAP_MAX_BOOK_SIZE } from './heatmapBook.js';
+import { bookToLevels, encodeHeatmapFrame, broadcastToClients } from './heatmapBook.js';
 import { candleOpenMs } from './candleTime.js';
 import { createBackoffController } from './security.js';
 import { safeCloseWebSocket } from './wsTeardown.js';
@@ -12,15 +12,13 @@ const UPSTREAM_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 
 import { parseAggregateExchanges as parseAggregateFromShared } from '../../../shared/exchangeIds.mjs';
 
-const MAX_BOOK_SIZE = HEATMAP_MAX_BOOK_SIZE;
-
 export { parseAggregateFromShared as parseAggregateExchanges };
 
 export function aggregateUpstreamKey(symbolKey, exchanges) {
   return `AGG:${symbolKey}:${[...exchanges].sort().join(',')}`;
 }
 
-function applyLevels(map, rows, isBid) {
+function applyLevels(map, rows, _isBid) {
   for (const row of rows || []) {
     const p = String(+row[0]);
     const q = +row[1];
@@ -81,9 +79,13 @@ function attachBybitSource(upstream, symbolKey, HeatmapFrame) {
       }
     });
 
-    ws.on('message', raw => {
+    ws.on('message', (raw) => {
       let parsed;
-      try { parsed = JSON.parse(raw); } catch { return; }
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return;
+      }
       if (!parsed?.topic?.startsWith('orderbook')) return;
       const data = parsed.data;
       if (!data) return;
@@ -106,7 +108,7 @@ function attachBybitSource(upstream, symbolKey, HeatmapFrame) {
       broadcastHeatmap(upstream, HeatmapFrame, bucketTs);
     });
 
-    ws.on('error', wsError => console.error('[Bybit heatmap]', wsError.message));
+    ws.on('error', (wsError) => console.error('[Bybit heatmap]', wsError.message));
     ws.on('close', () => {
       src.ready = false;
       if (upstream.destroyed || !upstream.clients.size) return;
@@ -115,7 +117,6 @@ function attachBybitSource(upstream, symbolKey, HeatmapFrame) {
         return;
       }
       const delayMs = src.backoff.nextDelayMs();
-      console.log(`[Bybit heatmap] reconnect in ${Math.round(delayMs)}ms (attempt ${src.backoff.currentAttempt()})`);
       setTimeout(connect, delayMs);
     });
   }
@@ -172,11 +173,13 @@ function attachBinanceSource(upstream, symbolKey, HeatmapFrame) {
   function applyBinanceDelta(side, data) {
     for (const [price, volume] of data.b || []) {
       const quantity = +volume;
-      if (quantity <= 0) side.bids.delete(price); else side.bids.set(price, quantity);
+      if (quantity <= 0) side.bids.delete(price);
+      else side.bids.set(price, quantity);
     }
     for (const [price, volume] of data.a || []) {
       const quantity = +volume;
-      if (quantity <= 0) side.asks.delete(price); else side.asks.set(price, quantity);
+      if (quantity <= 0) side.asks.delete(price);
+      else side.asks.set(price, quantity);
     }
     side.lastU = data.u;
   }
@@ -188,9 +191,13 @@ function attachBinanceSource(upstream, symbolKey, HeatmapFrame) {
 
     ws.on('open', () => src.socketBackoff.reset());
 
-    ws.on('message', msg => {
+    ws.on('message', (msg) => {
       let data;
-      try { data = JSON.parse(msg); } catch { return; }
+      try {
+        data = JSON.parse(msg);
+      } catch {
+        return;
+      }
       if (!data || data.e !== 'depthUpdate') return;
       if (!src.ready) {
         src.buffered.push(data);
@@ -205,7 +212,7 @@ function attachBinanceSource(upstream, symbolKey, HeatmapFrame) {
       const bucketTs = candleOpenMs(rawTs, upstream.timeframeMs);
       broadcastHeatmap(upstream, HeatmapFrame, bucketTs);
     });
-    ws.on('error', wsError => console.error('[Agg Binance ws]', wsError.message));
+    ws.on('error', (wsError) => console.error('[Agg Binance ws]', wsError.message));
     ws.on('close', () => {
       src.ready = false;
       if (upstream.destroyed || !upstream.clients.size) return;
@@ -214,7 +221,6 @@ function attachBinanceSource(upstream, symbolKey, HeatmapFrame) {
         return;
       }
       const delayMs = src.socketBackoff.nextDelayMs();
-      console.log(`[Agg Binance] reconnect in ${Math.round(delayMs)}ms (attempt ${src.socketBackoff.currentAttempt()})`);
       setTimeout(() => {
         if (upstream.destroyed || !upstream.clients.size) return;
         src.buffered = [];
@@ -236,16 +242,22 @@ export function computeObImbalanceLevels(bids, asks) {
   let askPx = 0;
   for (const [p, q] of bids) {
     const vol = +q;
-    if (vol > 0) { bidSum += vol; bidPx += (+p) * vol; }
+    if (vol > 0) {
+      bidSum += vol;
+      bidPx += +p * vol;
+    }
   }
   for (const [p, q] of asks) {
     const vol = +q;
-    if (vol > 0) { askSum += vol; askPx += (+p) * vol; }
+    if (vol > 0) {
+      askSum += vol;
+      askPx += +p * vol;
+    }
   }
   const levels = [];
   if (bidSum > 0) levels.push(bidPx / bidSum);
   if (askSum > 0) levels.push(askPx / askSum);
-  const mid = levels.length === 2 ? (levels[0] + levels[1]) / 2 : levels[0] ?? 0;
+  const mid = levels.length === 2 ? (levels[0] + levels[1]) / 2 : (levels[0] ?? 0);
   if (mid > 0 && Math.abs(bidSum - askSum) > 0) {
     const skew = (bidSum - askSum) / (bidSum + askSum);
     levels.push(mid * (1 + skew * 0.002));

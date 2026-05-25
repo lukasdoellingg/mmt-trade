@@ -24,10 +24,12 @@ async function get<T = Record<string, unknown>>(path: string, signal?: AbortSign
     try {
       const r = await fetch(`${API}${path}`, {
         signal,
-        headers: { 'Accept': 'application/json' },
+        headers: { Accept: 'application/json' },
       });
       if (r.status === 502 || r.status === 503 || r.status === 504) {
-        const err: ApiError = new Error(`Backend unavailable (HTTP ${r.status}). Is the backend server running on port 3001?`);
+        const err: ApiError = new Error(
+          `Backend unavailable (HTTP ${r.status}). Is the backend server running on port 3001?`,
+        );
         err.status = r.status;
         err.isBackendDown = true;
         throw err;
@@ -44,14 +46,20 @@ async function get<T = Record<string, unknown>>(path: string, signal?: AbortSign
       if (err.name === 'AbortError') throw err;
       if (err.status && err.status >= 400 && err.status < 500) throw err;
       if (i === MAX_RETRIES) {
-        if (err.message?.includes('Failed to fetch') || err.message?.includes('NetworkError') || err.message?.includes('ERR_CONNECTION_REFUSED')) {
-          const connErr: ApiError = new Error('Backend server not reachable. Start it with: cd web/backend && npm start');
+        if (
+          err.message?.includes('Failed to fetch') ||
+          err.message?.includes('NetworkError') ||
+          err.message?.includes('ERR_CONNECTION_REFUSED')
+        ) {
+          const connErr: ApiError = new Error(
+            'Backend server not reachable. Start it with: cd web/backend && npm start',
+          );
           connErr.isBackendDown = true;
           throw connErr;
         }
         throw err;
       }
-      await new Promise(r => setTimeout(r, RETRY_BASE_MS * (2 ** i)));
+      await new Promise((r) => setTimeout(r, RETRY_BASE_MS * 2 ** i));
     }
   }
   throw new Error('Unreachable');
@@ -63,12 +71,20 @@ export async function fetchExchanges(signal?: AbortSignal): Promise<string[]> {
 }
 
 export async function fetchSymbols(exId: string, signal?: AbortSignal) {
-  const res = await get<{ symbols: { symbol: string; volume: number }[] }>(`/symbols?exchange=${encodeURIComponent(exId)}&limit=10`, signal);
+  const res = await get<{ symbols: { symbol: string; volume: number }[] }>(
+    `/symbols?exchange=${encodeURIComponent(exId)}&limit=10`,
+    signal,
+  );
   return res.symbols || [];
 }
 
 export async function fetchOhlcv(exId: string, symbol: string, tf: string, limit = 50, signal?: AbortSignal) {
-  const q = new URLSearchParams({ exchange: exId || 'binance', symbol: symbol || 'BTC/USDT', timeframe: tf || '1h', limit: String(limit) });
+  const q = new URLSearchParams({
+    exchange: exId || 'binance',
+    symbol: symbol || 'BTC/USDT',
+    timeframe: tf || '1h',
+    limit: String(limit),
+  });
   const j = await get<{ ohlcv: number[][] }>(`/ohlcv?${q}`, signal);
   if (!Array.isArray(j.ohlcv)) throw new Error('OHLCV not array');
   return j.ohlcv;
@@ -88,7 +104,10 @@ export async function fetchFuturesOhlcvMulti(symbol: string, tf = '1h', limit = 
 }
 
 export async function fetchFundingRates(symbol: string, limit = 100, signal?: AbortSignal) {
-  return await get(`/funding-rates?symbol=${encodeURIComponent(symbol || 'BTC/USDT')}&limit=${limit}`, signal);
+  return await get(
+    `/funding-rates?symbol=${encodeURIComponent(symbol || 'BTC/USDT')}&limit=${limit}`,
+    signal,
+  );
 }
 
 export async function fetchOpenInterest(symbol: string, signal?: AbortSignal) {
@@ -96,7 +115,10 @@ export async function fetchOpenInterest(symbol: string, signal?: AbortSignal) {
 }
 
 export async function fetchOpenInterestHistory(symbol: string, tf = '1h', limit = 168, signal?: AbortSignal) {
-  return await get(`/open-interest-history?symbol=${encodeURIComponent(symbol || 'BTC/USDT')}&timeframe=${tf}&limit=${limit}`, signal);
+  return await get(
+    `/open-interest-history?symbol=${encodeURIComponent(symbol || 'BTC/USDT')}&timeframe=${tf}&limit=${limit}`,
+    signal,
+  );
 }
 
 export async function fetchBasis(symbol: string, signal?: AbortSignal) {
@@ -108,6 +130,21 @@ export async function fetchLiquidations(symbol: string, tf = '1h', limit = 168, 
   return await get(`/liquidations?${q}`, signal);
 }
 
+export interface FuturesScannerRow {
+  symbol: string;
+  base: string;
+  vol24h: number;
+  fundingApr: number;
+  oi: number;
+  change24h: number;
+  error?: string;
+}
+
+export async function fetchFuturesScanner(symbols?: string, signal?: AbortSignal) {
+  const q = symbols ? `?symbols=${encodeURIComponent(symbols)}` : '';
+  return (await get(`/futures-scanner${q}`, signal)) as { rows: FuturesScannerRow[] };
+}
+
 export async function fetchTradFiOverview(symbol: string, signal?: AbortSignal) {
   return await get(`/tradfi/overview?symbol=${encodeURIComponent(symbol || 'BTC/USDT')}`, signal);
 }
@@ -117,7 +154,12 @@ export async function fetchTradFiChart(ticker: string, range = '1y', interval = 
   return await get(`/tradfi/chart?${q}`, signal);
 }
 
-export async function fetchTradFiCmeHistory(symbol: string, range = '1y', interval = '1d', signal?: AbortSignal) {
+export async function fetchTradFiCmeHistory(
+  symbol: string,
+  range = '1y',
+  interval = '1d',
+  signal?: AbortSignal,
+) {
   const base = (symbol || 'BTC/USDT').split('/')[0];
   const q = new URLSearchParams({ symbol: base, range, interval });
   return await get(`/tradfi/cme-history?${q}`, signal);

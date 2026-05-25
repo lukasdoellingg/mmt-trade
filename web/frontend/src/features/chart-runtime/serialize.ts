@@ -12,9 +12,7 @@ function parseAttachment(raw: unknown): ChartRuntimeAttachment | null {
   if (!scriptId) return null;
   const statusRaw = asString(o.status);
   const status =
-    statusRaw === 'live' || statusRaw === 'error' || statusRaw === 'idle'
-      ? statusRaw
-      : 'mounting';
+    statusRaw === 'live' || statusRaw === 'error' || statusRaw === 'idle' ? statusRaw : 'mounting';
   return {
     localId,
     scriptId,
@@ -26,9 +24,7 @@ function parseAttachment(raw: unknown): ChartRuntimeAttachment | null {
   };
 }
 
-export function parseChartRuntimeProps(
-  props: Record<string, unknown> | undefined,
-): ChartWidgetRuntimeProps {
+export function parseChartRuntimeProps(props: Record<string, unknown> | undefined): ChartWidgetRuntimeProps {
   if (!props) return { runtimes: [] };
   const raw = props.runtimes;
   if (!Array.isArray(raw)) return { runtimes: [] };
