@@ -6,6 +6,8 @@ import { ref, shallowReactive, watch } from 'vue';
 import type { WidgetRect, WidgetState, WidgetType, WorkspaceLayout } from './types';
 import { getWidget } from './registry';
 import { busEmit } from './widgetBus';
+import { chartPaneUnregister } from '../app/chartObjectTree';
+import { snapshotPaneSettings } from '../chart/chartPaneSettings';
 
 const STORAGE_KEY = 'mmt-workspace-v1';
 const LAYOUT_VERSION = 4;
@@ -109,7 +111,37 @@ export function useWorkspace() {
   }
 
   function removeWidget(id: string): void {
+    if (!store.widgets.some((w) => w.id === id)) return;
     store.widgets = store.widgets.filter((w) => w.id !== id);
+    scheduleSave();
+  }
+
+  /**
+   * Close a chart widget: detach script-indicator panes, update activeChartId, unregister tree.
+   */
+  function closeChartWidget(chartId: string): void {
+    const chart = store.widgets.find((w) => w.id === chartId && w.type === 'chart');
+    if (!chart) return;
+
+    const removeIds = new Set<string>([chartId]);
+    for (const w of store.widgets) {
+      if (w.type !== 'script-indicator-pane') continue;
+      const parent = (w.props as { parentChartWidgetId?: string })?.parentChartWidgetId;
+      if (parent === chartId) removeIds.add(w.id);
+    }
+
+    if (activeChartId.value === chartId) {
+      const remaining = store.widgets.filter((w) => w.type === 'chart' && !removeIds.has(w.id));
+      activeChartId.value = remaining.length > 0 ? remaining[remaining.length - 1].id : null;
+    }
+
+    for (const id of removeIds) {
+      const w = store.widgets.find((x) => x.id === id);
+      if (w) snapshotPaneSettings(id, w.props as Record<string, unknown>);
+    }
+
+    chartPaneUnregister(chartId);
+    store.widgets = store.widgets.filter((w) => !removeIds.has(w.id));
     scheduleSave();
   }
 
@@ -137,6 +169,11 @@ export function useWorkspace() {
     const idx = store.widgets.findIndex((w) => w.id === id);
     if (idx < 0) return;
     const w = store.widgets[idx];
+    let changed = false;
+    for (const [k, v] of Object.entries(patch)) {
+      if (w.props[k] !== v) { changed = true; break; }
+    }
+    if (!changed) return;
     store.widgets[idx] = { ...w, props: { ...w.props, ...patch } };
     store.widgets = store.widgets.slice();
     scheduleSave();
@@ -218,6 +255,7 @@ export function useWorkspace() {
     activeChartId,
     addWidget,
     removeWidget,
+    closeChartWidget,
     updateRect,
     updateProps,
     bringToFront,

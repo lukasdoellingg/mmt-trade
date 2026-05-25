@@ -64,17 +64,26 @@ export function useChartPaneRuntime(
   settings: PaneChartSettings,
 ) {
   const scriptRuntime = useScriptRuntime();
-  const { updateProps } = useWorkspace();
+  const { updateProps, store } = useWorkspace();
   const scopeId = widget.id;
 
+  function widgetProps(): Record<string, unknown> {
+    const w = store.widgets.find((x) => x.id === scopeId);
+    return (w?.props ?? widget.props) as Record<string, unknown>;
+  }
+
   function persistMounts(mounts: ChartRuntimeAttachment[]): void {
-    updateProps(scopeId, serializeChartRuntimeProps({ runtimes: mounts }));
+    if (!store.widgets.some((w) => w.id === scopeId)) return;
+    const next = serializeChartRuntimeProps({ runtimes: mounts });
+    const cur = widgetProps().runtimes;
+    if (JSON.stringify(cur) === JSON.stringify(next.runtimes)) return;
+    updateProps(scopeId, next);
     chartPaneSyncScriptMounts(scopeId, { runtimes: mounts });
   }
 
   function registerPane(): void {
     chartPaneRegister(scopeId, settings.symbol, settings.exchange, settings.timeframe);
-    chartPaneSyncScriptMounts(scopeId, widget.props as { runtimes?: ChartRuntimeAttachment[] });
+    chartPaneSyncScriptMounts(scopeId, widgetProps() as { runtimes?: ChartRuntimeAttachment[] });
   }
 
   function scriptActiveFlags(): Partial<Record<ScriptIndicatorId, boolean>> {
@@ -88,10 +97,11 @@ export function useChartPaneRuntime(
 
   function syncOverlayScripts(): void {
     if (!USE_SESSION_MUX) return;
+    if (!store.widgets.some((w) => w.id === scopeId)) return;
     const sym = settings.symbol;
     const tf = settings.timeframe;
     const active = scriptActiveFlags();
-    let mounts = chartPaneSyncScriptMounts(scopeId, widget.props as { runtimes?: ChartRuntimeAttachment[] });
+    let mounts = chartPaneSyncScriptMounts(scopeId, widgetProps() as { runtimes?: ChartRuntimeAttachment[] });
 
     for (const decl of SCRIPT_INDICATORS) {
       const localId = decl.id;
@@ -121,6 +131,7 @@ export function useChartPaneRuntime(
 
   function remountOnContextChange(): void {
     if (!USE_SESSION_MUX) return;
+    if (!store.widgets.some((w) => w.id === scopeId)) return;
     chartPaneRefreshContext(scopeId, settings.symbol, settings.exchange, settings.timeframe);
     scriptRuntime.remountAll(scriptActiveFlags(), settings.symbol, settings.timeframe, scopeId);
     syncOverlayScripts();

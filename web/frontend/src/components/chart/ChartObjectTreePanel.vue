@@ -157,7 +157,7 @@ function isNativeOn(chartWidgetId: string, settingsKey: string): boolean {
       </div>
     </div>
 
-    <div v-if="!panes.length" class="tree-empty">No chart pane registered</div>
+    <div v-if="!panes.length" class="tree-empty">No chart — add via + Widget in the top bar</div>
 
     <div class="tree-section tree-footer">
       <div class="tree-section-label">New window</div>

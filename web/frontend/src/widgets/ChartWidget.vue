@@ -24,7 +24,7 @@ import {
 } from '../indicators/indicatorCatalog';
 import { ChartRenderFlagsBuilder } from '../chart/ChartRenderFlags';
 import { ChartTimeScale } from '../chart/ChartTimeScale';
-import { usePaneSettings } from '../chart/chartPaneSettings';
+import { usePaneSettings, releasePaneSettingsSnapshot } from '../chart/chartPaneSettings';
 import { busEmit } from '../workspace/widgetBus';
 import { debugWarn } from '../utils/debug';
 import { acquireHeatmapFeed } from '../features/heatmap/feed-hub/heatmapFeedHub';
@@ -44,8 +44,17 @@ import {
 } from '../config/featureFlags';
 import WorkspaceWidget from '../workspace/WorkspaceWidget.vue';
 import type { WidgetState } from '../workspace/types';
+import { useWorkspace } from '../workspace/useWorkspace';
 
 const props = defineProps<{ widget: WidgetState }>();
+const { closeChartWidget } = useWorkspace();
+let closing = false;
+
+function onChartClose(): void {
+  if (closing) return;
+  closing = true;
+  closeChartWidget(props.widget.id);
+}
 const settings = usePaneSettings(props.widget.id);
 
 const widgetTitle = computed(() => `${settings.symbol.toLowerCase()} @ ${settings.exchange.toLowerCase()}f`);
@@ -476,9 +485,13 @@ watch(() => settings.timeframe, (tf) => {
 watch(() => settings.symbol, (s) => applySymbolChange(s));
 watch(
   () => [settings.scriptKeyLevels, settings.scriptNetPositioning, settings.scriptObImbalance],
-  () => paneRuntime.syncOverlayScripts(),
+  () => { if (!closing) paneRuntime.syncOverlayScripts(); },
 );
-watch(scriptRuntime.mounts, () => rebuildScriptPlotLines(), { deep: true });
+watch(
+  () => scriptRuntime.mountsForScope(paneRuntime.scopeId, 'overlay'),
+  () => { if (!closing) rebuildScriptPlotLines(); },
+  { deep: true },
+);
 watch([
   () => settings.vwapDaily, () => settings.vwapWeekly, () => settings.vwapMonthly,
   () => settings.vwapBands, () => settings.ema, () => settings.liquidations,
@@ -1053,6 +1066,7 @@ function terminateAllLayerWorkers() {
 onMounted(() => { paneRuntime.registerPane(); start(); });
 onUnmounted(() => {
   active = false;
+  releasePaneSettingsSnapshot(props.widget.id);
   paneRuntime.teardown();
   pause();
   stopWorker();
@@ -1065,7 +1079,7 @@ defineExpose({ widget: props.widget });
 </script>
 
 <template>
-  <WorkspaceWidget :widget="widget" :title="widgetTitle" :badge="widgetBadge" no-close>
+  <WorkspaceWidget :widget="widget" :title="widgetTitle" :badge="widgetBadge" handle-close @close="onChartClose">
   <div ref="wrapEl" class="chart-wrap"
     @mousemove="onMove" @mouseleave="onLeave"
     @mousedown="onDown" @mouseup="onUp"

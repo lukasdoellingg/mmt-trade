@@ -22,6 +22,8 @@ test('per-chart pane settings module exists', () => {
   assert.match(paneSettings, /usePaneSettings/);
   assert.match(paneSettings, /useActivePaneSettings/);
   assert.match(paneSettings, /initialChartWidgetProps/);
+  assert.match(paneSettings, /snapshotPaneSettings/);
+  assert.doesNotMatch(paneSettings, /reactive\(\s*\n?\s*new Proxy/);
 });
 
 test('workspace tracks active chart and layout v4', () => {

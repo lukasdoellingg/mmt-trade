@@ -37,7 +37,10 @@ Chart-Engine-Worker nutzen **`/api/chart/klines`** und **`/ws/chart`** (Klines +
 
 ## Dev flags
 
-- `VITE_USE_SESSION_MUX` — defaults **on** in Vite dev; set `0` to disable
+- `VITE_USE_SESSION_MUX` — defaults **on** unless `=0` / `=false` (see `web/frontend/src/config/featureFlags.ts`)
+- **`web/frontend/.env.development`** should set `VITE_USE_SESSION_MUX=1` for script indicator panes and bar stats; requires `web/backend` on port 3001. Restart Vite after changing env.
+- Copy `web/frontend/.env.example` when onboarding a new machine.
+- `VITE_USE_EMSCRIPTEN_WORKERS=0` keeps OB heatmap on legacy `/ws/heatmap` (independent of session mux).
 - Heatmap remains on `/ws/heatmap` (Binance/Bybit aggregate)
 
 ## Backend modules

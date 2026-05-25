@@ -2,15 +2,17 @@
  * Server-side indicator runtime mount — proxies create_runtime via FeedHubWorker.
  * Supports widget-scoped mounts (MMT ScriptRuntimeMount per chart pane).
  */
-import { computed, shallowRef } from 'vue';
+import { computed, ref, shallowRef } from 'vue';
 import {
   createScriptRuntime,
   destroyScriptRuntime,
   onSessionJson,
+  onSessionStatus,
   onScriptPlotUpdate,
   subscribeFeedStream,
   subscribeRuntimeStream,
   updateScriptInputs,
+  type SessionConnectionStatus,
 } from '../engine/feedHubClient';
 import { USE_SESSION_MUX } from '../config/featureFlags';
 import type { ScriptIndicatorId } from '../indicators/indicatorCatalog';
@@ -42,6 +44,14 @@ const mounts = shallowRef<Map<string, ScriptRuntimeMount>>(new Map());
 const runtimeUnsubs = new Map<string, () => void>();
 let jsonListenerInstalled = false;
 let plotListenerInstalled = false;
+let statusListenerInstalled = false;
+let mountSeq = 0;
+const mountTimeouts = new Map<number, ReturnType<typeof setTimeout>>();
+
+/** Shared /ws/session connection state from FeedHubWorker. */
+export const sessionConnectionStatus = ref<SessionConnectionStatus>('unknown');
+
+const MOUNT_TIMEOUT_MS = 15_000;
 
 function timeframeToSec(tf: string): number {
   const map: Record<string, number> = {
@@ -53,6 +63,42 @@ function timeframeToSec(tf: string): number {
 
 function mountKey(scopeId: string, localId: string): string {
   return `${scopeId}:${localId}`;
+}
+
+function nextCreateToken(): number {
+  mountSeq = (mountSeq + 1) & 0xff;
+  return ((Date.now() & 0xffffff) << 8) | mountSeq;
+}
+
+function clearMountTimeout(token: number): void {
+  const t = mountTimeouts.get(token);
+  if (t) {
+    clearTimeout(t);
+    mountTimeouts.delete(token);
+  }
+}
+
+function scheduleMountTimeout(token: number): void {
+  clearMountTimeout(token);
+  mountTimeouts.set(
+    token,
+    setTimeout(() => {
+      mountTimeouts.delete(token);
+      const next = new Map(mounts.value);
+      let matched = false;
+      for (const [id, mount] of next) {
+        if (mount.createToken === token && mount.status === 'mounting') {
+          next.set(id, {
+            ...mount,
+            status: 'error',
+            errorMessage: 'Runtime timeout — check backend /ws/session',
+          });
+          matched = true;
+        }
+      }
+      if (matched) mounts.value = next;
+    }, MOUNT_TIMEOUT_MS),
+  );
 }
 
 function releaseRuntimeSubscription(runtimeId: string): void {
@@ -76,6 +122,7 @@ function applyPlotToMount(runtimeId: string, prices: Float64Array, roles?: Uint8
 }
 
 function syncRuntimeCreated(runtimeId: string, createToken: number): void {
+  clearMountTimeout(createToken);
   const next = new Map(mounts.value);
   for (const [id, mount] of next) {
     if (mount.createToken === createToken) {
@@ -85,7 +132,7 @@ function syncRuntimeCreated(runtimeId: string, createToken: number): void {
       }
       const found = chartPaneFindMountByRuntimeId(runtimeId);
       if (!found) {
-        for (const [key, m] of next) {
+        for (const [, m] of next) {
           if (m.createToken === createToken) {
             const chartWidgetId = m.parentChartWidgetId ?? m.scopeId;
             chartPaneUpsertMount(chartWidgetId, {
@@ -108,6 +155,12 @@ function syncRuntimeCreated(runtimeId: string, createToken: number): void {
 
 function ensureListeners(): void {
   if (!USE_SESSION_MUX) return;
+  if (!statusListenerInstalled) {
+    statusListenerInstalled = true;
+    onSessionStatus((status) => {
+      sessionConnectionStatus.value = status;
+    });
+  }
   if (!jsonListenerInstalled) {
     jsonListenerInstalled = true;
     onSessionJson((text) => {
@@ -123,6 +176,7 @@ function ensureListeners(): void {
         } else if (msg.type === 'error') {
           const token = msg.createToken;
           if (token == null) return;
+          clearMountTimeout(token);
           const next = new Map(mounts.value);
           let matched = false;
           for (const [id, mount] of next) {
@@ -148,8 +202,8 @@ export function useScriptRuntime() {
   ensureListeners();
   return {
     mounts: computed(() => mounts.value),
+    sessionConnectionStatus: computed(() => sessionConnectionStatus.value),
 
-    /** Legacy global overlay mount (chart widget scopeId = widgetId). */
     mount(
       templateId: ScriptIndicatorId,
       symbol: string,
@@ -162,7 +216,12 @@ export function useScriptRuntime() {
     ): string {
       const lid = localId ?? templateId;
       const key = mountKey(scopeId, lid);
-      const createToken = ((mounts.value.size + 1) | 0) + (Date.now() & 0xffff);
+      const existing = mounts.value.get(key);
+      if (existing && (existing.status === 'mounting' || existing.status === 'live')) {
+        return key;
+      }
+
+      const createToken = nextCreateToken();
       const next = new Map(mounts.value);
       next.set(key, {
         key,
@@ -179,6 +238,7 @@ export function useScriptRuntime() {
       });
       mounts.value = next;
       if (USE_SESSION_MUX) {
+        scheduleMountTimeout(createToken);
         createScriptRuntime(templateId, {
           symbol: symKeyFromSymbol(symbol),
           tf: timeframe,
@@ -191,6 +251,7 @@ export function useScriptRuntime() {
 
     unmount(key: string): void {
       const mount = mounts.value.get(key);
+      if (mount) clearMountTimeout(mount.createToken);
       if (mount?.runtimeId) {
         releaseRuntimeSubscription(mount.runtimeId);
         destroyScriptRuntime(mount.runtimeId);
@@ -207,7 +268,6 @@ export function useScriptRuntime() {
       }
     },
 
-    /** Chart teardown — keep detached window runtimes (scopeId = window widget id). */
     unmountScopeOverlays(scopeId: string): void {
       for (const [key, mount] of [...mounts.value.entries()]) {
         if (mount.scopeId === scopeId && mount.pane === 'overlay') this.unmount(key);
@@ -233,7 +293,6 @@ export function useScriptRuntime() {
       updateScriptInputs(runtimeId, overrides);
     },
 
-    /** Drop and recreate overlay script mounts for a chart pane. */
     remountAll(
       active: Partial<Record<ScriptIndicatorId, boolean>>,
       symbol: string,

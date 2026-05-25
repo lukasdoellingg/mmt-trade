@@ -10,11 +10,13 @@ const props = defineProps<{
   badge?: string;
   /** Hide the close button (e.g. for the always-present chart). */
   noClose?: boolean;
+  /** Parent handles removal via @close (skip default removeWidget). */
+  handleClose?: boolean;
   /** Hide all drag/resize affordances (locked widget). */
   locked?: boolean;
 }>();
 
-const emit = defineEmits<{ 'gear': []; 'link': [] }>();
+const emit = defineEmits<{ gear: []; link: []; close: [] }>();
 
 const { removeWidget, updateRect, bringToFront } = useWorkspace();
 
@@ -92,7 +94,11 @@ function onPointerUp(ev: PointerEvent) {
   if (drag && ev.pointerId === drag.pointerId) drag = null;
 }
 
-function onClose() { if (!props.noClose) removeWidget(props.widget.id); }
+function onClose() {
+  if (props.noClose) return;
+  emit('close');
+  if (!props.handleClose) removeWidget(props.widget.id);
+}
 </script>
 
 <template>

@@ -17,6 +17,8 @@ export type FeedSubscribeSpec = {
 type FrameHandler = (streamKey: string, buffer: ArrayBuffer) => void;
 type JsonHandler = (text: string) => void;
 export type ScriptPlotHandler = (runtimeId: string, prices: Float64Array, roles?: Uint8Array) => void;
+export type SessionConnectionStatus = 'unknown' | 'live' | 'disconnected' | 'error';
+type SessionStatusHandler = (status: SessionConnectionStatus) => void;
 
 let worker: Worker | null = null;
 let nextFeedPortId = 1;
@@ -25,6 +27,7 @@ const feedPortIds = new Map<MessagePort, number>();
 const mainHandlers = new Map<string, Set<FrameHandler>>();
 const jsonHandlers = new Set<JsonHandler>();
 const plotHandlers = new Set<ScriptPlotHandler>();
+const sessionStatusHandlers = new Set<SessionStatusHandler>();
 const runtimeRefCount = new Map<string, number>();
 const streamRefCount = new Map<string, number>();
 
@@ -61,6 +64,13 @@ function ensureWorker(): Worker {
   const mc = new MessageChannel();
   mc.port1.onmessage = (ev: MessageEvent) => {
     const msg = ev.data;
+    if (msg.type === 'session_status' && typeof msg.status === 'string') {
+      const st = msg.status as SessionConnectionStatus;
+      if (st === 'live' || st === 'disconnected' || st === 'error') {
+        for (const h of sessionStatusHandlers) h(st);
+      }
+      return;
+    }
     if (msg.type === 'session_json' && typeof msg.text === 'string') {
       for (const h of jsonHandlers) h(msg.text);
       return;
@@ -166,6 +176,12 @@ export function onSessionJson(handler: JsonHandler): () => void {
   return () => jsonHandlers.delete(handler);
 }
 
+export function onSessionStatus(handler: SessionStatusHandler): () => void {
+  ensureWorker();
+  sessionStatusHandlers.add(handler);
+  return () => sessionStatusHandlers.delete(handler);
+}
+
 export function onScriptPlotUpdate(handler: ScriptPlotHandler): () => void {
   ensureWorker();
   plotHandlers.add(handler);
@@ -228,6 +244,7 @@ export function shutdownFeedHubClient(): void {
   mainHandlers.clear();
   jsonHandlers.clear();
   plotHandlers.clear();
+  sessionStatusHandlers.clear();
   runtimeRefCount.clear();
   streamRefCount.clear();
 }

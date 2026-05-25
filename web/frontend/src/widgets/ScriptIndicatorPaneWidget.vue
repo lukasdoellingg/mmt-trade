@@ -6,7 +6,7 @@ import { computed, onMounted, onUnmounted, watch } from 'vue';
 import WorkspaceWidget from '../workspace/WorkspaceWidget.vue';
 import type { WidgetState } from '../workspace/types';
 import type { ScriptIndicatorPaneProps } from '../features/chart-runtime/chartRuntimeTypes';
-import { useActivePaneSettings, usePaneSettings } from '../chart/chartPaneSettings';
+import { useActivePaneSettings } from '../chart/chartPaneSettings';
 import { useScriptRuntime } from '../chart/scriptRuntime';
 import { mountScriptWindowRuntime } from '../chart/useChartPaneRuntime';
 import {
@@ -23,18 +23,28 @@ import { serializeChartRuntimeProps } from '../features/chart-runtime/serialize'
 
 const props = defineProps<{ widget: WidgetState }>();
 const activePane = useActivePaneSettings();
-function linkedPane() {
-  return parentChartId.value ? usePaneSettings(parentChartId.value) : activePane;
-}
 const scriptRuntime = useScriptRuntime();
-const { updateProps } = useWorkspace();
+const { store, updateProps } = useWorkspace();
 
 const paneProps = computed(() => props.widget.props as ScriptIndicatorPaneProps);
 const scriptId = computed(() => (paneProps.value.scriptId ?? 'key-levels') as ScriptIndicatorId);
 const localId = computed(() => paneProps.value.localId ?? `${scriptId.value}-pane`);
 const parentChartId = computed(() => paneProps.value.parentChartWidgetId ?? '');
-/** Window owns its runtime mount (not parent chart scope). */
 const scopeId = computed(() => props.widget.id);
+
+function parentPaneProps(): { symbol: string; timeframe: string } {
+  const id = parentChartId.value;
+  if (!id) return { symbol: activePane.symbol, timeframe: activePane.timeframe };
+  const w = store.widgets.find((x) => x.id === id);
+  const p = (w?.props ?? {}) as Record<string, unknown>;
+  return {
+    symbol: String(p.symbol ?? activePane.symbol),
+    timeframe: String(p.timeframe ?? activePane.timeframe),
+  };
+}
+
+const linkedSymbol = computed(() => parentPaneProps().symbol);
+const linkedTimeframe = computed(() => parentPaneProps().timeframe);
 
 const mountKey = computed(() => `${scopeId.value}:${localId.value}`);
 
@@ -47,6 +57,19 @@ const status = computed(() => mount.value?.status ?? 'idle');
 const prices = computed(() => mount.value?.plotPrices ?? null);
 const roles = computed(() => mount.value?.plotRoles ?? null);
 const sessionOff = computed(() => !USE_SESSION_MUX);
+const sessionConn = computed(() => scriptRuntime.sessionConnectionStatus.value);
+
+const emptyMessage = computed(() => {
+  if (sessionOff) return 'Script session disabled in build (set VITE_USE_SESSION_MUX=1)';
+  if (sessionConn.value === 'disconnected' || sessionConn.value === 'error') {
+    return 'Backend /ws/session unreachable — start web/backend';
+  }
+  if (status.value === 'error') {
+    return mount.value?.errorMessage ?? 'Runtime error — check backend /ws/session';
+  }
+  if (status.value === 'mounting') return 'Waiting for runtime plots…';
+  return 'Waiting for runtime plots…';
+});
 
 const levelRows = computed(() => {
   const p = prices.value;
@@ -92,21 +115,24 @@ function syncParentTree(runtimeId?: string, st: 'mounting' | 'live' | 'error' | 
 
 function startRuntime(): void {
   if (!USE_SESSION_MUX) return;
-  if (scriptRuntime.mounts.value.has(mountKey.value)) return;
+  if (scriptRuntime.mounts.value.has(mountKey.value)) {
+    const m = scriptRuntime.mounts.value.get(mountKey.value);
+    if (m && (m.status === 'mounting' || m.status === 'live')) return;
+  }
   if (parentChartId.value) {
     mountScriptWindowRuntime(
       scopeId.value,
       parentChartId.value,
       scriptId.value,
       localId.value,
-      linkedPane().symbol,
-      linkedPane().timeframe,
+      linkedSymbol.value,
+      linkedTimeframe.value,
     );
   } else {
     scriptRuntime.mount(
       scriptId.value,
-      linkedPane().symbol,
-      linkedPane().timeframe,
+      linkedSymbol.value,
+      linkedTimeframe.value,
       scopeId.value,
       localId.value,
       'window',
@@ -133,7 +159,7 @@ watch(mount, (m) => {
   }
 });
 
-watch([() => linkedPane().symbol, () => linkedPane().timeframe], () => {
+watch([linkedSymbol, linkedTimeframe], () => {
   stopRuntime();
   startRuntime();
 });
@@ -154,17 +180,16 @@ onUnmounted(() => {
       <div class="sip-head">
         <span class="sip-dot" :style="{ background: color }"></span>
         <span class="sip-st">{{ status }}</span>
-        <span class="sip-meta">{{ linkedPane().symbol }} · {{ linkedPane().timeframe }}</span>
+        <span class="sip-meta">{{ linkedSymbol }} · {{ linkedTimeframe }}</span>
       </div>
-      <div v-if="sessionOff" class="sip-empty">Session mux disabled (set VITE_USE_SESSION_MUX=1)</div>
+      <div v-if="sessionOff || sessionConn === 'disconnected' || sessionConn === 'error' || status === 'error' || (status === 'mounting' && !levelRows.length)" class="sip-empty">{{ emptyMessage }}</div>
       <div v-else-if="levelRows.length" class="sip-levels">
         <div v-for="(row, i) in levelRows" :key="i" class="sip-row">
           <span class="sip-tag" :style="{ color: row.color }">{{ row.label.split(' · ')[0] }}</span>
           <span class="sip-price" :style="{ color: row.color }">{{ row.label.includes(' · ') ? row.label.split(' · ')[1] : fmtPrice(row.price) }}</span>
         </div>
       </div>
-      <div v-else-if="status === 'error'" class="sip-empty">Runtime error — check backend /ws/session</div>
-      <div v-else class="sip-empty">Waiting for runtime plots…</div>
+      <div v-else class="sip-empty">{{ emptyMessage }}</div>
     </div>
   </WorkspaceWidget>
 </template>

@@ -52,6 +52,7 @@ window.addEventListener('click', closeAllMenus);
 onBeforeUnmount(() => window.removeEventListener('click', closeAllMenus));
 
 const widgetTypes = computed(() => listWidgets());
+const hasChart = computed(() => store.widgets.some((w) => w.type === 'chart'));
 
 function onPickTf(tf: string) { pane.timeframe = tf; }
 function toggleQuoteUsd() { shell.quoteUsd = !shell.quoteUsd; }
@@ -174,13 +175,15 @@ function onAddWidgetClick(e: Event) { e.stopPropagation(); closeAllMenus(); addW
 
 <template>
   <div class="topbar">
+    <span v-if="!hasChart" class="tb-empty-hint">No chart — add via + Widget</span>
     <ChartSymbolBar
+      v-show="hasChart"
       class="topbar-symbol"
       :exchange="pane.exchange"
       :symbol="pane.symbol"
       @change="onSymbolBarChange"
     />
-    <div class="tf-pills">
+    <div v-show="hasChart" class="tf-pills">
       <button
         v-for="t in TIMEFRAMES" :key="t"
         :class="['tf-pill', { active: pane.timeframe === t }]"
@@ -190,22 +193,22 @@ function onAddWidgetClick(e: Event) { e.stopPropagation(); closeAllMenus(); addW
 
     <span class="tb-divider"></span>
 
-    <button class="ic-btn" :class="{ on: pane.obHeatmap }" title="Order Book heatmap" @click="pane.obHeatmap = !pane.obHeatmap">
+    <button v-show="hasChart" class="ic-btn" :class="{ on: pane.obHeatmap }" title="Order Book heatmap" @click="pane.obHeatmap = !pane.obHeatmap">
       <svg width="14" height="14" viewBox="0 0 14 14"><path fill="currentColor" d="M2 2h3v10H2zM5.5 5h3v7h-3zM9 8h3v4H9z"/></svg>
     </button>
-    <button class="ic-btn" :class="{ on: pane.footprint }" title="Footprint" @click="pane.footprint = !pane.footprint">
+    <button v-show="hasChart" class="ic-btn" :class="{ on: pane.footprint }" title="Footprint" @click="pane.footprint = !pane.footprint">
       <svg width="14" height="14" viewBox="0 0 14 14"><path fill="currentColor" d="M2 3h4v2H2zm6 0h4v2H8zM2 6h4v2H2zm6 0h4v2H8zM2 9h4v2H2zm6 0h4v2H8z"/></svg>
     </button>
-    <button class="ic-btn" :class="{ on: pane.vpvr }" title="VPVR" @click="pane.vpvr = !pane.vpvr">
+    <button v-show="hasChart" class="ic-btn" :class="{ on: pane.vpvr }" title="VPVR" @click="pane.vpvr = !pane.vpvr">
       <svg width="14" height="14" viewBox="0 0 14 14"><path fill="currentColor" d="M11 2h2v10h-2zM8 5h2v7H8zM5 7h2v5H5zM2 9h2v3H2z"/></svg>
     </button>
-    <button class="ic-btn" :class="{ on: pane.liquidations }" title="Liquidations" @click="pane.liquidations = !pane.liquidations">
+    <button v-show="hasChart" class="ic-btn" :class="{ on: pane.liquidations }" title="Liquidations" @click="pane.liquidations = !pane.liquidations">
       <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="3.5" cy="6" r="2" fill="currentColor"/><circle cx="10" cy="9" r="2.5" fill="currentColor" opacity=".8"/></svg>
     </button>
 
     <span class="tb-divider"></span>
 
-    <div class="dd-wrap">
+    <div v-show="hasChart" class="dd-wrap">
       <button ref="indicatorsBtn" class="dd-btn" @click="onIndicatorsClick">Indicators <span class="dd-caret">&#9662;</span></button>
     </div>
 
@@ -292,6 +295,7 @@ function onAddWidgetClick(e: Event) { e.stopPropagation(); closeAllMenus(); addW
 .topbar::-webkit-scrollbar{display:none}
 .tb-divider{width:1px;height:16px;background:#1a1a26;margin:0 2px;flex-shrink:0}
 .tb-spacer{flex:1}
+.tb-empty-hint{color:#6a7888;font-size:10px;letter-spacing:.2px;flex-shrink:0}
 .topbar-symbol{flex-shrink:0}
 
 .tf-pills{display:flex;background:#0e0e16;border:1px solid #1a1a26;border-radius:3px;overflow:hidden;flex-shrink:0}

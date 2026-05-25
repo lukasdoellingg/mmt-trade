@@ -71,8 +71,14 @@ onMounted(() => {
   nextTick(applyViewportFit);
 });
 
-watch(() => pane.symbol, (sym) => emit('symbol-change', { exchange: pane.exchange, symbol: sym }));
-watch(() => pane.exchange, (ex) => emit('symbol-change', { exchange: ex, symbol: pane.symbol }));
+watch(() => pane.symbol, (sym) => {
+  if (!store.widgets.some((w) => w.type === 'chart')) return;
+  emit('symbol-change', { exchange: pane.exchange, symbol: sym });
+});
+watch(() => pane.exchange, (ex) => {
+  if (!store.widgets.some((w) => w.type === 'chart')) return;
+  emit('symbol-change', { exchange: ex, symbol: pane.symbol });
+});
 </script>
 
 <template>

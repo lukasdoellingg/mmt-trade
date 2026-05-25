@@ -2,7 +2,6 @@
  * Per-chart-widget settings stored in workspace widget.props.
  * Shell-level UI (tool, quoteUsd, modal) stays in chartSettings.ts.
  */
-import { computed, reactive } from 'vue';
 import { DEFAULT_SYMBOL } from '../core/defaults';
 import { useWorkspace } from '../workspace/useWorkspace';
 import type { ChartSettings } from './chartSettings';
@@ -90,6 +89,18 @@ function pickPaneProps(props: Record<string, unknown>): PaneChartSettings {
   return base;
 }
 
+/** Frozen props for widgets removed from the workspace (prevents proxy flip → watcher loops). */
+const paneSnapshotCache = new Map<string, PaneChartSettings>();
+
+/** Call immediately before removing a chart widget from the store. */
+export function snapshotPaneSettings(widgetId: string, props: Record<string, unknown>): void {
+  paneSnapshotCache.set(widgetId, pickPaneProps(props));
+}
+
+export function releasePaneSettingsSnapshot(widgetId: string): void {
+  paneSnapshotCache.delete(widgetId);
+}
+
 /** Initial props for a new chart widget (includes one-time legacy migration). */
 export function initialChartWidgetProps(): Record<string, unknown> {
   return { ...paneDefaults(), ...loadLegacyGlobal() };
@@ -109,24 +120,31 @@ function paneProxy(
   store: ReturnType<typeof useWorkspace>['store'],
   updateProps: ReturnType<typeof useWorkspace>['updateProps'],
 ): PaneChartSettings {
-  return reactive(
-    new Proxy({} as PaneChartSettings, {
-      get(_, prop: keyof PaneChartSettings) {
-        const id = widgetId();
-        if (!id) return paneDefaults()[prop];
-        const w = store.widgets.find((x) => x.id === id);
-        const p = (w?.props ?? {}) as Record<string, unknown>;
-        const v = p[prop as string];
-        return (v !== undefined ? v : paneDefaults()[prop]) as PaneChartSettings[typeof prop];
-      },
-      set(_, prop: keyof PaneChartSettings, value) {
-        const id = widgetId();
-        if (!id) return true;
-        updateProps(id, { [prop]: value });
-        return true;
-      },
-    }),
-  );
+  // Plain Proxy (not reactive()) — avoids recursive effect loops when store.widgets
+  // updates re-trigger every settings.* read in ChartWidget template/watchers.
+  return new Proxy({} as PaneChartSettings, {
+    get(_, prop: keyof PaneChartSettings) {
+      const id = widgetId();
+      if (!id) return paneDefaults()[prop];
+      const w = store.widgets.find((x) => x.id === id);
+      if (!w) {
+        const snap = paneSnapshotCache.get(id);
+        if (snap) return snap[prop];
+        return paneDefaults()[prop];
+      }
+      const p = (w?.props ?? {}) as Record<string, unknown>;
+      const v = p[prop as string];
+      return (v !== undefined ? v : paneDefaults()[prop]) as PaneChartSettings[typeof prop];
+    },
+    set(_, prop: keyof PaneChartSettings, value) {
+      const id = widgetId();
+      if (!id) return true;
+      const w = store.widgets.find((x) => x.id === id);
+      if (!w) return true;
+      updateProps(id, { [prop]: value });
+      return true;
+    },
+  });
 }
 
 /** Reactive pane settings for one chart widget (reads/writes widget.props). */
