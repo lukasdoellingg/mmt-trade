@@ -14,6 +14,9 @@ export interface HeatmapFrame {
   levels: HeatmapLevel[];
 }
 
+const levelsScratch: HeatmapLevel[] = [];
+let levelsScratchCount = 0;
+
 function readVarint(u8: Uint8Array, start: number): { value: number; next: number } {
   let value = 0;
   let shift = 0;
@@ -32,7 +35,20 @@ function readDouble(u8: Uint8Array, off: number): number {
   return dv.getFloat64(0, true);
 }
 
-function decodeLevel(buf: Uint8Array): HeatmapLevel {
+function writeLevel(index: number, price: number, volume: number, isBid: boolean): HeatmapLevel {
+  let lv = levelsScratch[index];
+  if (!lv) {
+    lv = { price, volume, isBid };
+    levelsScratch[index] = lv;
+  } else {
+    lv.price = price;
+    lv.volume = volume;
+    lv.isBid = isBid;
+  }
+  return lv;
+}
+
+function decodeLevelInto(buf: Uint8Array, index: number): HeatmapLevel {
   let off = 0;
   let price = 0;
   let volume = 0;
@@ -56,14 +72,14 @@ function decodeLevel(buf: Uint8Array): HeatmapLevel {
       break;
     }
   }
-  return { price, volume, isBid };
+  return writeLevel(index, price, volume, isBid);
 }
 
 export function decodeHeatmapFrame(data: ArrayBuffer): HeatmapFrame | null {
   const u8 = new Uint8Array(data);
   let off = 0;
   let ts = 0;
-  const levels: HeatmapLevel[] = [];
+  levelsScratchCount = 0;
   while (off < u8.length) {
     const tag = u8[off++];
     const field = tag >> 3;
@@ -76,11 +92,13 @@ export function decodeHeatmapFrame(data: ArrayBuffer): HeatmapFrame | null {
       const lenV = readVarint(u8, off);
       off = lenV.next;
       const end = off + lenV.value;
-      levels.push(decodeLevel(u8.subarray(off, end)));
+      decodeLevelInto(u8.subarray(off, end), levelsScratchCount);
+      levelsScratchCount += 1;
       off = end;
     } else {
       break;
     }
   }
-  return { ts, levels };
+  levelsScratch.length = levelsScratchCount;
+  return { ts, levels: levelsScratch };
 }

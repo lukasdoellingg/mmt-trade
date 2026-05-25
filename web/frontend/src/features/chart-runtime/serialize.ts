@@ -21,6 +21,8 @@ function parseAttachment(raw: unknown): ChartRuntimeAttachment | null {
     runtimeId: asString(o.runtimeId) || undefined,
     status,
     createToken: typeof o.createToken === 'number' ? o.createToken : undefined,
+    pane: asString(o.pane) === 'window' ? 'window' : 'overlay',
+    windowWidgetId: asString(o.windowWidgetId) || undefined,
   };
 }
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * MMT stream 13 bar stats — buy/sell/delta per candle (read-only).
+ * Bar stats — buy/sell/delta per candle via /ws/session (local aggTrade).
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import WorkspaceWidget from '../workspace/WorkspaceWidget.vue';
@@ -8,7 +8,7 @@ import type { WidgetState } from '../workspace/types';
 import { useChartSettings } from '../chart/chartSettings';
 import { useScriptRuntime } from '../chart/scriptRuntime';
 import { USE_SESSION_MUX } from '../config/featureFlags';
-import { symKeyFromSymbol, WS_RECONNECT_BASE_MS, WS_RECONNECT_MAX_MS } from '../constants';
+import { symKeyFromSymbol } from '../constants';
 
 interface BarRow {
   ts: number;
@@ -24,31 +24,12 @@ const scriptRuntime = useScriptRuntime();
 
 const rows = ref<BarRow[]>([]);
 const wsStatus = ref<'connecting' | 'live' | 'error'>('connecting');
-let socket: WebSocket | null = null;
 let releaseSessionFeed: (() => void) | null = null;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let reconnectDelay = WS_RECONNECT_BASE_MS;
 
 const bucketGroup = computed(() => {
   const bg = (props.widget.props as { bucketGroup?: number })?.bucketGroup;
   return typeof bg === 'number' ? Math.max(5, Math.min(9, bg | 0)) : 6;
 });
-
-function wsBaseUrl(): string {
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${proto}://${window.location.host}`;
-}
-
-function buildWsUrl(): string {
-  const params = new URLSearchParams({
-    symbol: symKeyFromSymbol(settings.symbol),
-    tf: settings.timeframe,
-    bucket_group: String(bucketGroup.value),
-  });
-  const agg = (props.widget.props as { aggregate?: string })?.aggregate;
-  if (agg) params.set('aggregate', agg);
-  return `${wsBaseUrl()}/ws/barstats?${params.toString()}`;
-}
 
 function fmtTime(ts: number): string {
   if (!ts) return '—';
@@ -80,18 +61,18 @@ function onMessage(text: string): void {
 
 function startFeed(): void {
   stopFeed();
-  if (USE_SESSION_MUX && typeof SharedArrayBuffer !== 'undefined') {
-    wsStatus.value = 'connecting';
-    releaseSessionFeed = scriptRuntime.subscribeBarStats(
-      settings.symbol,
-      settings.timeframe,
-      (text) => onMessage(text),
-      bucketGroup.value,
-    );
-    wsStatus.value = 'live';
+  if (!USE_SESSION_MUX) {
+    wsStatus.value = 'error';
     return;
   }
-  openSocket();
+  wsStatus.value = 'connecting';
+  releaseSessionFeed = scriptRuntime.subscribeBarStats(
+    settings.symbol,
+    settings.timeframe,
+    (text) => onMessage(text),
+    bucketGroup.value,
+  );
+  wsStatus.value = 'live';
 }
 
 function stopFeed(): void {
@@ -99,34 +80,6 @@ function stopFeed(): void {
     releaseSessionFeed();
     releaseSessionFeed = null;
   }
-  closeSocket();
-}
-
-function openSocket(): void {
-  closeSocket();
-  wsStatus.value = 'connecting';
-  try { socket = new WebSocket(buildWsUrl()); }
-  catch { wsStatus.value = 'error'; scheduleReconnect(); return; }
-  socket.onopen = () => { reconnectDelay = WS_RECONNECT_BASE_MS; wsStatus.value = 'live'; };
-  socket.onmessage = (ev) => { if (typeof ev.data === 'string') onMessage(ev.data); };
-  socket.onerror = () => { wsStatus.value = 'error'; };
-  socket.onclose = () => { socket = null; scheduleReconnect(); };
-}
-
-function scheduleReconnect(): void {
-  if (reconnectTimer !== null) return;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    reconnectDelay = Math.min(reconnectDelay * 2, WS_RECONNECT_MAX_MS);
-    openSocket();
-  }, reconnectDelay);
-}
-
-function closeSocket(): void {
-  if (!socket) return;
-  socket.onmessage = socket.onopen = socket.onerror = socket.onclose = null;
-  try { socket.close(); } catch { /* ignore */ }
-  socket = null;
 }
 
 watch([() => settings.symbol, () => settings.timeframe, bucketGroup], () => {
@@ -135,10 +88,7 @@ watch([() => settings.symbol, () => settings.timeframe, bucketGroup], () => {
 });
 
 onMounted(() => startFeed());
-onUnmounted(() => {
-  stopFeed();
-  if (reconnectTimer !== null) clearTimeout(reconnectTimer);
-});
+onUnmounted(() => stopFeed());
 </script>
 
 <template>
@@ -160,7 +110,7 @@ onUnmounted(() => {
           <span :class="r.delta >= 0 ? 'buy' : 'sell'">{{ r.delta >= 0 ? '+' : '' }}{{ fmtVol(Math.abs(r.delta)) }}</span>
           <span :class="(r.pct ?? 0) >= 0 ? 'buy' : 'sell'">{{ (r.pct ?? 0).toFixed(1) }}</span>
         </div>
-        <div v-if="!displayRows.length" class="bs-empty">Waiting for bar stats (requires MMT_WS_TOKEN on /ws/barstats)…</div>
+        <div v-if="!displayRows.length" class="bs-empty">Waiting for bar stats from /ws/session…</div>
       </div>
     </div>
   </WorkspaceWidget>

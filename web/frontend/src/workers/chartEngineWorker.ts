@@ -13,7 +13,15 @@
 
 import { ChartRenderer } from '../engine/ChartRenderer';
 import { loadEngine, type EngineBridge } from '../engine/WasmBridge';
-import { loadChartRuntimeModule, pushFrameToRuntime, type ChartRuntimeModule } from '../engine/chartRuntimeBridge';
+import {
+  loadChartRuntimeModule,
+  pushCandlesToRuntime,
+  pushFrameToRuntime,
+  requestRuntimeIndicatorRecompute,
+  type ChartRuntimeModule,
+} from '../engine/chartRuntimeBridge';
+import { chartKlinesUrl, chartStreamUrl } from '../engine/backendFeedUrl';
+import { ObHeatmapController } from '../engine/obHeatmapController';
 
 // ── Constants ──────────────────────────────────────────────────
 const WASM_CAP       = 5000;
@@ -72,7 +80,18 @@ let renderer: ChartRenderer | null = null;
 let engine: EngineBridge | null = null;
 let chartRuntime: ChartRuntimeModule | null = null;
 let useEmscriptenPipeline = false;
+let useChartRuntimeIndicators = false;
+let useEmscriptenObHeatmap = false;
+let obHeatmap: ObHeatmapController | null = null;
 let feedPort: MessagePort | null = null;
+
+const MAX_SCRIPT_PLOTS = 64;
+const scriptPlotsByRuntime = new Map<string, Float64Array>();
+const scriptPlotCounts = new Map<string, number>();
+let scriptPlotDirty = false;
+let lastScriptPlotPostMs = 0;
+const SCRIPT_PLOT_POST_MS = 100;
+let chartRuntimeNeedsStep = false;
 let canvasW = 0, canvasH = 0, devicePR = 1;
 let animId = 0;
 
@@ -154,6 +173,11 @@ function syncToWasm() {
     const n = candleCount * CANDLE_FIELD_STRIDE;
     if (n > 0) engine.candleView.set(candleBuf.subarray(0, n));
     engine.exports.set_candle_count(candleCount);
+    if (useChartRuntimeIndicators && chartRuntime && candleCount > 0) {
+      pushCandlesToRuntime(chartRuntime, candleBuf, candleCount);
+      requestRuntimeIndicatorRecompute(chartRuntime, 0, candleCount);
+      chartRuntimeNeedsStep = true;
+    }
   }
   if (liqSyncDirty) {
     liqSyncDirty = false;
@@ -328,8 +352,9 @@ let lastHeatmapMetaMs = 0;
 function loop() {
   if (!running) return;
   animId = requestAnimationFrame(loop);
-  if (chartRuntime) {
+  if (chartRuntime && chartRuntimeNeedsStep) {
     chartRuntime._chart_runtime_step();
+    chartRuntimeNeedsStep = false;
     const now = performance.now();
     if (now - lastHeatmapMetaMs >= 1000) {
       lastHeatmapMetaMs = now;
@@ -337,6 +362,8 @@ function loop() {
       if (cols > 0) post({ type: 'heatmapMeta', columns: cols });
     }
   }
+  postScriptPlotsIfDue();
+  obHeatmap?.tick();
   render();
 }
 
@@ -362,7 +389,7 @@ function stopSnap()  { if (snapTimer) { clearInterval(snapTimer); snapTimer = nu
 async function loadInitialCandles() {
   try {
     const limit = 1500;
-    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol.toUpperCase()}&interval=${binanceInterval()}&limit=${limit}`;
+    const url = chartKlinesUrl({ symbol, interval: binanceInterval(), limit });
     const resp = await fetch(url);
     if (!resp.ok) { post({ type: 'error', msg: `Klines HTTP ${resp.status}` }); return; }
     const klines: number[][] = await resp.json();
@@ -451,8 +478,7 @@ function closeSocket() {
 function openSocket() {
   if (!running) return;
   closeSocket();
-  const s = symbol.toLowerCase(), iv = binanceInterval();
-  const ws = new WebSocket(`wss://fstream.binance.com/stream?streams=${s}@kline_${iv}/${s}@forceOrder`);
+  const ws = new WebSocket(chartStreamUrl(symbol, timeframe));
   socket = ws;
   ws.onopen = () => { if (socket !== ws) return; post({ type: 'wsConnected' }); };
   ws.onmessage = (ev: MessageEvent) => {
@@ -474,7 +500,12 @@ async function fetchOlder(endTime: number) {
   fetchingOlder = true; lastOlderFetchTime = now;
   try {
     const limit = historyFetchLimit();
-    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol.toUpperCase()}&interval=${binanceInterval()}&endTime=${endTime}&limit=${limit}`;
+    const url = chartKlinesUrl({
+      symbol,
+      interval: binanceInterval(),
+      limit,
+      endTime,
+    });
     const resp = await fetch(url);
     if (!resp.ok) return;
     const klines: number[][] = await resp.json();
@@ -524,7 +555,12 @@ async function fetchNewer(startTime: number) {
   fetchingNewer = true; lastNewerFetchTime = now;
   try {
     const limit = historyFetchLimit();
-    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol.toUpperCase()}&interval=${binanceInterval()}&startTime=${startTime}&limit=${limit}`;
+    const url = chartKlinesUrl({
+      symbol,
+      interval: binanceInterval(),
+      limit,
+      startTime,
+    });
     const resp = await fetch(url);
     if (!resp.ok) return;
     const klines: number[][] = await resp.json();
@@ -572,6 +608,7 @@ async function initRenderer(canvas: OffscreenCanvas) {
   const gl = canvas.getContext('webgl2', {
     alpha: true, antialias: false, depth: false, stencil: false,
     premultipliedAlpha: false, preserveDrawingBuffer: false, powerPreference: 'high-performance',
+    desynchronized: true,
   }) as WebGL2RenderingContext | null;
 
   if (!gl) { post({ type: 'fatal', msg: 'WebGL2 is not supported by your browser.' }); return false; }
@@ -594,7 +631,7 @@ async function initRenderer(canvas: OffscreenCanvas) {
     return false;
   }
 
-  if (useEmscriptenPipeline) {
+  if (useEmscriptenPipeline || useEmscriptenObHeatmap) {
     try {
       chartRuntime = await loadChartRuntimeModule();
       post({ type: 'chartRuntimeReady' });
@@ -605,12 +642,53 @@ async function initRenderer(canvas: OffscreenCanvas) {
   return true;
 }
 
+
+function postScriptPlotsIfDue(): void {
+  if (!scriptPlotDirty) return;
+  const now = performance.now();
+  if (now - lastScriptPlotPostMs < SCRIPT_PLOT_POST_MS) return;
+  lastScriptPlotPostMs = now;
+  scriptPlotDirty = false;
+  const batches: { runtimeId: string; prices: Float64Array }[] = [];
+  for (const [runtimeId, buf] of scriptPlotsByRuntime) {
+    const count = scriptPlotCounts.get(runtimeId) ?? 0;
+    if (count <= 0) continue;
+    batches.push({ runtimeId, prices: buf.subarray(0, count) });
+  }
+  if (!batches.length) return;
+  post({ type: 'scriptPlots', batches });
+}
+
 function bindFeedPort(port: MessagePort): void {
   feedPort = port;
   port.onmessage = (ev: MessageEvent) => {
     const msg = ev.data;
-    if (msg.type === 'session_frame' && msg.buffer instanceof ArrayBuffer && chartRuntime) {
-      pushFrameToRuntime(chartRuntime, msg.buffer);
+    if (msg.type === 'script_plot_update' && typeof msg.runtimeId === 'string' && msg.prices) {
+      const src = msg.prices instanceof Float64Array
+        ? msg.prices
+        : new Float64Array(msg.prices as ArrayLike<number>);
+      let buf = scriptPlotsByRuntime.get(msg.runtimeId);
+      if (!buf) {
+        buf = new Float64Array(MAX_SCRIPT_PLOTS);
+        scriptPlotsByRuntime.set(msg.runtimeId, buf);
+      }
+      const count = Math.min(src.length, MAX_SCRIPT_PLOTS);
+      buf.set(src.subarray(0, count));
+      scriptPlotCounts.set(msg.runtimeId, count);
+      scriptPlotDirty = true;
+      return;
+    }
+    if (msg.type === 'session_frame' && msg.buffer instanceof ArrayBuffer) {
+      const streamKey = typeof msg.streamKey === 'string' ? msg.streamKey : '';
+      if (streamKey.startsWith('runtime:')) return;
+      if (obHeatmap) {
+        obHeatmap.onHeatmapBuffer(msg.buffer);
+      }
+      if (chartRuntime) {
+        pushFrameToRuntime(chartRuntime, msg.buffer);
+        chartRuntimeNeedsStep = true;
+      }
+      return;
     }
   };
 }
@@ -624,6 +702,8 @@ self.onmessage = async (ev: MessageEvent) => {
       devicePR = msg.dpr || 1; canvasW = msg.w || 800; canvasH = msg.h || 600;
       timeframe = msg.tf || '1h'; timeframeMs = TF_MS[timeframe] || 36e5;
       useEmscriptenPipeline = !!msg.useEmscriptenPipeline;
+      useChartRuntimeIndicators = !!msg.useChartRuntimeIndicators;
+      useEmscriptenObHeatmap = !!msg.useEmscriptenObHeatmap;
       running = true; fpsTimestamp = performance.now();
       if (msg.canvas) {
         const cv = msg.canvas as OffscreenCanvas;
@@ -635,8 +715,69 @@ self.onmessage = async (ev: MessageEvent) => {
         }
       }
       loadInitialCandles(); openSocket(); startSnap(); loop();
+      if (msg.obCanvas && useEmscriptenObHeatmap) {
+        obHeatmap = new ObHeatmapController();
+        const err = await obHeatmap.initCanvas(
+          msg.obCanvas as OffscreenCanvas,
+          canvasW,
+          canvasH,
+          devicePR,
+        );
+        if (err) post({ type: 'error', msg: `OB heatmap: ${err}` });
+        else post({ type: 'obHeatmapReady' });
+      }
       break;
     }
+    case 'initObCanvas': {
+      if (!msg.canvas || !useEmscriptenObHeatmap) break;
+      obHeatmap = new ObHeatmapController();
+      const err = await obHeatmap.initCanvas(
+        msg.canvas as OffscreenCanvas,
+        canvasW,
+        canvasH,
+        devicePR,
+      );
+      if (err) post({ type: 'error', msg: `OB heatmap: ${err}` });
+      else post({ type: 'obHeatmapReady' });
+      break;
+    }
+    case 'obFrame': {
+      if (obHeatmap && msg.buffer instanceof ArrayBuffer) {
+        obHeatmap.onHeatmapBuffer(msg.buffer);
+        if (chartRuntime) {
+          pushFrameToRuntime(chartRuntime, msg.buffer);
+          chartRuntimeNeedsStep = true;
+        }
+      }
+      break;
+    }
+    case 'setObPriceRange':
+      obHeatmap?.setPriceRange(msg.minPrice as number, msg.maxPrice as number);
+      break;
+    case 'setObTimeAxis':
+      obHeatmap?.setTimeAxis(
+        msg.visStart | 0,
+        msg.visEnd | 0,
+        msg.candleTsBuf instanceof Float64Array ? msg.candleTsBuf : null,
+        msg.candleCount | 0,
+        msg.tf as string | undefined,
+      );
+      break;
+    case 'setObIntensity':
+      obHeatmap?.setIntensity(
+        typeof msg.lowSize === 'number' ? msg.lowSize : 0,
+        typeof msg.peakSize === 'number' ? msg.peakSize : 0.85,
+      );
+      break;
+    case 'setObBinMode':
+      obHeatmap?.setBinMode(msg.mode === 'sd' ? 'sd' : 'hd');
+      break;
+    case 'pauseObHeatmap':
+      obHeatmap?.pause();
+      break;
+    case 'resumeObHeatmap':
+      obHeatmap?.resume();
+      break;
     case 'initFeedPort':
       if (msg.port) bindFeedPort(msg.port as MessagePort);
       break;
@@ -650,6 +791,7 @@ self.onmessage = async (ev: MessageEvent) => {
       const sym = (msg.symbol as string || 'btcusdt').toLowerCase();
       if (sym === symbol) break;
       symbol = sym;
+      obHeatmap?.resetSnapshots();
       candleCount = 0; liqCount = 0; lastPrice = 0; yAxisOffset = 0; yAxisScale = 1;
       visStart = 0; visEnd = 500;
       fetchingOlder = fetchingNewer = false;
@@ -667,6 +809,7 @@ self.onmessage = async (ev: MessageEvent) => {
       const tf = msg.tf as string;
       if (tf === timeframe) break;
       timeframe = tf; timeframeMs = TF_MS[tf] || 6e4;
+      obHeatmap?.setTimeframe(tf);
       candleCount = 0; liqCount = 0; lastPrice = 0; yAxisOffset = 0; yAxisScale = 1;
       fetchingOlder = fetchingNewer = false;
       noMoreOlder = noMoreNewer = false;
@@ -708,10 +851,13 @@ self.onmessage = async (ev: MessageEvent) => {
       canvasW = msg.w || canvasW; canvasH = msg.h || canvasH; devicePR = msg.dpr || devicePR;
       if (offscreen) { offscreen.width = canvasW; offscreen.height = canvasH; }
       if (renderer) renderer.resize(canvasW, canvasH);
+      obHeatmap?.resize(canvasW, canvasH, devicePR);
       fullDirty = true;
       break;
     case 'stop':
       running = false; stopSnap();
+      obHeatmap?.destroy();
+      obHeatmap = null;
       if (animId) { cancelAnimationFrame(animId); animId = 0; }
       closeSocket();
       break;

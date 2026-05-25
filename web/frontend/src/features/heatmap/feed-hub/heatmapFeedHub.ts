@@ -1,11 +1,6 @@
 /**
- * Shared heatmap feed — legacy `/ws/heatmap` or session MUX via FeedHubWorker.
+ * Shared heatmap feed — `/ws/heatmap` protobuf (independent of /ws/session MUX).
  */
-import {
-  subscribeFeedStream,
-  type FeedSubscribeSpec,
-} from '../../../engine/feedHubClient';
-import { USE_SESSION_MUX } from '../../../config/featureFlags';
 import { DEFAULT_SPOT_AGGREGATE_CSV } from '@shared/exchangeIds';
 
 export type HeatmapFrameHandler = (buffer: ArrayBuffer) => void;
@@ -87,17 +82,8 @@ export function acquireHeatmapFeed(
   aggregate: string,
   onFrame: HeatmapFrameHandler,
 ): () => void {
-  if (USE_SESSION_MUX) {
-    const spec: FeedSubscribeSpec = {
-      symbol,
-      timeframe,
-      stream: 16,
-      aggregate: aggregate || DEFAULT_SPOT_AGGREGATE_CSV,
-    };
-    return subscribeFeedStream(spec, (_key, buffer) => onFrame(buffer));
-  }
-
-  const key = hubKey(symbol, timeframe, aggregate);
+  const agg = aggregate || DEFAULT_SPOT_AGGREGATE_CSV;
+  const key = hubKey(symbol, timeframe, agg);
   let slot = slots.get(key);
   if (!slot) {
     slot = {
@@ -112,10 +98,10 @@ export function acquireHeatmapFeed(
   slot.handlers.add(onFrame);
   slot.refcount += 1;
   if (slot.refcount === 1) {
-    openSocket(key, symbol, timeframe, aggregate);
+    openSocket(key, symbol, timeframe, agg);
   }
   return () => {
-    releaseHeatmapFeed(symbol, timeframe, aggregate, onFrame);
+    releaseHeatmapFeed(symbol, timeframe, agg, onFrame);
   };
 }
 

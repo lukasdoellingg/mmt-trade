@@ -2,7 +2,8 @@
 /**
  * mmt.gg-style workspace shell (heatmap squad).
  */
-import { onMounted, ref, watch } from 'vue';
+import { nextTick, onMounted, ref, watch } from 'vue';
+import { chartPaneRegister } from '../../app/chartObjectTree';
 import {
   DEFAULT_SPOT_AGGREGATE_CSV,
   DEFAULT_PERP_AGGREGATE_CSV,
@@ -19,7 +20,7 @@ const props = defineProps<{ symbol?: string; exchange?: string; timeframe?: stri
 const emit = defineEmits<{ 'symbol-change': [payload: { exchange: string; symbol: string }] }>();
 
 const settings = useChartSettings();
-const { ensureDefaults, fitToViewport, resetWorkspace } = useWorkspace();
+const { store, ensureDefaults, fitToViewport, resetWorkspace } = useWorkspace();
 
 if (props.symbol) settings.symbol = props.symbol;
 if (props.exchange) settings.exchange = props.exchange;
@@ -43,10 +44,24 @@ function bootDefaults(): void {
     { type: 'orderflow-ladder', rect: { x: chartW, y: halfH, w: ladW, h: hCells - halfH },
       props: { aggregate: DEFAULT_PERP_AGGREGATE_CSV } },
   ]);
+  for (const w of store.widgets) {
+    if (w.type === 'chart') {
+      chartPaneRegister(w.id, settings.symbol, settings.exchange, settings.timeframe);
+    }
+  }
 }
 
-onMounted(() => { bootDefaults(); });
-void fitToViewport;
+function applyViewportFit(): void {
+  const el = canvasEl.value;
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  fitToViewport(r.width, r.height);
+}
+
+onMounted(() => {
+  bootDefaults();
+  nextTick(applyViewportFit);
+});
 
 watch(() => settings.symbol, (sym) => emit('symbol-change', { exchange: settings.exchange, symbol: sym }));
 watch(() => settings.exchange, (ex) => emit('symbol-change', { exchange: ex, symbol: settings.symbol }));

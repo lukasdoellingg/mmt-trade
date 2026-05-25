@@ -11,14 +11,13 @@ import {
   closeAggregatedUpstream,
 } from './lib/heatmapAggregate.js';
 import { bookToLevels, encodeHeatmapFrame, broadcastToClients } from './lib/heatmapBook.js';
-import { startMmtHeatmapUpstream, closeMmtUpstream } from './lib/mmtUpstream.js';
 import {
   cancelUpstreamIdleClose,
   scheduleUpstreamIdleClose,
   safeCloseWebSocket,
 } from './lib/wsTeardown.js';
 import { timeframeToMs, candleOpenMs } from './lib/candleTime.js';
-import { timeframeToSec } from './lib/mmtProtocol.js';
+import { timeframeToSec } from './lib/streamProtocol.js';
 import {
   parseAllowedCorsOrigins,
   corsOriginValidator,
@@ -32,9 +31,19 @@ import {
   createBackoffController,
   MAX_WEBSOCKET_PAYLOAD_BYTES,
 } from './lib/security.js';
-import { createBarStatsWebSocket, closeAllBarStatsUpstreams } from './lib/wsBarStats.js';
 import { createSessionWebSocket } from './lib/wsSession.js';
-import { setMmtSessionHeatmapFrameType, shutdownMmtSession } from './lib/mmtSession.js';
+import { createChartWebSocket } from './lib/wsChart.js';
+import { createAggTradeWebSocket } from './lib/wsAggTrade.js';
+import {
+  fetchBinanceKlines,
+  chartIntervalToBinance,
+  shutdownAllChartUpstreams,
+  shutdownAllAggTradeUpstreams,
+  KLINES_MAX_LIMIT,
+} from './lib/chartBinanceFeed.js';
+import { shutdownInfoStreamMultiplexer } from './lib/infoStream/multiplexer.js';
+import { shutdownAllBarStats } from './lib/indicators/barStatsLocal.js';
+import { shutdownObBookPool } from './lib/indicators/obBookPool.js';
 import { createDetachedWebSocketServer, mountWebSocketUpgradeRouter } from './lib/wsUpgradeRouter.js';
 import { registerHealthRoutes } from './src/platform/health.js';
 import { logError, logInfo, installProcessErrorHandlers } from './src/platform/logger.js';
@@ -102,8 +111,6 @@ message HeatmapFrame {
 
 const heatmapRoot = protobuf.parse(HEATMAP_PROTO).root;
 const HeatmapFrame = heatmapRoot.lookupType('HeatmapFrame');
-setMmtSessionHeatmapFrameType(HeatmapFrame);
-
 // --------------- Utilities ---------------
 
 const throttleQueues = new Map();
@@ -389,13 +396,10 @@ registerHealthRoutes(app, {
     ok: true,
     feeds: {
       heatmap: 'up',
-      barstats: process.env.MMT_WS_TOKEN ? 'configured' : 'requires_MMT_WS_TOKEN',
-      mmt: process.env.MMT_WS_TOKEN ? 'configured' : 'binance_fallback',
-      heatmapUpstream:
-        (process.env.HEATMAP_USE_MMT === '1' || process.env.HEATMAP_USE_MMT === 'true') &&
-        process.env.MMT_WS_TOKEN
-          ? 'mmt'
-          : 'local_binance_bybit',
+      barstats: 'local_session',
+      session: 'local',
+      chart: 'local_binance_proxy',
+      heatmapUpstream: 'local_binance_bybit',
     },
     ccxt: 'ok',
   }),
@@ -419,6 +423,28 @@ app.post('/api/client-errors', express.json({ limit: '8kb' }), (req, res) => {
   res.status(204).end();
 });
 app.get('/api/exchanges', (_, res) => res.json({ exchanges: EXCHANGES }));
+
+app.get('/api/chart/klines', async (req, res) => {
+  const sym = validateHeatmapSymbol(req.query.symbol);
+  if (!sym) return res.status(400).json({ error: 'Invalid symbol' });
+  const tf = validateTimeframe(req.query.tf || req.query.timeframe || '1h') ?? '1h';
+  const interval = chartIntervalToBinance(tf);
+  const limit = clampInteger(req.query.limit, 500, 1, KLINES_MAX_LIMIT);
+  const startTime = req.query.startTime != null ? clampInteger(req.query.startTime, 0, 0, Number.MAX_SAFE_INTEGER) : undefined;
+  const endTime = req.query.endTime != null ? clampInteger(req.query.endTime, 0, 0, Number.MAX_SAFE_INTEGER) : undefined;
+  try {
+    await throttle('binance');
+    const klines = await fetchBinanceKlines(sym, interval, {
+      limit,
+      startTime: startTime || undefined,
+      endTime: endTime || undefined,
+    });
+    safeSend(res, klines);
+  } catch (e) {
+    const status = e?.status === 429 ? 429 : 502;
+    res.status(status).json({ error: 'Klines fetch failed' });
+  }
+});
 
 app.get('/api/symbols', async (req, res) => {
   const id = validateExchangeId(req.query.exchange);
@@ -1152,7 +1178,7 @@ function startBinanceHeatmap(symbolKey, timeframeMs = 3600e3) {
         return;
       }
       const delayMs = upstream.reconnectBackoff.nextDelayMs();
-      console.log(`[Heatmap] ${symbolKey} reconnect in ${Math.round(delayMs)}ms (attempt ${upstream.reconnectBackoff.currentAttempt()})`);
+      logInfo('heatmap_reconnect', { symbol: symbolKey, delayMs: Math.round(delayMs), attempt: upstream.reconnectBackoff.currentAttempt() });
       setTimeout(() => {
         if (upstream.destroyed || !upstream.clients.size) return;
         upstream.ready = false;
@@ -1175,12 +1201,7 @@ function closeBinanceUpstream(upstream) {
   upstream.ws = null;
 }
 
-function releaseHeatmapUpstream(upstreamKey, upstream, { mmtMode, useAgg }) {
-  if (mmtMode) {
-    closeMmtUpstream(upstream);
-    heatmapUpstreams.delete(upstreamKey);
-    return;
-  }
+function releaseHeatmapUpstream(upstreamKey, upstream, { useAgg }) {
   if (useAgg) {
     closeAggregatedUpstream(upstream);
     heatmapUpstreams.delete(upstreamKey);
@@ -1201,18 +1222,21 @@ const server = app.listen(PORT, () => {
 const webSocketGate = createWebSocketSecurityGate(allowedCorsOrigins);
 
 const wss = createDetachedWebSocketServer({ maxPayload: MAX_WEBSOCKET_PAYLOAD_BYTES });
-const barStatsWss = createBarStatsWebSocket(webSocketGate, validateHeatmapSymbol, MAX_HEATMAP_SYMBOLS);
 const sessionWss = createSessionWebSocket(webSocketGate);
+const chartWss = createChartWebSocket(webSocketGate, validateHeatmapSymbol);
+const aggTradeWss = createAggTradeWebSocket(webSocketGate, validateHeatmapSymbol);
 
 mountWebSocketUpgradeRouter(server, webSocketGate, [
   { path: '/ws/heatmap', wss },
-  { path: '/ws/barstats', wss: barStatsWss },
   { path: '/ws/session', wss: sessionWss },
+  { path: '/ws/chart', wss: chartWss },
+  { path: '/ws/aggtrade', wss: aggTradeWss },
 ]);
 
 installHeartbeat(wss);
-installHeartbeat(barStatsWss);
 installHeartbeat(sessionWss);
+installHeartbeat(chartWss);
+installHeartbeat(aggTradeWss);
 
 wss.on('connection', (socket, req) => {
   const clientIp = webSocketGate.trackOpen(req);
@@ -1229,35 +1253,12 @@ wss.on('connection', (socket, req) => {
   const timeframeMs = timeframeToMs(tf);
   const timeframeSec = timeframeToSec(tf);
   const exchanges = parseAggregateExchanges(url.searchParams.get('aggregate'));
-  const heatmapUseMmt =
-    process.env.HEATMAP_USE_MMT === '1' || process.env.HEATMAP_USE_MMT === 'true';
-  const useMmt = heatmapUseMmt && !!process.env.MMT_WS_TOKEN;
-  const useAgg = !useMmt && (exchanges.length > 1 || (exchanges.length === 1 && exchanges[0] !== 'binance'));
+  const useAgg = exchanges.length > 1 || (exchanges.length === 1 && exchanges[0] !== 'binance');
 
   let upstreamKey = sym;
   let upstream;
-  let mmtMode = false;
 
-  if (useMmt) {
-    upstreamKey = `MMT:${sym}:${exchanges.join(',')}`;
-    mmtMode = true;
-    if (heatmapUpstreams.has(upstreamKey)) {
-      upstream = heatmapUpstreams.get(upstreamKey);
-    } else {
-      if (heatmapUpstreams.size >= MAX_HEATMAP_SYMBOLS) {
-        webSocketGate.trackClose(clientIp);
-        socket.close(4000, 'Upstream limit reached');
-        return;
-      }
-      upstream = startMmtHeatmapUpstream(sym, exchanges, HeatmapFrame, timeframeSec);
-      if (!upstream) {
-        webSocketGate.trackClose(clientIp);
-        socket.close(4001, 'MMT upstream failed');
-        return;
-      }
-      heatmapUpstreams.set(upstreamKey, upstream);
-    }
-  } else if (useAgg) {
+  if (useAgg) {
     upstreamKey = aggregateUpstreamKey(sym, exchanges);
     if (heatmapUpstreams.has(upstreamKey)) {
       upstream = heatmapUpstreams.get(upstreamKey);
@@ -1298,7 +1299,7 @@ wss.on('connection', (socket, req) => {
     upstream.clients.delete(socket);
     if (upstream.clients.size > 0) return;
     scheduleUpstreamIdleClose(upstream, () => {
-      releaseHeatmapUpstream(upstreamKey, upstream, { mmtMode, useAgg });
+      releaseHeatmapUpstream(upstreamKey, upstream, { useAgg });
     });
   });
 });
@@ -1313,11 +1314,15 @@ function shutdown(signal) {
     for (const client of upstream.clients) { try { client.close(1001, 'server shutdown'); } catch { /* ignore */ } }
   }
   heatmapUpstreams.clear();
-  closeAllBarStatsUpstreams();
-  shutdownMmtSession();
+  shutdownAllBarStats();
+  shutdownAllChartUpstreams();
+  shutdownAllAggTradeUpstreams();
+  shutdownObBookPool();
+  shutdownInfoStreamMultiplexer();
   wss.close();
-  barStatsWss.close();
   sessionWss.close();
+  chartWss.close();
+  aggTradeWss.close();
   server.close(() => {
     console.log('HTTP server closed');
     process.exit(0);

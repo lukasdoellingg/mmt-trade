@@ -16,6 +16,7 @@ const lazyChart = defineAsyncComponent(() => import('../widgets/ChartWidget.vue'
 const lazyOrderflow = defineAsyncComponent(() => import('../widgets/OrderFlowLadderWidget.vue'));
 
 const lazyBarStats = defineAsyncComponent(() => import('../widgets/BarStatsWidget.vue'));
+const lazyScriptPane = defineAsyncComponent(() => import('../widgets/ScriptIndicatorPaneWidget.vue'));
 
 function renderBody(w: WidgetState) {
   const reg = getWidget(w.type);
@@ -23,6 +24,7 @@ function renderBody(w: WidgetState) {
   const Comp =
     w.type === 'chart' ? lazyChart
     : w.type === 'bar-stats' ? lazyBarStats
+    : w.type === 'script-indicator-pane' ? lazyScriptPane
     : lazyOrderflow;
   return h(Comp, { widget: w });
 }

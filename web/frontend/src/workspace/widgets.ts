@@ -22,6 +22,16 @@ registerWidget('bar-stats', {
   defaultProps: () => ({ bucketGroup: 6 }),
 });
 
+registerWidget('script-indicator-pane', {
+  componentName: 'ScriptIndicatorPaneWidget',
+  label: 'Script Indicator',
+  defaultSize: { w: 34, h: 30 },
+  defaultProps: () => ({
+    scriptId: 'key-levels',
+    localId: 'key-levels-pane',
+  }),
+});
+
 registerWidget('orderflow-ladder', {
   componentName: 'OrderFlowLadderWidget',
   label: 'Order Flow Ladder',

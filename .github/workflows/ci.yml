@@ -19,6 +19,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run audit:prod
       - run: node --test tests/regression/ws-safe.test.mjs
+      - run: npm run test:regression
 
   engine-smoke:
     runs-on: ubuntu-latest

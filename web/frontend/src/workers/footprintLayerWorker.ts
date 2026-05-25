@@ -1,7 +1,8 @@
 /**
- * MMT-style Footprint — per-candle buy/sell bins (Binance aggTrade).
+ * MMT-style Footprint — per-candle buy/sell bins (backend aggTrade relay).
  */
-export {}; // make this file a module so its top-level consts don't clash with other workers
+import { aggTradeStreamUrl } from '../engine/backendFeedUrl';
+
 const MARGIN_RIGHT = 80;
 const MARGIN_BOTTOM = 32;
 const CANDLE_FIELD_STRIDE = 7;
@@ -161,8 +162,7 @@ function draw() {
 
 function openWs() {
   closeWs();
-  const s = symbol.toLowerCase();
-  socket = new WebSocket(`wss://fstream.binance.com/ws/${s}@aggTrade`);
+  socket = new WebSocket(aggTradeStreamUrl(symbol));
   socket.onmessage = (ev) => {
     try {
       const d = JSON.parse(ev.data as string);

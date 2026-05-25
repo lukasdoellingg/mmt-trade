@@ -38,13 +38,15 @@ const outputLevels = [];
  */
 export function pruneBookSide(map, isBid) {
   if (map.size <= HEATMAP_MAX_BOOK_SIZE) return;
-  const sortedDescending = isBid
-    ? [...map].sort((a, b) => +b[0] - +a[0])
-    : [...map].sort((a, b) => +a[0] - +b[0]);
+  const priceScratch = isBid ? bidPriceScratch : askPriceScratch;
+  const volumeScratch = isBid ? bidVolumeScratch : askVolumeScratch;
+  const len = loadSideIntoScratch(map, priceScratch, volumeScratch);
+  sortIndices(priceScratch, len, sortIndexScratch, isBid);
   map.clear();
-  for (let i = 0; i < HEATMAP_MAX_BOOK_SIZE; i++) {
-    const [price, volume] = sortedDescending[i];
-    map.set(String(price), volume);
+  const keep = Math.min(len, HEATMAP_MAX_BOOK_SIZE);
+  for (let i = 0; i < keep; i++) {
+    const idx = sortIndexScratch[i];
+    map.set(String(priceScratch[idx]), volumeScratch[idx]);
   }
 }
 

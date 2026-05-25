@@ -190,7 +190,7 @@ LINK_FLAGS=(
   -sPTHREAD_POOL_SIZE=4
   -sPROXY_TO_PTHREAD=0
   -sEXIT_RUNTIME=0
-  -sEXPORTED_FUNCTIONS=_wasm_init,_malloc,_free,_step,_app_set_canvas_dimensions,_app_get_frame_count,_app_get_heatmap_column_count,_mmt_set_session_token,_mmt_disconnect,_app_feed_connect_backend,_app_feed_backend_ws_opened,_app_feed_push_heatmap_frame,_mmt_script_create_runtime,_app_pointer_down,_app_pointer_up,_app_pointer_move,_app_wheel_zoom,_decode_worker_main,_indicator_worker_main,_heatmap_texture_worker_main,_chart_runtime_init,_chart_runtime_push_frame,_chart_runtime_step,_chart_runtime_get_column_count,_chart_runtime_shutdown
+  -sEXPORTED_FUNCTIONS=_wasm_init,_malloc,_free,_step,_app_set_canvas_dimensions,_app_get_frame_count,_app_get_heatmap_column_count,_mmt_set_session_token,_mmt_disconnect,_app_feed_connect_backend,_app_feed_backend_ws_opened,_app_feed_push_heatmap_frame,_app_script_apply_runtime_json,_mmt_script_create_runtime,_app_pointer_down,_app_pointer_up,_app_pointer_move,_app_wheel_zoom,_decode_worker_main,_indicator_worker_main,_heatmap_texture_worker_main,_chart_runtime_init,_chart_runtime_push_frame,_chart_runtime_push_candles,_chart_runtime_request_indicator,_chart_runtime_step,_chart_runtime_get_column_count,_chart_runtime_shutdown
   -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8,HEAPF32,HEAPF64,wasmMemory
   -sENVIRONMENT=web
   -sERROR_ON_UNDEFINED_SYMBOLS=0
@@ -211,7 +211,7 @@ if (( CHART_ONLY_MODE == 1 )); then
     -sPTHREAD_POOL_SIZE=2
     -sPROXY_TO_PTHREAD=0
     -sEXIT_RUNTIME=0
-    -sEXPORTED_FUNCTIONS=_malloc,_free,_decode_worker_main,_indicator_worker_main,_heatmap_texture_worker_main,_chart_runtime_init,_chart_runtime_push_frame,_chart_runtime_step,_chart_runtime_get_column_count,_chart_runtime_shutdown
+    -sEXPORTED_FUNCTIONS=_malloc,_free,_decode_worker_main,_indicator_worker_main,_heatmap_texture_worker_main,_chart_runtime_init,_chart_runtime_push_frame,_chart_runtime_push_candles,_chart_runtime_request_indicator,_chart_runtime_step,_chart_runtime_get_column_count,_chart_runtime_shutdown
     -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8,HEAPF32,HEAPF64,wasmMemory
     -sENVIRONMENT=web,worker
     -sERROR_ON_UNDEFINED_SYMBOLS=0

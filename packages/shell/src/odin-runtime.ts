@@ -13,6 +13,7 @@ export interface TerminalRuntimeOptions {
 
 export interface TerminalRuntimeHandle {
   connectBackendFeed(wsUrl: string): void;
+  applyScriptRuntimeJson(runtimeId: string, jsonText: string): void;
   getHeatmapColumnCount(): number;
   setMmtToken(jwt: string): void;
   disconnectMmt(): void;
@@ -35,6 +36,12 @@ interface TerminalModule {
   _mmt_disconnect: () => void;
   _app_feed_backend_ws_opened?: () => void;
   _app_feed_push_heatmap_frame?: (ptr: number, length: number) => number;
+  _app_script_apply_runtime_json?: (
+    jsonPtr: number,
+    jsonLen: number,
+    runtimeIdPtr: number,
+    runtimeIdLen: number,
+  ) => number;
   _app_pointer_down: (x: number, y: number) => void;
   _app_pointer_up: () => void;
   _app_pointer_move: (x: number, y: number) => void;
@@ -236,6 +243,14 @@ export async function loadTerminal(options: TerminalRuntimeOptions): Promise<Ter
       backendFeedUrl = trimmed;
       clearBackendReconnectTimer();
       openBackendSocket(trimmed);
+    },
+    applyScriptRuntimeJson(runtimeId: string, jsonText: string) {
+      if (!module._app_script_apply_runtime_json) return;
+      const json = encodeUtf8ToWasm(jsonText);
+      const rid = encodeUtf8ToWasm(runtimeId);
+      module._app_script_apply_runtime_json(json.ptr, json.length, rid.ptr, rid.length);
+      module._free?.(json.ptr);
+      module._free?.(rid.ptr);
     },
     setMmtToken(jwt: string) {
       encodeToken(jwt.trim());

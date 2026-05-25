@@ -33,9 +33,9 @@ main :: proc "c" () -> i32 {
     chart.widget_init(&chart_widget_state, &candle_store_state)
 
     app.set_default_render_flags()
+    app.script_runtime_feed_init()
     app.signal_engine_ready()
     return 0
-}
 
 // Debug snapshot for shell (10 f64 slots). See packages/shell debug monitor.
 @(export)

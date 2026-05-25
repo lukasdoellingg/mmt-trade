@@ -16,11 +16,14 @@ export type FeedSubscribeSpec = {
 
 type FrameHandler = (streamKey: string, buffer: ArrayBuffer) => void;
 type JsonHandler = (text: string) => void;
+export type ScriptPlotHandler = (runtimeId: string, prices: Float64Array) => void;
 
 let worker: Worker | null = null;
 const feedPorts = new Set<MessagePort>();
 const mainHandlers = new Map<string, Set<FrameHandler>>();
 const jsonHandlers = new Set<JsonHandler>();
+const plotHandlers = new Set<ScriptPlotHandler>();
+const runtimeRefCount = new Map<string, number>();
 const streamRefCount = new Map<string, number>();
 
 function symbolToMmtPair(symbol: string): string {
@@ -33,6 +36,10 @@ function streamKeyFromSpec(spec: FeedSubscribeSpec): string {
   const stream = spec.stream ?? 16;
   const bg = spec.bucketGroup ?? 0;
   const tfSec = timeframeToSec(spec.timeframe);
+  if (stream === 13) {
+    const sym = spec.symbol.toUpperCase();
+    return `barstats:${sym}:${tfSec}:${bg}`;
+  }
   const exchange = backendExchangesToMmtString(parseAggregateExchanges(spec.aggregate));
   const symbol = symbolToMmtPair(spec.symbol);
   return `${exchange}:${symbol}:${stream}:${tfSec}:${bg}`;
@@ -54,6 +61,13 @@ function ensureWorker(): Worker {
     const msg = ev.data;
     if (msg.type === 'session_json' && typeof msg.text === 'string') {
       for (const h of jsonHandlers) h(msg.text);
+      return;
+    }
+    if (msg.type === 'script_plot_update' && typeof msg.runtimeId === 'string' && msg.prices) {
+      const prices = msg.prices instanceof Float64Array
+        ? msg.prices
+        : new Float64Array(msg.prices as ArrayLike<number>);
+      for (const h of plotHandlers) h(msg.runtimeId, prices);
       return;
     }
     if (msg.type !== 'session_frame' || !(msg.buffer instanceof ArrayBuffer)) return;
@@ -127,6 +141,44 @@ export function onSessionJson(handler: JsonHandler): () => void {
   return () => jsonHandlers.delete(handler);
 }
 
+export function onScriptPlotUpdate(handler: ScriptPlotHandler): () => void {
+  ensureWorker();
+  plotHandlers.add(handler);
+  return () => plotHandlers.delete(handler);
+}
+
+export function subscribeRuntimeStream(runtimeId: string): () => void {
+  ensureWorker();
+  const key = `runtime:${runtimeId}`;
+  const prev = runtimeRefCount.get(key) ?? 0;
+  runtimeRefCount.set(key, prev + 1);
+  if (prev === 0) {
+    worker!.postMessage({ type: 'subscribe_runtime', runtimeId });
+  }
+  return () => {
+    const n = (runtimeRefCount.get(key) ?? 1) - 1;
+    if (n <= 0) {
+      runtimeRefCount.delete(key);
+      worker?.postMessage({ type: 'unsubscribe_runtime', runtimeId });
+    } else {
+      runtimeRefCount.set(key, n);
+    }
+  };
+}
+
+export function updateScriptInputs(
+  runtimeId: string,
+  overrides: Record<string, unknown>,
+): void {
+  ensureWorker();
+  worker!.postMessage({ type: 'update_inputs', runtime_id: runtimeId, overrides });
+}
+
+export function destroyScriptRuntime(runtimeId: string): void {
+  ensureWorker();
+  worker!.postMessage({ type: 'unsubscribe_runtime', runtimeId });
+}
+
 export function createScriptRuntime(
   scriptId: string,
   context: Record<string, unknown> = {},
@@ -147,5 +199,7 @@ export function shutdownFeedHubClient(): void {
   feedPorts.clear();
   mainHandlers.clear();
   jsonHandlers.clear();
+  plotHandlers.clear();
+  runtimeRefCount.clear();
   streamRefCount.clear();
 }

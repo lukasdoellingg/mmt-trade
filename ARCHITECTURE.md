@@ -35,9 +35,9 @@ mmt-trade/
 │       ├── src/odin-runtime.ts       # typed wrapper around odin.js
 │       └── vite.config.ts            # dev-only, sets COOP+COEP headers
 ├── web/
-│   ├── backend/                      # Express proxy: CCXT REST + Binance/Bybit/MMT WS
+│   ├── backend/                      # Express proxy: CCXT REST + Binance/Bybit WS
 │   │   ├── index.js                  # server entry (rate-limited, validated, hardened)
-│   │   └── lib/                      # security, heatmapBook, mmtUpstream, …
+│   │   └── lib/                      # security, heatmapBook, infoStream, indicators, …
 │   └── frontend/                     # Legacy Vue/Vite UI — retired in Phase 7
 ├── docs/                             # MMT research, HAR analysis, captures (gitignored)
 ├── scripts/                          # build-wasm.sh, analyze-mmt-har.mjs, …
@@ -51,14 +51,14 @@ Production chart path uses a **Vue control plane** with worker-hosted rendering:
 | Layer | Module | Role |
 | ----- | ------ | ---- |
 | Control plane | `web/frontend/src/widgets/ChartWidget.vue` | Input forward, overlay ≤10 Hz, settings bus |
-| Feed hub | `web/frontend/src/workers/feedHubWorker.ts` | One `/ws/session` per tab → backend `MmtSessionMultiplexer` |
+| Feed hub | `web/frontend/src/workers/feedHubWorker.ts` | One `/ws/session` per tab → backend `InfoStreamMultiplexer` |
 | Chart engine | `web/frontend/src/workers/chartEngineWorker.ts` | OffscreenCanvas + `engine.wasm` (candles) + optional `chart_runtime.wasm` |
-| Backend MUX | `web/backend/lib/mmtSession.js` | Refcount MMT v2 streams (4/5/6/13/16), binary envelopes |
+| Backend MUX | `web/backend/lib/infoStream/` | Local script plots + bar stats; binary envelopes |
 | Odin runtime | `packages/engine/src/main_chart.odin` | decode / indicator / texture worker entry points |
 
 Build chart runtime: `npm run build:engine:chart` → `web/frontend/public/chart_runtime.{wasm,js}`.
 
-Feature flags (`.env`): `VITE_USE_SESSION_MUX=1`, `VITE_USE_EMSCRIPTEN_WORKERS=1` (set `0` to fall back to legacy `/ws/heatmap` + `obHeatmapWorker`).
+Feature flags (`.env`): `VITE_USE_SESSION_MUX` (on by default in dev), `VITE_USE_EMSCRIPTEN_WORKERS=1` (set `0` to fall back to legacy `/ws/heatmap` + `obHeatmapWorker`). See [`docs/INFO_STREAM.md`](./docs/INFO_STREAM.md).
 
 COOP/COEP headers remain required for SharedArrayBuffer when Emscripten WASM workers are fully enabled.
 
@@ -98,7 +98,7 @@ All hardened in Phase 0. Key invariants:
 - **Heartbeat**: 30 s ping, terminate after 2 missed pongs.
 - **Upstream reconnect**: exponential backoff with jitter, capped at 5 attempts.
 - **Zero-allocation book→levels**: pre-allocated `Float64Array` scratch + object pool.
-- **MMT token**: read from `MMT_WS_TOKEN`, never logged in URLs.
+- **Session MUX**: first-party `/ws/session` — no upstream JWT; script plots computed locally.
 
 ## Performance budget
 
@@ -112,7 +112,7 @@ All hardened in Phase 0. Key invariants:
 
 | Phase | Scope | Status |
 | ----- | ----- | ------ |
-| **0** | MUX `/ws/session`, protocol RPC, `chart_runtime` build, security | **Done** — `mmtSession.js`, `wsSession.js`, `build.sh --chart-only` |
+| **0** | MUX `/ws/session`, local info stream, `chart_runtime` build, security | **Done** — `infoStream/`, `wsSession.js`, `build.sh --chart-only` |
 | **1** | decode / texture / indicator workers, FeedHubWorker | **Done** — protobuf + CBOR decode in Odin; texture worker via `textureDirty` + `chart_runtime_step` |
 | **2** | ChartEngineWorker, zero-Vue hot path | **Done** — MUX feed ports, dual WASM, OB layer via `obHeatmapWorker` until Sokol GPU port |
 | **3** | Server indicators, BarStats stream 13 | **Done** — `create_runtime` async relay, BarStats MUX path, `scriptRuntime` lifecycle |

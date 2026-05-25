@@ -32,6 +32,10 @@ export interface ChartSettings {
   obLow: number;
   footprint: boolean;
   vpvr: boolean;
+  /** Server script indicators via /ws/session (local runtime). */
+  scriptKeyLevels: boolean;
+  scriptNetPositioning: boolean;
+  scriptObImbalance: boolean;
   /** Quote-currency display switch ("$ USD" vs base symbol). */
   quoteUsd: boolean;
   /** Active tool from the left rail. */
@@ -60,6 +64,9 @@ function defaults(): ChartSettings {
     obLow: 0,
     footprint: false,
     vpvr: false,
+    scriptKeyLevels: false,
+    scriptNetPositioning: false,
+    scriptObImbalance: false,
     quoteUsd: true,
     tool: 'crosshair',
     settingsModalOpen: false,

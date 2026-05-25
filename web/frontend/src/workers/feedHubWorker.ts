@@ -3,6 +3,11 @@
  * fan-out binary frames to ChartEngineWorker ports.
  */
 import { parseSessionEnvelope } from '../engine/sessionEnvelope';
+import { parseRuntimePlotPayload } from '../engine/runtimePlotPayload';
+
+const MAX_RUNTIME_PRICES = 64;
+const runtimePriceScratch = new Float64Array(MAX_RUNTIME_PRICES);
+const runtimePlotOut = new Float64Array(MAX_RUNTIME_PRICES);
 
 type SubKey = string;
 
@@ -17,15 +22,31 @@ let socket: WebSocket | null = null;
 const streamRefCount = new Map<SubKey, number>();
 const streamKeyBySpec = new Map<string, SubKey>();
 
+const RECONNECT_BASE_MS = 1500;
+const RECONNECT_MAX_MS = 120_000;
+let reconnectDelayMs = RECONNECT_BASE_MS;
+const pendingJson: Record<string, unknown>[] = [];
+
 function wsBase(): string {
   const proto = self.location.protocol === 'https:' ? 'wss' : 'ws';
   return `${proto}://${self.location.host}`;
 }
 
+function flushPendingJson(): void {
+  if (socket?.readyState !== WebSocket.OPEN) return;
+  while (pendingJson.length > 0) {
+    const obj = pendingJson.shift();
+    if (obj) socket.send(JSON.stringify(obj));
+  }
+}
+
 function sendJson(obj: Record<string, unknown>): void {
   if (socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(obj));
+    return;
   }
+  pendingJson.push(obj);
+  openSocket();
 }
 
 function subscribeStream(key: SubKey, spec?: Record<string, unknown>): void {
@@ -50,10 +71,40 @@ function unsubscribeStream(key: SubKey): void {
   const n = (streamRefCount.get(key) ?? 0) - 1;
   if (n <= 0) {
     streamRefCount.delete(key);
-    sendJson({ op: 'unsubscribe', key });
+    if (!key.startsWith('runtime:')) {
+      sendJson({ op: 'unsubscribe', key });
+    }
   } else {
     streamRefCount.set(key, n);
   }
+}
+
+function subscribeRuntime(runtimeId: string): void {
+  const key = `runtime:${runtimeId}`;
+  subscribeStream(key);
+}
+
+function unsubscribeRuntime(runtimeId: string): void {
+  const key = `runtime:${runtimeId}`;
+  const n = (streamRefCount.get(key) ?? 0) - 1;
+  if (n <= 0) {
+    streamRefCount.delete(key);
+    sendJson({ op: 'destroy_runtime', runtime_id: runtimeId });
+  } else {
+    streamRefCount.set(key, n);
+  }
+}
+
+function fanoutRuntimePlot(streamKey: string, payload: ArrayBuffer): void {
+  const parsed = parseRuntimePlotPayload(payload, streamKey, runtimePriceScratch, MAX_RUNTIME_PRICES);
+  if (!parsed || parsed.count <= 0) return;
+  const runtimeId = parsed.runtimeId || streamKey.slice('runtime:'.length);
+  runtimePlotOut.set(runtimePriceScratch.subarray(0, parsed.count));
+  broadcast({
+    type: 'script_plot_update',
+    runtimeId,
+    prices: runtimePlotOut.subarray(0, parsed.count),
+  });
 }
 
 function resubscribeAll(): void {
@@ -85,13 +136,17 @@ function openSocket(): void {
   socket = new WebSocket(`${wsBase()}/ws/session`);
   socket.binaryType = 'arraybuffer';
   socket.onopen = () => {
+    reconnectDelayMs = RECONNECT_BASE_MS;
+    flushPendingJson();
     resubscribeAll();
     broadcast({ type: 'session_status', status: 'live' });
   };
   socket.onclose = () => {
     broadcast({ type: 'session_status', status: 'disconnected' });
     socket = null;
-    setTimeout(openSocket, 1500);
+    const delay = reconnectDelayMs;
+    reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_MAX_MS);
+    setTimeout(openSocket, delay);
   };
   socket.onerror = () => {
     broadcast({ type: 'session_status', status: 'error' });
@@ -105,6 +160,12 @@ function openSocket(): void {
     if (!(data instanceof ArrayBuffer)) return;
     const parsed = parseSessionEnvelope(data);
     if (!parsed) return;
+
+    if (parsed.streamKey.startsWith('runtime:')) {
+      fanoutRuntimePlot(parsed.streamKey, parsed.payload);
+      return;
+    }
+
     const entries = [...ports.values()];
     for (let i = 0; i < entries.length; i++) {
       const payload = entries.length === 1 ? parsed.payload : parsed.payload.slice(0);
@@ -130,6 +191,9 @@ type WorkerInMsg =
   | { type: 'init'; port: MessagePort }
   | { type: 'subscribe_spec'; spec: Record<string, unknown>; streamKey: string }
   | { type: 'unsubscribe_spec'; streamKey: string }
+  | { type: 'subscribe_runtime'; runtimeId: string }
+  | { type: 'unsubscribe_runtime'; runtimeId: string }
+  | { type: 'update_inputs'; runtime_id: string; overrides: Record<string, unknown> }
   | { type: 'create_runtime'; scriptId: string; context?: Record<string, unknown>; createToken?: number }
   | { type: 'ping' };
 
@@ -160,6 +224,22 @@ self.onmessage = (ev: MessageEvent<WorkerInMsg>) => {
   }
   if (msg.type === 'unsubscribe_spec') {
     unsubscribeStream(msg.streamKey);
+    return;
+  }
+  if (msg.type === 'subscribe_runtime') {
+    subscribeRuntime(msg.runtimeId);
+    return;
+  }
+  if (msg.type === 'unsubscribe_runtime') {
+    unsubscribeRuntime(msg.runtimeId);
+    return;
+  }
+  if (msg.type === 'update_inputs') {
+    sendJson({
+      op: 'update_inputs',
+      runtime_id: msg.runtime_id,
+      overrides: msg.overrides,
+    });
     return;
   }
   if (msg.type === 'create_runtime') {

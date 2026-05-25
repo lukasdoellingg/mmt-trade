@@ -1,24 +1,19 @@
 /**
  * Bootstraps terminal.wasm under COOP/COEP (SharedArrayBuffer for WASM workers).
- * Live heatmap: backend /ws/heatmap (protobuf), not browser → mmt.gg.
+ * Live heatmap: backend /ws/heatmap (protobuf). Script plots: /ws/session.
  */
 
 import { loadTerminal, type TerminalRuntimeOptions } from './odin-runtime';
-import {
-  buildBackendHeatmapWsUrl,
-  isMmtDirectFeedMode,
-  parseBackendFeedParams,
-} from './backend-feed';
+import { buildBackendHeatmapWsUrl, parseBackendFeedParams } from './backend-feed';
+import { connectSessionFeed } from './session-feed';
 
 const loaderOverlayEl = document.getElementById('loaderOverlay');
 const terminalCanvas = document.getElementById('terminalCanvas') as HTMLCanvasElement | null;
 const fpsOverlayEl = document.getElementById('fpsOverlay');
-const tokenPanelEl = document.getElementById('tokenPanel') as HTMLDivElement | null;
-const tokenInputEl = document.getElementById('mmtTokenInput') as HTMLTextAreaElement | null;
-const tokenConnectBtn = document.getElementById('tokenConnectBtn');
 
 let runtimeHandle: Awaited<ReturnType<typeof loadTerminal>> | null = null;
 let backendFeedConnected = false;
+let releaseSessionFeed: (() => void) | null = null;
 
 function setLoaderMessage(message: string): void {
   if (loaderOverlayEl) loaderOverlayEl.textContent = message;
@@ -58,8 +53,6 @@ async function bootstrap(): Promise<void> {
     return;
   }
 
-  const mmtDirect = isMmtDirectFeedMode(window.location.search);
-
   const assetBase = import.meta.env.BASE_URL;
   let cacheBust = '';
   try {
@@ -90,17 +83,15 @@ async function bootstrap(): Promise<void> {
     runtimeHandle = await loadTerminal(runtimeOptions);
     hideLoader();
     runtimeHandle.bindInput(terminalCanvas);
+    connectBackendFeedFromUrl();
 
-    if (mmtDirect) {
-      tokenPanelEl?.classList.remove('hidden');
-      tokenConnectBtn?.addEventListener('click', () => {
-        const jwt = tokenInputEl?.value?.trim() ?? '';
-        if (!jwt) return;
-        runtimeHandle?.setMmtToken(jwt);
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('scripts') === '1') {
+      releaseSessionFeed = connectSessionFeed({
+        onPlot: (runtimeId, jsonText) => {
+          runtimeHandle?.applyScriptRuntimeJson(runtimeId, jsonText);
+        },
       });
-    } else {
-      tokenPanelEl?.classList.add('hidden');
-      connectBackendFeedFromUrl();
     }
   } catch (loadError) {
     const message = loadError instanceof Error ? loadError.message : String(loadError);

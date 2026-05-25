@@ -1,6 +1,6 @@
 /**
  * Build backend `/ws/heatmap` URL (same contract as web/frontend heatmapFeedHub).
- * Token stays on the server (`MMT_WS_TOKEN` in web/backend/.env); browser never talks to mmt.gg.
+ * First-party backend relay — browser never opens exchange sockets directly for heatmap.
  */
 
 export interface BackendFeedParams {
@@ -50,9 +50,3 @@ export function buildBackendHeatmapWsUrl(feed: BackendFeedParams): string {
   return q;
 }
 
-/** Direct mmt.gg in browser — only when ?mmt_direct=1 (debug, disabled in production builds). */
-export function isMmtDirectFeedMode(search: string): boolean {
-  if (import.meta.env.PROD) return false;
-  const params = new URLSearchParams(search);
-  return params.get('mmt_direct') === '1';
-}

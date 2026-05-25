@@ -14,16 +14,35 @@ import ChartSymbolBar from './ChartSymbolBar.vue';
 import { TIMEFRAMES, useChartSettings } from '../../chart/chartSettings';
 import { useWorkspace, CELL_PX } from '../../workspace/useWorkspace';
 import { listWidgets } from '../../workspace/registry';
+import ChartObjectTreePanel from './ChartObjectTreePanel.vue';
+import { spawnIndicatorWindow } from '../../chart/useChartPaneRuntime';
+import { useDropdownAnchor } from './useDropdownAnchor';
 import { debugWarn } from '../../utils/debug';
 
 const settings = useChartSettings();
-const { addWidget, findFreeSlot } = useWorkspace();
+const { addWidget, findFreeSlot, store } = useWorkspace();
 
 const indicatorsOpen = ref(false);
 const orderflowOpen = ref(false);
 const addWidgetOpen = ref(false);
+const treeOpen = ref(false);
 
-function closeAllMenus() { indicatorsOpen.value = false; orderflowOpen.value = false; addWidgetOpen.value = false; }
+const indicatorsBtn = ref<HTMLElement | null>(null);
+const orderflowBtn = ref<HTMLElement | null>(null);
+const addWidgetBtn = ref<HTMLElement | null>(null);
+const treeBtn = ref<HTMLElement | null>(null);
+
+const indicatorsPos = useDropdownAnchor(indicatorsOpen, indicatorsBtn, 'left');
+const orderflowPos = useDropdownAnchor(orderflowOpen, orderflowBtn, 'right');
+const addWidgetPos = useDropdownAnchor(addWidgetOpen, addWidgetBtn, 'right');
+const treePos = useDropdownAnchor(treeOpen, treeBtn, 'right');
+
+function closeAllMenus() {
+  indicatorsOpen.value = false;
+  orderflowOpen.value = false;
+  addWidgetOpen.value = false;
+  treeOpen.value = false;
+}
 // Bubble phase, not capture — that way `@click.stop` on menu rows works and
 // only an actual outside-click closes the menus.
 window.addEventListener('click', closeAllMenus);
@@ -115,6 +134,36 @@ function addChart() {
   addWidget('chart', { x: slot.x, y: slot.y, w: 80, h: 60 });
 }
 
+function addBarStats() {
+  const v = viewportCells();
+  const slot = findFreeSlot(28, 36, v.w, v.h);
+  addWidget('bar-stats', { x: slot.x, y: slot.y, w: 28, h: 36 });
+}
+function addWidgetByType(type: string) {
+  if (type === 'chart') addChart();
+  else if (type === 'bar-stats') addBarStats();
+  else if (type === 'orderflow-ladder') addOrderflow();
+  else if (type === 'script-indicator-pane') {
+    const chartId = store.widgets.find((w) => w.type === 'chart')?.id ?? '';
+    if (!chartId) return;
+    spawnIndicatorWindow(
+      addWidget,
+      findFreeSlot,
+      viewportCells(),
+      'script-indicator-pane',
+      { scriptId: 'key-levels', localId: `key-levels-win-${Date.now()}`, parentChartWidgetId: chartId },
+      { w: 34, h: 30 },
+      chartId,
+    );
+  }
+}
+
+function onTreeClick(e: Event) {
+  e.stopPropagation();
+  const wasOpen = treeOpen.value;
+  closeAllMenus();
+  treeOpen.value = !wasOpen;
+}
 function onIndicatorsClick(e: Event) { e.stopPropagation(); closeAllMenus(); indicatorsOpen.value = true; }
 function onOrderflowClick(e: Event) { e.stopPropagation(); closeAllMenus(); orderflowOpen.value = true; }
 function onAddWidgetClick(e: Event) { e.stopPropagation(); closeAllMenus(); addWidgetOpen.value = true; }
@@ -154,18 +203,7 @@ function onAddWidgetClick(e: Event) { e.stopPropagation(); closeAllMenus(); addW
     <span class="tb-divider"></span>
 
     <div class="dd-wrap">
-      <button class="dd-btn" @click="onIndicatorsClick">Indicators <span class="dd-caret">&#9662;</span></button>
-      <div v-if="indicatorsOpen" class="dd-menu" @click.stop>
-        <label class="dd-row"><input type="checkbox" v-model="settings.vwapDaily" /> VWAP Daily</label>
-        <label class="dd-row"><input type="checkbox" v-model="settings.vwapWeekly" /> VWAP Weekly</label>
-        <label class="dd-row"><input type="checkbox" v-model="settings.vwapMonthly" /> VWAP Monthly</label>
-        <label class="dd-row"><input type="checkbox" v-model="settings.vwapBands" /> VWAP &#963; bands</label>
-        <label class="dd-row"><input type="checkbox" v-model="settings.ema" /> EMA 9/21</label>
-        <label class="dd-row"><input type="checkbox" v-model="settings.liquidations" /> Liquidations</label>
-        <label class="dd-row"><input type="checkbox" v-model="settings.obHeatmap" /> OB Heatmap</label>
-        <label class="dd-row"><input type="checkbox" v-model="settings.footprint" /> Footprint</label>
-        <label class="dd-row"><input type="checkbox" v-model="settings.vpvr" /> VPVR</label>
-      </div>
+      <button ref="indicatorsBtn" class="dd-btn" @click="onIndicatorsClick">Indicators <span class="dd-caret">&#9662;</span></button>
     </div>
 
     <button class="ic-btn" :class="{ on: settings.tool === 'pencil' }" title="Drawing tool" @click="togglePencil">
@@ -180,28 +218,65 @@ function onAddWidgetClick(e: Event) { e.stopPropagation(); closeAllMenus(); addW
     <span class="tb-spacer"></span>
 
     <div class="dd-wrap">
-      <button class="dd-btn" @click="onOrderflowClick">Order Flow <span class="dd-caret">&#9662;</span></button>
-      <div v-if="orderflowOpen" class="dd-menu" @click.stop>
-        <button class="dd-row" @click="addOrderflow(); orderflowOpen = false">+ Aggregated DOM ladder</button>
-      </div>
+      <button ref="orderflowBtn" class="dd-btn" @click="onOrderflowClick">Order Flow <span class="dd-caret">&#9662;</span></button>
     </div>
 
     <div class="dd-wrap">
-      <button class="dd-btn primary" @click="onAddWidgetClick">+ Widget</button>
-      <div v-if="addWidgetOpen" class="dd-menu" @click.stop>
-        <button v-for="w in widgetTypes" :key="w.type" class="dd-row" @click="(w.type === 'chart' ? addChart() : addOrderflow()); addWidgetOpen = false">
-          {{ w.entry.label }}
-        </button>
-      </div>
+      <button ref="addWidgetBtn" class="dd-btn primary" @click="onAddWidgetClick">+ Widget</button>
     </div>
 
     <button class="ic-btn" title="Screenshot" @click="takeScreenshot">
       <svg width="14" height="14" viewBox="0 0 14 14"><path fill="currentColor" d="M3 4h2l1-1.5h2L9 4h2v7H3z"/><circle cx="7" cy="7.5" r="2" fill="#06060b"/></svg>
     </button>
+    <div class="dd-wrap">
+      <button
+        ref="treeBtn"
+        class="ic-btn"
+        :class="{ on: treeOpen }"
+        title="Object tree — indicators & windows"
+        @click="onTreeClick"
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+          <circle cx="7" cy="3" r="1.5" fill="currentColor"/>
+          <circle cx="3.5" cy="10" r="1.5" fill="currentColor"/>
+          <circle cx="10.5" cy="10" r="1.5" fill="currentColor"/>
+          <path stroke="currentColor" stroke-width="1" fill="none" d="M7 4.5v2M7 6.5L3.5 8.5M7 6.5l3.5 2"/>
+        </svg>
+      </button>
+    </div>
     <button class="ic-btn" title="Settings" @click="openSettings">
       <svg width="14" height="14" viewBox="0 0 14 14"><path fill="currentColor" d="M7 4.5A2.5 2.5 0 1 0 9.5 7 2.5 2.5 0 0 0 7 4.5zM12 7l-1-.5.3-1.3-1.1-1.1L9 4.4 8.5 3.4l-1.5 0L6.5 4.4 5 4.6 3.8 5.7l.3 1.3L3 7l1 .5-.3 1.3 1.1 1.1L6 9.6l.5 1H7.5l.5-1L9.5 9 10.7 7.9 10.4 6.7z"/></svg>
     </button>
   </div>
+
+  <Teleport to="body">
+    <div v-if="indicatorsOpen" class="dd-float dd-menu" :style="indicatorsPos" @click.stop>
+      <label class="dd-row"><input type="checkbox" v-model="settings.vwapDaily" /> VWAP Daily</label>
+      <label class="dd-row"><input type="checkbox" v-model="settings.vwapWeekly" /> VWAP Weekly</label>
+      <label class="dd-row"><input type="checkbox" v-model="settings.vwapMonthly" /> VWAP Monthly</label>
+      <label class="dd-row"><input type="checkbox" v-model="settings.vwapBands" /> VWAP &#963; bands</label>
+      <label class="dd-row"><input type="checkbox" v-model="settings.ema" /> EMA 9/21</label>
+      <label class="dd-row"><input type="checkbox" v-model="settings.liquidations" /> Liquidations</label>
+      <label class="dd-row"><input type="checkbox" v-model="settings.obHeatmap" /> OB Heatmap</label>
+      <label class="dd-row"><input type="checkbox" v-model="settings.footprint" /> Footprint</label>
+      <label class="dd-row"><input type="checkbox" v-model="settings.vpvr" /> VPVR</label>
+      <span class="dd-hint">Server scripts (/ws/session)</span>
+      <label class="dd-row"><input type="checkbox" v-model="settings.scriptKeyLevels" /> Key Levels</label>
+      <label class="dd-row"><input type="checkbox" v-model="settings.scriptNetPositioning" /> Net Positioning</label>
+      <label class="dd-row"><input type="checkbox" v-model="settings.scriptObImbalance" /> OB Imbalance</label>
+    </div>
+    <div v-if="orderflowOpen" class="dd-float dd-menu" :style="orderflowPos" @click.stop>
+      <button class="dd-row" @click="addOrderflow(); orderflowOpen = false">+ Aggregated DOM ladder</button>
+    </div>
+    <div v-if="addWidgetOpen" class="dd-float dd-menu" :style="addWidgetPos" @click.stop>
+      <button v-for="w in widgetTypes" :key="w.type" class="dd-row" @click="addWidgetByType(w.type); addWidgetOpen = false">
+        {{ w.entry.label }}
+      </button>
+    </div>
+    <div v-if="treeOpen" class="dd-float" :style="treePos" @click.stop>
+      <ChartObjectTreePanel @close="treeOpen = false" />
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -244,10 +319,13 @@ function onAddWidgetClick(e: Event) { e.stopPropagation(); closeAllMenus(); addW
 .dd-btn.primary:hover{background:#0d1812}
 .dd-caret{font-size:8px;color:#5a6878}
 
+.dd-float{
+  position:fixed;z-index:150;
+}
 .dd-menu{
-  position:absolute;top:100%;left:0;margin-top:3px;min-width:160px;
+  min-width:160px;
   background:#0c0c14;border:1px solid #1f1f2c;border-radius:3px;
-  box-shadow:0 4px 16px rgba(0,0,0,.6);padding:3px 0;z-index:50;
+  box-shadow:0 4px 16px rgba(0,0,0,.6);padding:3px 0;
 }
 .dd-row{
   display:flex;align-items:center;gap:6px;width:100%;
@@ -256,4 +334,5 @@ function onAddWidgetClick(e: Event) { e.stopPropagation(); closeAllMenus(); addW
 }
 .dd-row:hover{background:#15151f;color:#e0e8f0}
 .dd-row input[type=checkbox]{accent-color:#3dc985;width:11px;height:11px;margin:0}
+.dd-hint{display:block;padding:6px 10px 2px;font-size:9px;color:#6a7a8a;letter-spacing:.3px;text-transform:uppercase}
 </style>

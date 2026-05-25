@@ -1,21 +1,45 @@
 /**
  * Server-side indicator runtime mount — proxies create_runtime via FeedHubWorker.
+ * Supports widget-scoped mounts (MMT ScriptRuntimeMount per chart pane).
  */
 import { computed, shallowRef } from 'vue';
-import { createScriptRuntime, onSessionJson, subscribeFeedStream } from '../engine/feedHubClient';
+import {
+  createScriptRuntime,
+  destroyScriptRuntime,
+  onSessionJson,
+  onScriptPlotUpdate,
+  subscribeFeedStream,
+  subscribeRuntimeStream,
+  updateScriptInputs,
+} from '../engine/feedHubClient';
 import { USE_SESSION_MUX } from '../config/featureFlags';
+import type { ScriptIndicatorId } from '../indicators/indicatorCatalog';
 import { symKeyFromSymbol } from '../constants';
+import {
+  chartPaneFindMountByRuntimeId,
+  chartPaneUpsertMount,
+} from '../app/chartObjectTree';
 
 export type ScriptRuntimeMount = {
+  /** Scoped key `${scopeId}:${localId}`. */
+  key: string;
+  scopeId: string;
+  localId: string;
   runtimeId: string | null;
   templateId: string;
   createToken: number;
   streamKey: string;
   status: 'idle' | 'mounting' | 'live' | 'error';
+  pane: 'overlay' | 'window';
+  /** When pane=window — chart widget that owns the object-tree mount row. */
+  parentChartWidgetId?: string;
+  plotPrices: Float64Array | null;
 };
 
 const mounts = shallowRef<Map<string, ScriptRuntimeMount>>(new Map());
+const runtimeUnsubs = new Map<string, () => void>();
 let jsonListenerInstalled = false;
+let plotListenerInstalled = false;
 
 function timeframeToSec(tf: string): number {
   const map: Record<string, number> = {
@@ -25,53 +49,126 @@ function timeframeToSec(tf: string): number {
   return map[tf] ?? 3600;
 }
 
-function ensureJsonListener(): void {
-  if (jsonListenerInstalled || !USE_SESSION_MUX) return;
-  jsonListenerInstalled = true;
-  onSessionJson((text) => {
-    try {
-      const msg = JSON.parse(text) as {
-        type?: string;
-        runtime_id?: string;
-        createToken?: number | null;
-        message?: string;
-      };
-      if (msg.type === 'runtime_created' && msg.runtime_id) {
-        const next = new Map(mounts.value);
-        for (const [id, mount] of next) {
-          if (msg.createToken != null && mount.createToken === msg.createToken) {
-            next.set(id, { ...mount, runtimeId: msg.runtime_id, status: 'live' });
-          }
-        }
-        mounts.value = next;
-      } else if (msg.type === 'error') {
-        const next = new Map(mounts.value);
-        for (const [id, mount] of next) {
-          if (mount.status === 'mounting') {
-            next.set(id, { ...mount, status: 'error' });
-          }
-        }
-        mounts.value = next;
+function mountKey(scopeId: string, localId: string): string {
+  return `${scopeId}:${localId}`;
+}
+
+function releaseRuntimeSubscription(runtimeId: string): void {
+  const unsub = runtimeUnsubs.get(runtimeId);
+  if (unsub) {
+    unsub();
+    runtimeUnsubs.delete(runtimeId);
+  }
+}
+
+function applyPlotToMount(runtimeId: string, prices: Float64Array): void {
+  const next = new Map(mounts.value);
+  let changed = false;
+  for (const [id, mount] of next) {
+    if (mount.runtimeId === runtimeId) {
+      next.set(id, { ...mount, plotPrices: prices });
+      changed = true;
+    }
+  }
+  if (changed) mounts.value = next;
+}
+
+function syncRuntimeCreated(runtimeId: string, createToken: number): void {
+  const next = new Map(mounts.value);
+  for (const [id, mount] of next) {
+    if (mount.createToken === createToken) {
+      next.set(id, { ...mount, runtimeId, status: 'live' });
+      if (!runtimeUnsubs.has(runtimeId)) {
+        runtimeUnsubs.set(runtimeId, subscribeRuntimeStream(runtimeId));
       }
-    } catch { /* ignore */ }
-  });
+      const found = chartPaneFindMountByRuntimeId(runtimeId);
+      if (!found) {
+        for (const [key, m] of next) {
+          if (m.createToken === createToken) {
+            const chartWidgetId = m.parentChartWidgetId ?? m.scopeId;
+            chartPaneUpsertMount(chartWidgetId, {
+              localId: m.localId,
+              scriptId: m.templateId,
+              runtimeId,
+              status: 'live',
+              createToken,
+              pane: m.pane,
+              windowWidgetId: m.pane === 'window' ? m.scopeId : undefined,
+            });
+            break;
+          }
+        }
+      }
+    }
+  }
+  mounts.value = next;
+}
+
+function ensureListeners(): void {
+  if (!USE_SESSION_MUX) return;
+  if (!jsonListenerInstalled) {
+    jsonListenerInstalled = true;
+    onSessionJson((text) => {
+      try {
+        const msg = JSON.parse(text) as {
+          type?: string;
+          runtime_id?: string;
+          createToken?: number | null;
+        };
+        if (msg.type === 'runtime_created' && msg.runtime_id && msg.createToken != null) {
+          syncRuntimeCreated(msg.runtime_id, msg.createToken);
+        } else if (msg.type === 'error') {
+          const next = new Map(mounts.value);
+          for (const [id, mount] of next) {
+            if (mount.status === 'mounting') {
+              next.set(id, { ...mount, status: 'error' });
+            }
+          }
+          mounts.value = next;
+        }
+      } catch { /* ignore */ }
+    });
+  }
+  if (!plotListenerInstalled) {
+    plotListenerInstalled = true;
+    onScriptPlotUpdate((runtimeId, prices) => {
+      applyPlotToMount(runtimeId, prices);
+    });
+  }
 }
 
 export function useScriptRuntime() {
-  ensureJsonListener();
+  ensureListeners();
   return {
     mounts: computed(() => mounts.value),
 
-    mount(templateId: string, symbol: string, timeframe: string, bucketGroup = 6): string {
-      const mountId = `${templateId}:${symbol}:${timeframe}`;
-      const createToken = (mounts.value.size + 1) | 0;
+    /** Legacy global overlay mount (chart widget scopeId = widgetId). */
+    mount(
+      templateId: ScriptIndicatorId,
+      symbol: string,
+      timeframe: string,
+      scopeId = 'global',
+      localId?: string,
+      pane: 'overlay' | 'window' = 'overlay',
+      bucketGroup = 6,
+      parentChartWidgetId?: string,
+    ): string {
+      const lid = localId ?? templateId;
+      const key = mountKey(scopeId, lid);
+      const createToken = ((mounts.value.size + 1) | 0) + (Date.now() & 0xffff);
       const next = new Map(mounts.value);
-      next.set(mountId, {
+      next.set(key, {
+        key,
+        scopeId,
+        localId: lid,
         runtimeId: null,
         templateId,
         createToken,
-        streamKey: `barstats:${symKeyFromSymbol(symbol)}:13:${timeframeToSec(timeframe)}:${bucketGroup}`,
+        streamKey: `runtime:pending:${templateId}:${symKeyFromSymbol(symbol)}:${timeframeToSec(timeframe)}`,
         status: 'mounting',
+        pane,
+        parentChartWidgetId: pane === 'window' ? parentChartWidgetId : undefined,
+        plotPrices: null,
       });
       mounts.value = next;
       if (USE_SESSION_MUX) {
@@ -80,9 +177,68 @@ export function useScriptRuntime() {
           tf: timeframe,
           bucket_group: bucketGroup,
           createToken,
-        });
+        }, createToken);
       }
-      return mountId;
+      return key;
+    },
+
+    unmount(key: string): void {
+      const mount = mounts.value.get(key);
+      if (mount?.runtimeId) {
+        releaseRuntimeSubscription(mount.runtimeId);
+        destroyScriptRuntime(mount.runtimeId);
+      }
+      if (!mounts.value.has(key)) return;
+      const next = new Map(mounts.value);
+      next.delete(key);
+      mounts.value = next;
+    },
+
+    unmountScope(scopeId: string): void {
+      for (const [key, mount] of [...mounts.value.entries()]) {
+        if (mount.scopeId === scopeId) this.unmount(key);
+      }
+    },
+
+    /** Chart teardown — keep detached window runtimes (scopeId = window widget id). */
+    unmountScopeOverlays(scopeId: string): void {
+      for (const [key, mount] of [...mounts.value.entries()]) {
+        if (mount.scopeId === scopeId && mount.pane === 'overlay') this.unmount(key);
+      }
+    },
+
+    getMount(key: string): ScriptRuntimeMount | undefined {
+      return mounts.value.get(key);
+    },
+
+    mountsForScope(scopeId: string, pane?: 'overlay' | 'window'): ScriptRuntimeMount[] {
+      const out: ScriptRuntimeMount[] = [];
+      for (const m of mounts.value.values()) {
+        if (m.scopeId !== scopeId) continue;
+        if (pane && m.pane !== pane) continue;
+        out.push(m);
+      }
+      return out;
+    },
+
+    updateInputs(runtimeId: string, overrides: Record<string, unknown>): void {
+      if (!USE_SESSION_MUX || !runtimeId) return;
+      updateScriptInputs(runtimeId, overrides);
+    },
+
+    /** Drop and recreate overlay script mounts for a chart pane. */
+    remountAll(
+      active: Partial<Record<ScriptIndicatorId, boolean>>,
+      symbol: string,
+      timeframe: string,
+      scopeId = 'global',
+    ): void {
+      for (const [key, mount] of [...mounts.value.entries()]) {
+        if (mount.scopeId === scopeId && mount.pane === 'overlay') this.unmount(key);
+      }
+      for (const templateId of ['key-levels', 'net-positioning', 'aggregated-ob-imbalance'] as const) {
+        if (active[templateId]) this.mount(templateId, symbol, timeframe, scopeId, templateId, 'overlay');
+      }
     },
 
     subscribeBarStats(
@@ -105,13 +261,6 @@ export function useScriptRuntime() {
           } catch { /* ignore */ }
         },
       );
-    },
-
-    unmount(mountId: string): void {
-      if (!mounts.value.has(mountId)) return;
-      const next = new Map(mounts.value);
-      next.delete(mountId);
-      mounts.value = next;
     },
   };
 }

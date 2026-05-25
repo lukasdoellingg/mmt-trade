@@ -1,47 +1,23 @@
 #!/usr/bin/env node
 /**
- * Client + backend must derive identical MUX stream keys.
+ * Client + backend must derive identical MUX stream keys (bar stats on /ws/session).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAggregateExchanges, backendExchangesToMmtString } from '../../shared/exchangeIds.mjs';
-import { buildStreamKey, symbolToMmtPair, timeframeToSec } from '../../web/backend/lib/mmtProtocol.js';
+import { buildBarStatsStreamKey, timeframeToSec } from '../../web/backend/lib/streamProtocol.js';
 
-function clientStreamKey(symbol, timeframe, aggregate, stream = 16, bucketGroup = 0) {
-  const exchange = backendExchangesToMmtString(parseAggregateExchanges(aggregate));
-  return buildStreamKey({
-    exchange,
-    symbol: symbolToMmtPair(symbol),
-    stream,
-    timeframeSec: timeframeToSec(timeframe),
-    bucketGroup,
-  });
+function clientBarStatsKey(symbol, timeframe, bucketGroup = 0) {
+  const tfSec = timeframeToSec(timeframe);
+  return `barstats:${symbol.toUpperCase()}:${tfSec}:${bucketGroup}`;
 }
 
-function backendStreamKey(symbol, timeframe, aggregate, stream = 16, bucketGroup = 0) {
-  const exchange = backendExchangesToMmtString(parseAggregateExchanges(aggregate));
-  return buildStreamKey({
-    exchange,
-    symbol: symbolToMmtPair(symbol),
-    stream,
-    timeframeSec: timeframeToSec(timeframe),
-    bucketGroup,
-  });
-}
-
-test('stream keys match for binance,bybit aggregate', () => {
-  const key = clientStreamKey('BTCUSDT', '1h', 'binance,bybit');
-  assert.equal(key, backendStreamKey('BTCUSDT', '1h', 'binance,bybit'));
-  assert.equal(key, 'binance:bybit:btc/usd:16:3600:0');
+test('barstats stream keys match backend helper', () => {
+  const key = clientBarStatsKey('BTCUSDT', '1h', 6);
+  assert.equal(key, buildBarStatsStreamKey('BTCUSDT', 3600, 6));
+  assert.equal(key, 'barstats:BTCUSDT:3600:6');
 });
 
-test('stream keys match when aggregate omitted (binance-only default)', () => {
-  const key = clientStreamKey('BTCUSDT', '1h', undefined);
-  assert.equal(key, backendStreamKey('BTCUSDT', '1h', undefined));
-  assert.equal(key, 'binance:btc/usd:16:3600:0');
-});
-
-test('perp aliases map to binance and bybit backends', () => {
-  const key = clientStreamKey('BTCUSDT', '1h', 'binancef,bybitf');
-  assert.equal(key, 'binance:bybit:btc/usd:16:3600:0');
+test('timeframeToSec aligns with chart defaults', () => {
+  assert.equal(timeframeToSec('1h'), 3600);
+  assert.equal(timeframeToSec('5m'), 300);
 });

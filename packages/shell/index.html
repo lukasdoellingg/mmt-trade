@@ -34,21 +34,6 @@
         pointer-events: none;
         z-index: 10;
       }
-      #tokenPanel {
-        position: fixed;
-        bottom: 12px;
-        left: 12px;
-        max-width: 360px;
-        padding: 10px;
-        background: rgba(10, 10, 16, 0.92);
-        border: 1px solid #1f1f2c;
-        border-radius: 6px;
-        z-index: 20;
-        font-size: 12px;
-      }
-      #tokenPanel.hidden {
-        display: none;
-      }
       #loaderOverlay {
         position: fixed;
         inset: 0;
@@ -68,11 +53,6 @@
   <body>
     <canvas id="terminalCanvas" tabindex="0"></canvas>
     <div id="fpsOverlay"></div>
-    <div id="tokenPanel" class="hidden">
-      <label for="mmtTokenInput">MMT JWT (debug: ?mmt_direct=1 only)</label>
-      <textarea id="mmtTokenInput" placeholder="Direct mmt.gg — not used in normal mode"></textarea>
-      <button type="button" id="tokenConnectBtn">Connect MMT WS</button>
-    </div>
     <div id="loaderOverlay">Loading terminal.wasm…</div>
     <script type="module" src="/src/main.ts"></script>
   </body>

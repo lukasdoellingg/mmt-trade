@@ -13,17 +13,32 @@
  *   - vpvrLayerWorker
  */
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
-import { ChartOverlayRenderer, type ChartOverlayLayout } from '../chart/ChartOverlayRenderer';
+import { ChartOverlayRenderer, type ChartOverlayLayout, type ScriptPlotOverlayLine } from '../chart/ChartOverlayRenderer';
+import { useChartPaneRuntime } from '../chart/useChartPaneRuntime';
+import { chartPaneSetActive } from '../app/chartObjectTree';
+import {
+  SCRIPT_INDICATOR_COLORS,
+  SCRIPT_INDICATOR_LABELS,
+  type ScriptIndicatorId,
+} from '../indicators/scriptIndicatorIds';
 import { ChartRenderFlagsBuilder } from '../chart/ChartRenderFlags';
 import { ChartTimeScale } from '../chart/ChartTimeScale';
 import { useChartSettings } from '../chart/chartSettings';
 import { busEmit } from '../workspace/widgetBus';
 import { debugWarn } from '../utils/debug';
 import { acquireHeatmapFeed } from '../features/heatmap/feed-hub/heatmapFeedHub';
-import { attachFeedPort, subscribeFeedStream } from '../engine/feedHubClient';
-import { USE_EMSCRIPTEN_WORKERS, USE_SESSION_MUX, HUD_THROTTLE_MS } from '../config/featureFlags';
+import { attachFeedPort } from '../engine/feedHubClient';
+import {
+  USE_CHART_RUNTIME_INDICATORS,
+  USE_EMSCRIPTEN_OB_HEATMAP,
+  USE_EMSCRIPTEN_WORKERS,
+  USE_SESSION_MUX,
+  HUD_THROTTLE_MS,
+} from '../config/featureFlags';
 import WorkspaceWidget from '../workspace/WorkspaceWidget.vue';
 import type { WidgetState } from '../workspace/types';
+
+const scriptPlotOverlayScratch: ScriptPlotOverlayLine[] = [];
 
 const props = defineProps<{ widget: WidgetState }>();
 const settings = useChartSettings();
@@ -55,6 +70,10 @@ let lastHudMetaMs = 0;
 
 const overlay = new ChartOverlayRenderer();
 const timeScale = new ChartTimeScale(0.5, 2);
+const paneRuntime = useChartPaneRuntime(props.widget, settings);
+const scriptRuntime = paneRuntime.scriptRuntime;
+
+const scriptPlotLines = shallowRef<ScriptPlotOverlayLine[]>([]);
 
 function renderFlags(): number {
   return new ChartRenderFlagsBuilder()
@@ -107,23 +126,38 @@ function syncPriceToVpvr() {
 }
 
 function syncPriceToOb() {
-  if (!obWorker || displayedMinPrice <= 0 || displayedMaxPrice <= displayedMinPrice) return;
-  obWorker.postMessage({ type: 'setPriceRange', minPrice: displayedMinPrice, maxPrice: displayedMaxPrice });
+  if (displayedMinPrice <= 0 || displayedMaxPrice <= displayedMinPrice) return;
+  if (USE_EMSCRIPTEN_OB_HEATMAP) {
+    worker?.postMessage({ type: 'setObPriceRange', minPrice: displayedMinPrice, maxPrice: displayedMaxPrice });
+  } else if (obWorker) {
+    obWorker.postMessage({ type: 'setPriceRange', minPrice: displayedMinPrice, maxPrice: displayedMaxPrice });
+  }
 }
 
 function syncTimeAxisToOb() {
-  if (!obWorker || candleSnapshotCount < 1) return;
+  if (candleSnapshotCount < 1) return;
   const n = candleSnapshotCount * CANDLE_FIELD_STRIDE;
   const copy = new Float64Array(n);
   copy.set(candleSnapshotBuffer.subarray(0, n));
-  obWorker.postMessage(
-    { type: 'setTimeAxis', visStart: visibleStartIndex, visEnd: visibleEndIndex, tf: settings.timeframe, candleTsBuf: copy, candleCount: candleSnapshotCount },
-    [copy.buffer],
-  );
+  const payload = {
+    type: USE_EMSCRIPTEN_OB_HEATMAP ? 'setObTimeAxis' : 'setTimeAxis',
+    visStart: visibleStartIndex,
+    visEnd: visibleEndIndex,
+    tf: settings.timeframe,
+    candleTsBuf: copy,
+    candleCount: candleSnapshotCount,
+  };
+  if (USE_EMSCRIPTEN_OB_HEATMAP) worker?.postMessage(payload, [copy.buffer]);
+  else if (obWorker) obWorker.postMessage(payload, [copy.buffer]);
 }
 
 function syncIntensityToOb() {
-  obWorker?.postMessage({ type: 'setIntensity', peakSize: settings.obPeak, lowSize: settings.obLow });
+  const msg = { type: 'setIntensity', peakSize: settings.obPeak, lowSize: settings.obLow };
+  if (USE_EMSCRIPTEN_OB_HEATMAP) {
+    worker?.postMessage({ type: 'setObIntensity', peakSize: settings.obPeak, lowSize: settings.obLow });
+  } else {
+    obWorker?.postMessage(msg);
+  }
 }
 
 function obAggregateParam(): string {
@@ -137,31 +171,21 @@ function stopObFeed(): void {
   }
 }
 
-/** Heatmap feed — session MUX with direct worker port, main-thread relay as fallback. */
+/** OB heatmap — always /ws/heatmap (session MUX is scripts + bar stats only). */
 function startObFeed(): void {
   stopObFeed();
   if (!settings.obHeatmap) return;
   const sym = toBinanceSymbol(settings.symbol);
   const aggregate = obAggregateParam();
 
-  if (USE_SESSION_MUX) {
-    attachObFeedPort();
-    releaseObFeed = subscribeFeedStream(
-      { symbol: sym, timeframe: settings.timeframe, stream: 16, aggregate },
-      obFeedPortAttached
-        ? undefined
-        : (_key, buffer) => {
-            if (!obWorker) return;
-            obWorker.postMessage({ type: 'obFrame', buffer }, [buffer]);
-          },
-    );
-    return;
-  }
+  if (USE_SESSION_MUX) attachObFeedPort();
 
-  if (!obWorker) return;
+  const target = USE_EMSCRIPTEN_OB_HEATMAP ? worker : obWorker;
+  if (!target) return;
   releaseObFeed = acquireHeatmapFeed(sym, settings.timeframe, aggregate, (buffer) => {
-    if (!obWorker) return;
-    obWorker.postMessage({ type: 'obFrame', buffer }, [buffer]);
+    const t = USE_EMSCRIPTEN_OB_HEATMAP ? worker : obWorker;
+    if (!t) return;
+    t.postMessage({ type: 'obFrame', buffer }, [buffer]);
   });
 }
 
@@ -372,6 +396,21 @@ function tickKinetic(now: number): boolean {
 }
 function stopKinetic() { kineticAnimationState = null; }
 
+function rebuildScriptPlotLines(): void {
+  const lines: ScriptPlotOverlayLine[] = [];
+  for (const mount of scriptRuntime.mountsForScope(paneRuntime.scopeId, 'overlay')) {
+    if (!mount.plotPrices?.length) continue;
+    const templateId = mount.templateId as ScriptIndicatorId;
+    const color = SCRIPT_INDICATOR_COLORS[templateId] ?? '#6eb5ff';
+    const label = SCRIPT_INDICATOR_LABELS[templateId] ?? mount.templateId;
+    for (let i = 0; i < mount.plotPrices.length; i++) {
+      lines.push({ price: mount.plotPrices[i], color, label: i === 0 ? label : undefined });
+    }
+  }
+  scriptPlotLines.value = lines;
+  gridDirty = true;
+}
+
 function applyTimeframeChange(tf: string) {
   timeScale.barSpacing = 1.5; timeScale.rightOffset = 0;
   workerViewportSynced = false;
@@ -381,7 +420,7 @@ function applyTimeframeChange(tf: string) {
   atLiveEdge = true; gridDirty = true;
   stopKinetic();
   worker?.postMessage({ type: 'setTimeframe', tf });
-  obWorker?.postMessage({ type: 'setTimeframe', tf });
+  if (!USE_EMSCRIPTEN_OB_HEATMAP) obWorker?.postMessage({ type: 'setTimeframe', tf });
   startObFeed();
   fpWorker?.postMessage({ type: 'setTimeframe', tf });
   scheduleOverlayAxisSync();
@@ -401,13 +440,28 @@ function applySymbolChange(sym: string) {
   stopKinetic();
   if (worker) worker.postMessage({ type: 'setSymbol', symbol: upperSym });
   else { stopWorker(); startWorker(); }
-  obWorker?.postMessage({ type: 'setSymbol', symbol: upperSym });
+  if (!USE_EMSCRIPTEN_OB_HEATMAP) obWorker?.postMessage({ type: 'setSymbol', symbol: upperSym });
   startObFeed();
   fpWorker?.postMessage({ type: 'setSymbol', symbol: upperSym.toLowerCase() });
+  if (USE_SESSION_MUX) {
+    paneRuntime.remountOnContextChange();
+    rebuildScriptPlotLines();
+  }
 }
 
-watch(() => settings.timeframe, (tf) => applyTimeframeChange(tf));
+watch(() => settings.timeframe, (tf) => {
+  applyTimeframeChange(tf);
+  if (USE_SESSION_MUX) {
+    paneRuntime.remountOnContextChange();
+    rebuildScriptPlotLines();
+  }
+});
 watch(() => settings.symbol, (s) => applySymbolChange(s));
+watch(
+  () => [settings.scriptKeyLevels, settings.scriptNetPositioning, settings.scriptObImbalance],
+  () => paneRuntime.syncOverlayScripts(),
+);
+watch(scriptRuntime.mounts, () => rebuildScriptPlotLines(), { deep: true });
 watch([
   () => settings.vwapDaily, () => settings.vwapWeekly, () => settings.vwapMonthly,
   () => settings.vwapBands, () => settings.ema, () => settings.liquidations,
@@ -417,7 +471,10 @@ watch(() => settings.obHeatmap, (on) => {
   if (!on) { stopObFeed(); stopObWorker(); }
   else { setTimeout(() => { if (settings.obHeatmap) { startObWorker(); startObFeed(); } }, 0); }
 });
-watch(() => settings.obBinMode, (mode) => obWorker?.postMessage({ type: 'setBinMode', mode }));
+watch(() => settings.obBinMode, (mode) => {
+  if (USE_EMSCRIPTEN_OB_HEATMAP) worker?.postMessage({ type: 'setObBinMode', mode });
+  else obWorker?.postMessage({ type: 'setBinMode', mode });
+});
 watch(() => settings.obAggregate, () => syncAggregateToOb());
 watch([() => settings.obPeak, () => settings.obLow], () => syncIntensityToOb());
 watch(() => settings.footprint, (on) => {
@@ -509,6 +566,27 @@ function startWorker() {
       case 'error':
         debugWarn('[Chart]', m.msg);
         break;
+      case 'scriptPlots': {
+        scriptPlotOverlayScratch.length = 0;
+        for (const batch of m.batches ?? []) {
+          const templateId = (batch.templateId ?? 'key-levels') as ScriptIndicatorId;
+          const color = SCRIPT_INDICATOR_COLORS[templateId] ?? '#6eb5ff';
+          const prices = batch.prices;
+          if (!(prices instanceof Float64Array) || prices.length === 0) continue;
+          for (let i = 0; i < prices.length; i++) {
+            scriptPlotOverlayScratch.push({
+              price: prices[i],
+              color,
+              label: i === 0 ? batch.runtimeId : undefined,
+            });
+          }
+        }
+        if (scriptPlotOverlayScratch.length) {
+          scriptPlotLines.value = scriptPlotOverlayScratch.slice();
+          gridDirty = true;
+        }
+        break;
+      }
     }
   };
 
@@ -517,8 +595,22 @@ function startWorker() {
     type: 'init', symbol: sym, tf: settings.timeframe, dpr: DPR, w: W, h: H,
     renderFlags: renderFlags(),
     useEmscriptenPipeline: USE_EMSCRIPTEN_WORKERS && USE_SESSION_MUX,
+    useChartRuntimeIndicators: USE_CHART_RUNTIME_INDICATORS && USE_EMSCRIPTEN_WORKERS && USE_SESSION_MUX,
+    useEmscriptenObHeatmap: USE_EMSCRIPTEN_OB_HEATMAP,
   };
-  if (osc) { initMsg.canvas = osc; worker.postMessage(initMsg, [osc]); }
+  const transfers: Transferable[] = [];
+  if (osc) { initMsg.canvas = osc; transfers.push(osc); }
+  if (USE_EMSCRIPTEN_OB_HEATMAP) {
+    const obc = obHeatmapCanvas.value;
+    if (obc) {
+      try {
+        const obOsc = obc.transferControlToOffscreen();
+        initMsg.obCanvas = obOsc;
+        transfers.push(obOsc);
+      } catch { /* canvas already transferred */ }
+    }
+  }
+  if (transfers.length) worker.postMessage(initMsg, transfers);
   else worker.postMessage(initMsg);
 }
 
@@ -533,14 +625,22 @@ function stopWorker() {
 // transfer (which can only happen once per HTMLCanvasElement) is never lost.
 // Toggling a layer off sends a pause message; toggling on sends resume.
 function attachObFeedPort(): void {
-  if (!obWorker || !USE_SESSION_MUX || obFeedPortAttached) return;
+  const target = USE_EMSCRIPTEN_OB_HEATMAP ? worker : obWorker;
+  if (!target || !USE_SESSION_MUX || obFeedPortAttached) return;
   const mc = new MessageChannel();
   attachFeedPort(mc.port2);
-  obWorker.postMessage({ type: 'initFeedPort', port: mc.port1 }, [mc.port1]);
+  target.postMessage({ type: 'initFeedPort', port: mc.port1 }, [mc.port1]);
   obFeedPortAttached = true;
 }
 
 function startObWorker() {
+  if (USE_EMSCRIPTEN_OB_HEATMAP) {
+    worker?.postMessage({ type: 'resumeObHeatmap' });
+    syncPriceToOb(); syncIntensityToOb();
+    attachObFeedPort();
+    startObFeed();
+    return;
+  }
   if (obWorker) {
     obWorker.postMessage({ type: 'resume' });
     syncPriceToOb(); syncIntensityToOb();
@@ -567,8 +667,12 @@ function startObWorker() {
 }
 
 function stopObWorker() {
-  if (!obWorker) return;
   stopObFeed();
+  if (USE_EMSCRIPTEN_OB_HEATMAP) {
+    worker?.postMessage({ type: 'pauseObHeatmap' });
+    return;
+  }
+  if (!obWorker) return;
   obWorker.postMessage({ type: 'pause' });
 }
 
@@ -645,7 +749,7 @@ function resize() {
   xCtx = crossCanvas.value?.getContext('2d', { alpha: true }) ?? null;
   gridDirty = crossDirty = true;
   worker?.postMessage({ type: 'resize', w: W, h: H, dpr: DPR });
-  obWorker?.postMessage({ type: 'resize', w: W, h: H, dpr: DPR });
+  if (!USE_EMSCRIPTEN_OB_HEATMAP) obWorker?.postMessage({ type: 'resize', w: W, h: H, dpr: DPR });
   fpWorker?.postMessage({ type: 'resize', w: W, h: H, dpr: DPR });
   vpWorker?.postMessage({ type: 'resize', w: W, h: H, dpr: DPR });
 }
@@ -653,7 +757,11 @@ function resize() {
 function drawGrid() {
   const ctx = gCtx; if (!ctx) return;
   gridDirty = false;
-  overlay.drawPlotGrid(ctx, overlayLayout(), displayedMinPrice, displayedMaxPrice, visibleStartIndex, visibleEndIndex, candleSnapshotBuffer, candleSnapshotCount, CANDLE_FIELD_STRIDE, settings.timeframe);
+  const L = overlayLayout();
+  overlay.drawPlotGrid(ctx, L, displayedMinPrice, displayedMaxPrice, visibleStartIndex, visibleEndIndex, candleSnapshotBuffer, candleSnapshotCount, CANDLE_FIELD_STRIDE, settings.timeframe);
+  if (scriptPlotLines.value.length) {
+    overlay.drawScriptPlotLines(ctx, L, displayedMinPrice, displayedMaxPrice, scriptPlotLines.value);
+  }
 }
 
 function drawCross() {
@@ -847,10 +955,20 @@ function start() {
   // succeed against their (always-mounted, v-show'd) HTMLCanvasElements. If
   // the user has the layer off we pause the worker immediately — that frees
   // its WebSocket and rAF loop without losing the offscreen handle.
-  startObWorker(); if (!settings.obHeatmap) obWorker?.postMessage({ type: 'pause' }); else startObFeed();
+  if (USE_EMSCRIPTEN_OB_HEATMAP) {
+    startWorker();
+    startObWorker();
+    if (!settings.obHeatmap) worker?.postMessage({ type: 'pauseObHeatmap' });
+  } else {
+    startObWorker();
+    if (!settings.obHeatmap) obWorker?.postMessage({ type: 'pause' });
+    else startObFeed();
+    startWorker();
+  }
   startFpWorker(); if (!settings.footprint) fpWorker?.postMessage({ type: 'pause' });
   startVpWorker(); if (!settings.vpvr) vpWorker?.postMessage({ type: 'pause' });
-  startWorker();
+  paneRuntime.syncOverlayScripts();
+  rebuildScriptPlotLines();
   frame();
   resizeObs = new ResizeObserver(() => { rectCache = null; resize(); });
   if (wrapEl.value) resizeObs.observe(wrapEl.value);
@@ -859,7 +977,8 @@ function start() {
 function pause() {
   if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = 0; }
   stopObFeed();
-  obWorker?.postMessage({ type: 'pause' });
+  if (USE_EMSCRIPTEN_OB_HEATMAP) worker?.postMessage({ type: 'pauseObHeatmap' });
+  else obWorker?.postMessage({ type: 'pause' });
   fpWorker?.postMessage({ type: 'pause' });
   vpWorker?.postMessage({ type: 'pause' });
   stopWorker();
@@ -870,7 +989,10 @@ function pause() {
 function terminateAllLayerWorkers() {
   stopObFeed();
   obFeedPortAttached = false;
-  for (const w of [obWorker, fpWorker, vpWorker]) {
+  const layerWorkers = USE_EMSCRIPTEN_OB_HEATMAP
+    ? [fpWorker, vpWorker]
+    : [obWorker, fpWorker, vpWorker];
+  for (const w of layerWorkers) {
     if (!w) continue;
     w.postMessage({ type: 'stop' });
     try { w.terminate(); } catch { /* ignore */ }
@@ -878,10 +1000,10 @@ function terminateAllLayerWorkers() {
   obWorker = fpWorker = vpWorker = null;
 }
 
-onMounted(() => { start(); });
-onUnmounted(() => { active = false; pause(); terminateAllLayerWorkers(); });
-onActivated(() => { active = true; start(); });
-onDeactivated(() => { active = false; pause(); });
+onMounted(() => { paneRuntime.registerPane(); start(); });
+onUnmounted(() => { active = false; paneRuntime.teardown(); pause(); terminateAllLayerWorkers(); });
+onActivated(() => { active = true; chartPaneSetActive(paneRuntime.scopeId, true); start(); });
+onDeactivated(() => { active = false; chartPaneSetActive(paneRuntime.scopeId, false); pause(); });
 
 defineExpose({ widget: props.widget });
 </script>

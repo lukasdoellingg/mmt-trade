@@ -10,7 +10,7 @@
 
 ```bash
 cp deploy/.env.production.example web/backend/.env
-# Edit CORS_ALLOWED_ORIGINS and optional MMT_WS_TOKEN
+# Edit CORS_ALLOWED_ORIGINS
 
 npm ci
 npm run start:backend
@@ -48,5 +48,5 @@ npm run build
 
 - Set `CORS_ALLOWED_ORIGINS` to your domain only
 - Do not enable `?mmt_direct=1` in production (shell build gates this)
-- Keep `MMT_WS_TOKEN` only on the server
+- `/ws/session` and `/ws/heatmap` are first-party — no external WS token required
 - Terminate TLS at the proxy; enable HSTS there

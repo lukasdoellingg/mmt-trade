@@ -39,13 +39,13 @@ Details MMT: [`MMT_REPLICATION_CHECKLIST.md`](./MMT_REPLICATION_CHECKLIST.md).
         │                 │                 │
         ▼                 ▼                 ▼
 ┌───────────────┐ ┌───────────────┐ ┌───────────────────────┐
-│ heatmapWorker │ │ obHeatmapWorker│ │ footprintLayerWorker │
-│ Binance WS    │ │ /ws/heatmap    │ │ Binance aggTrade     │
-│ Odin WASM     │ │ WebGL RG tex   │ │ 2D overlay           │
-│ ChartRenderer │ │ Kerzen-Sync    │ │ Kerzen-Sync          │
-│ IndicatorHost │ │               │ │                      │
-│  └─ ema/vpvr  │ │               │ │                      │
-│     .worker   │ │               │ │                      │
+│ chartEngineWorker │ │ obHeatmapWorker│ │ footprintLayerWorker │
+│ Binance WS        │ │ feedHub /heatmap│ │ Binance aggTrade     │
+│ engine.wasm VWAP/EMA│ │ WebGL RG tex   │ │ 2D overlay           │
+│ chart_runtime.wasm │ │               │ │                      │
+│  decode/texture/   │ │               │ │                      │
+│  indicator workers │ │               │ │                      │
+│ feedHubWorker MUX  │ │               │ │                      │
 └───────────────┘ └───────────────┘ └───────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
@@ -78,9 +78,10 @@ Bis dahin: aktuelles Multi-Worker-Modell beibehalten.
 ```
 web/frontend/src/
 ├── core/
-├── indicators/        # Registry, IndicatorHost
+├── indicators/        # scriptIndicatorIds, MMT script templates
 ├── workers/
-│   ├── heatmapWorker.ts       # Chart + WASM + IndicatorHost
+│   ├── chartEngineWorker.ts   # Chart + engine.wasm + chart_runtime pipeline
+│   ├── feedHubWorker.ts       # /ws/session MUX + script runtime plots
 │   ├── obHeatmapWorker.ts     # OB-Heatmap GPU
 │   ├── footprintLayerWorker.ts
 │   └── indicators/            # Sub-Workers

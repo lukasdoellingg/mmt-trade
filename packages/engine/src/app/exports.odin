@@ -20,21 +20,16 @@ app_get_frame_count :: proc "c" () -> u32 {
     return engine_frame_count_value
 }
 
+// Legacy ABI: direct mmt.gg browser WS removed — first-party /ws/session + /ws/heatmap only.
 @(export)
 mmt_set_session_token :: proc "c" (jwt_ptr: [^]u8, jwt_length: u16) -> i32 {
-    if jwt_ptr == nil || jwt_length == 0 { return 0 }
-    token := net.mmt_session_token_global()
-    if !net.mmt_session_token_set(token, jwt_ptr, jwt_length) {
-        return 0
-    }
-    net.feed_hub_request_connect()
-    return 1
+	_ = jwt_ptr
+	_ = jwt_length
+	return 0
 }
 
 @(export)
-mmt_disconnect :: proc "c" () {
-    net.feed_hub_disconnect()
-}
+mmt_disconnect :: proc "c" () {}
 
 // Legacy Emscripten WebSocket connect (binary frames often do not reach WASM in dev).
 @(export)
@@ -65,6 +60,15 @@ app_feed_push_heatmap_frame :: proc "c" (payload_ptr: [^]u8, length: u32) -> i32
         return 1
     }
     return 0
+}
+
+@(export)
+app_script_apply_runtime_json :: proc "c" (json_ptr: [^]u8, json_length: u32, runtime_id_ptr: [^]u8, runtime_id_length: u16) -> i32 {
+    if json_ptr == nil || json_length == 0 || runtime_id_ptr == nil { return 0 }
+    json_slice := json_ptr[:json_length]
+    runtime_id := string(runtime_id_ptr[:runtime_id_length])
+    script_runtime_feed_init()
+    return 1 if script_runtime_apply_json(json_slice, runtime_id) else 0
 }
 
 @(export)

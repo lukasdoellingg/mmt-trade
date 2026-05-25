@@ -6,6 +6,8 @@ runtime_hub: ChartRuntimeHub
 @(private="file")
 runtime_hub_initialized: bool
 
+CHART_RUNTIME_MAX_CANDLES :: 5000
+
 ChartRuntimeHub :: struct {
     frameRing:     FrameRing,
     flatHeatmap:   FlatHeatmap,
@@ -13,6 +15,11 @@ ChartRuntimeHub :: struct {
     timestampStorage: [HEATMAP_COLUMN_CAPACITY]i64,
     columnCount:   i32,
     textureDirty:  bool,
+    candleStore:   CandleStore,
+    candleBacking: [CHART_RUNTIME_MAX_CANDLES * CANDLE_FIELD_COUNT]f64,
+    indicatorDirty: bool,
+    indicatorFromIndex: i32,
+    indicatorUntilIndex: i32,
 }
 
 chart_runtime_hub_init :: proc "contextless" () {
@@ -25,6 +32,10 @@ chart_runtime_hub_init :: proc "contextless" () {
         0,
         1.0,
     )
+    candle_store_init(&runtime_hub.candleStore, CHART_RUNTIME_MAX_CANDLES)
+    candle_store_bind_buffer(&runtime_hub.candleStore, &runtime_hub.candleBacking[0])
+    runtime_hub.indicatorFromIndex = 0
+    runtime_hub.indicatorUntilIndex = 0
     runtime_hub_initialized = true
 }
 

@@ -27,6 +27,17 @@ chart_runtime_get_column_count :: proc "c" () -> i32 {
 }
 
 @(export)
+chart_runtime_push_candles :: proc "c" (payload_ptr: [^]f64, candle_count: i32) -> i32 {
+    if payload_ptr == nil || candle_count <= 0 { return 0 }
+    return 1 if chart_runtime.chart_runtime_push_candles(payload_ptr, candle_count) else 0
+}
+
+@(export)
+chart_runtime_request_indicator :: proc "c" (from_index: i32, until_index: i32) {
+    chart_runtime.chart_runtime_request_indicator(from_index, until_index)
+}
+
+@(export)
 chart_runtime_shutdown :: proc "c" () {
     chart_runtime.chart_runtime_terminate_workers()
 }

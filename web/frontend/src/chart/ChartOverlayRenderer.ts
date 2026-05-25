@@ -23,6 +23,12 @@ export interface VwapAxisLabel {
   fg: string;
 }
 
+export interface ScriptPlotOverlayLine {
+  price: number;
+  color: string;
+  label?: string;
+}
+
 export class ChartOverlayRenderer {
   private readonly pad = (n: number) => (n < 10 ? '0' + n : '' + n);
   private readonly axisDate = new Date(0);
@@ -73,6 +79,47 @@ export class ChartOverlayRenderer {
       this.pad(d.getMonth() + 1) + '/' + this.pad(d.getDate()) + ' ' +
       this.pad(d.getHours()) + ':' + this.pad(d.getMinutes()) + ':' + this.pad(d.getSeconds())
     );
+  }
+
+  /** Horizontal script-indicator levels (session create_runtime plots). */
+  drawScriptPlotLines(
+    ctx: CanvasRenderingContext2D,
+    L: ChartOverlayLayout,
+    dispMin: number,
+    dispMax: number,
+    lines: readonly ScriptPlotOverlayLine[],
+  ): void {
+    if (!lines.length || dispMin <= 0 || dispMax <= dispMin) return;
+    const { PW, PH, DPR } = L;
+    ctx.save();
+    for (const line of lines) {
+      if (line.price <= 0) continue;
+      const y = this.p2y(line.price, dispMin, dispMax, PH);
+      if (y < 2 || y > PH - 2) continue;
+      ctx.strokeStyle = line.color;
+      ctx.globalAlpha = 0.72;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5 * DPR, 4 * DPR]);
+      ctx.beginPath();
+      ctx.moveTo(0, y + 0.5);
+      ctx.lineTo(PW, y + 0.5);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      if (line.label) {
+        ctx.font = `bold ${8 * DPR}px ${FONT}`;
+        const tw = ctx.measureText(line.label).width + 8 * DPR;
+        const lh = 14 * DPR;
+        ctx.fillStyle = line.color;
+        this.rrect(ctx, 4 * DPR, y - lh * 0.5, tw, lh, 2 * DPR);
+        ctx.fill();
+        ctx.fillStyle = '#06060b';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(line.label, 8 * DPR, y);
+      }
+    }
+    ctx.restore();
   }
 
   /** Plot area only — sits under WebGL (z0). */

@@ -29,7 +29,7 @@ function applyLevels(map, rows, isBid) {
   }
 }
 
-function mergeSourceBooks(upstream) {
+export function mergeSourceBooks(upstream) {
   upstream.bids.clear();
   upstream.asks.clear();
   for (const src of upstream.sources) {
@@ -226,6 +226,32 @@ function attachBinanceSource(upstream, symbolKey, HeatmapFrame) {
 
   connect();
   initSnapshot();
+}
+
+/** Volume-weighted bid/ask imbalance levels from merged book maps. */
+export function computeObImbalanceLevels(bids, asks) {
+  let bidSum = 0;
+  let askSum = 0;
+  let bidPx = 0;
+  let askPx = 0;
+  for (const [p, q] of bids) {
+    const vol = +q;
+    if (vol > 0) { bidSum += vol; bidPx += (+p) * vol; }
+  }
+  for (const [p, q] of asks) {
+    const vol = +q;
+    if (vol > 0) { askSum += vol; askPx += (+p) * vol; }
+  }
+  const levels = [];
+  if (bidSum > 0) levels.push(bidPx / bidSum);
+  if (askSum > 0) levels.push(askPx / askSum);
+  const mid = levels.length === 2 ? (levels[0] + levels[1]) / 2 : levels[0] ?? 0;
+  if (mid > 0 && Math.abs(bidSum - askSum) > 0) {
+    const skew = (bidSum - askSum) / (bidSum + askSum);
+    levels.push(mid * (1 + skew * 0.002));
+    levels.push(mid * (1 - skew * 0.002));
+  }
+  return levels.filter((p) => p > 0).map((p) => +p.toFixed(2));
 }
 
 export function startAggregatedHeatmap(symbolKey, exchanges, HeatmapFrame, timeframeMs = 3600e3) {
