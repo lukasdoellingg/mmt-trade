@@ -8,7 +8,7 @@ import { getWidget } from './registry';
 import { busEmit } from './widgetBus';
 
 const STORAGE_KEY = 'mmt-workspace-v1';
-const LAYOUT_VERSION = 2;
+const LAYOUT_VERSION = 4;
 /** Grid step in CSS pixels. Snap targets are integer multiples. */
 export const CELL_PX = 8;
 
@@ -18,9 +18,32 @@ interface WorkspaceStore {
 }
 
 const store = shallowReactive<WorkspaceStore>({ widgets: [], topZ: 1 });
+/** Last chart widget that received focus (ChartTopBar edits this pane). */
+export const activeChartId = ref<string | null>(null);
+
 const hydrated = ref(false);
 let nextSerial = 1;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+const WIDGET_TYPES = new Set(['chart', 'orderflow-ladder', 'bar-stats', 'script-indicator-pane']);
+
+function sanitizeWidget(w: WidgetState): WidgetState | null {
+  if (!w || typeof w.id !== 'string' || !WIDGET_TYPES.has(w.type)) return null;
+  const rect = w.rect;
+  if (!rect || typeof rect.x !== 'number' || typeof rect.y !== 'number') return null;
+  return {
+    id: w.id,
+    type: w.type,
+    rect: {
+      x: rect.x | 0,
+      y: rect.y | 0,
+      w: Math.max(12, rect.w | 0),
+      h: Math.max(10, rect.h | 0),
+    },
+    z: w.z | 0,
+    props: w.props && typeof w.props === 'object' ? w.props : {},
+  };
+}
 
 function safeLoad(): WorkspaceLayout | null {
   try {
@@ -28,7 +51,9 @@ function safeLoad(): WorkspaceLayout | null {
     if (!raw) return null;
     const j = JSON.parse(raw) as WorkspaceLayout;
     if (!j || j.version !== LAYOUT_VERSION || !Array.isArray(j.widgets)) return null;
-    return j;
+    const widgets = j.widgets.map(sanitizeWidget).filter(Boolean) as WidgetState[];
+    if (!widgets.length) return null;
+    return { ...j, widgets };
   } catch { return null; }
 }
 
@@ -190,6 +215,7 @@ export function useWorkspace() {
 
   return {
     store,
+    activeChartId,
     addWidget,
     removeWidget,
     updateRect,

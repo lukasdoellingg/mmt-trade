@@ -30,10 +30,12 @@ export type ScriptRuntimeMount = {
   createToken: number;
   streamKey: string;
   status: 'idle' | 'mounting' | 'live' | 'error';
+  errorMessage?: string;
   pane: 'overlay' | 'window';
   /** When pane=window — chart widget that owns the object-tree mount row. */
   parentChartWidgetId?: string;
   plotPrices: Float64Array | null;
+  plotRoles?: Uint8Array | null;
 };
 
 const mounts = shallowRef<Map<string, ScriptRuntimeMount>>(new Map());
@@ -61,12 +63,12 @@ function releaseRuntimeSubscription(runtimeId: string): void {
   }
 }
 
-function applyPlotToMount(runtimeId: string, prices: Float64Array): void {
+function applyPlotToMount(runtimeId: string, prices: Float64Array, roles?: Uint8Array): void {
   const next = new Map(mounts.value);
   let changed = false;
   for (const [id, mount] of next) {
     if (mount.runtimeId === runtimeId) {
-      next.set(id, { ...mount, plotPrices: prices });
+      next.set(id, { ...mount, plotPrices: prices, plotRoles: roles ?? null });
       changed = true;
     }
   }
@@ -114,25 +116,30 @@ function ensureListeners(): void {
           type?: string;
           runtime_id?: string;
           createToken?: number | null;
+          message?: string;
         };
         if (msg.type === 'runtime_created' && msg.runtime_id && msg.createToken != null) {
           syncRuntimeCreated(msg.runtime_id, msg.createToken);
         } else if (msg.type === 'error') {
+          const token = msg.createToken;
+          if (token == null) return;
           const next = new Map(mounts.value);
+          let matched = false;
           for (const [id, mount] of next) {
-            if (mount.status === 'mounting') {
-              next.set(id, { ...mount, status: 'error' });
+            if (mount.status === 'mounting' && mount.createToken === token) {
+              next.set(id, { ...mount, status: 'error', errorMessage: msg.message ?? 'error' });
+              matched = true;
             }
           }
-          mounts.value = next;
+          if (matched) mounts.value = next;
         }
       } catch { /* ignore */ }
     });
   }
   if (!plotListenerInstalled) {
     plotListenerInstalled = true;
-    onScriptPlotUpdate((runtimeId, prices) => {
-      applyPlotToMount(runtimeId, prices);
+    onScriptPlotUpdate((runtimeId, prices, roles) => {
+      applyPlotToMount(runtimeId, prices, roles);
     });
   }
 }

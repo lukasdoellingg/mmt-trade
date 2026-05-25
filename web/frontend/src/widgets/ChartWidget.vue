@@ -16,18 +16,25 @@ import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, shal
 import { ChartOverlayRenderer, type ChartOverlayLayout, type ScriptPlotOverlayLine } from '../chart/ChartOverlayRenderer';
 import { useChartPaneRuntime } from '../chart/useChartPaneRuntime';
 import { chartPaneSetActive } from '../app/chartObjectTree';
+import type { ScriptIndicatorId } from '../indicators/scriptIndicatorIds';
+import { buildKeyLevelPlotLines } from '../indicators/keyLevelsDisplay';
 import {
   SCRIPT_INDICATOR_COLORS,
   SCRIPT_INDICATOR_LABELS,
-  type ScriptIndicatorId,
-} from '../indicators/scriptIndicatorIds';
+} from '../indicators/indicatorCatalog';
 import { ChartRenderFlagsBuilder } from '../chart/ChartRenderFlags';
 import { ChartTimeScale } from '../chart/ChartTimeScale';
-import { useChartSettings } from '../chart/chartSettings';
+import { usePaneSettings } from '../chart/chartPaneSettings';
 import { busEmit } from '../workspace/widgetBus';
 import { debugWarn } from '../utils/debug';
 import { acquireHeatmapFeed } from '../features/heatmap/feed-hub/heatmapFeedHub';
-import { attachFeedPort } from '../engine/feedHubClient';
+import {
+  attachFeedPort,
+  detachFeedPort,
+  streamKeyFromSpec,
+  subscribeFeedPortStream,
+  unsubscribeFeedPortStream,
+} from '../engine/feedHubClient';
 import {
   USE_CHART_RUNTIME_INDICATORS,
   USE_EMSCRIPTEN_OB_HEATMAP,
@@ -38,10 +45,8 @@ import {
 import WorkspaceWidget from '../workspace/WorkspaceWidget.vue';
 import type { WidgetState } from '../workspace/types';
 
-const scriptPlotOverlayScratch: ScriptPlotOverlayLine[] = [];
-
 const props = defineProps<{ widget: WidgetState }>();
-const settings = useChartSettings();
+const settings = usePaneSettings(props.widget.id);
 
 const widgetTitle = computed(() => `${settings.symbol.toLowerCase()} @ ${settings.exchange.toLowerCase()}f`);
 const widgetBadge = computed(() => settings.timeframe);
@@ -91,9 +96,13 @@ function syncRenderFlags() {
 }
 
 let worker: Worker | null = null;
+/** Set after successful transferControlToOffscreen — transfer is one-shot per canvas. */
+let mainCanvasTransferred = false;
 let obWorker: Worker | null = null;
 let releaseObFeed: (() => void) | null = null;
 let obFeedPortAttached = false;
+let chartFeedPort: MessagePort | null = null;
+let obFeedPort: MessagePort | null = null;
 let fpWorker: Worker | null = null;
 let vpWorker: Worker | null = null;
 let overlayAxisPending = false;
@@ -398,9 +407,14 @@ function stopKinetic() { kineticAnimationState = null; }
 
 function rebuildScriptPlotLines(): void {
   const lines: ScriptPlotOverlayLine[] = [];
+  const mid = midP > 0 ? midP : (displayedMinPrice + displayedMaxPrice) * 0.5;
   for (const mount of scriptRuntime.mountsForScope(paneRuntime.scopeId, 'overlay')) {
     if (!mount.plotPrices?.length) continue;
     const templateId = mount.templateId as ScriptIndicatorId;
+    if (templateId === 'key-levels') {
+      lines.push(...buildKeyLevelPlotLines(mount.plotPrices, mount.plotRoles, mid, 12));
+      continue;
+    }
     const color = SCRIPT_INDICATOR_COLORS[templateId] ?? '#6eb5ff';
     const label = SCRIPT_INDICATOR_LABELS[templateId] ?? mount.templateId;
     for (let i = 0; i < mount.plotPrices.length; i++) {
@@ -412,6 +426,7 @@ function rebuildScriptPlotLines(): void {
 }
 
 function applyTimeframeChange(tf: string) {
+  syncChartFeedPortSubscriptions();
   timeScale.barSpacing = 1.5; timeScale.rightOffset = 0;
   workerViewportSynced = false;
   visibleStartIndex = 0; visibleEndIndex = 750; yScale = 1.0; yOff = 0;
@@ -429,6 +444,8 @@ function applyTimeframeChange(tf: string) {
 function toBinanceSymbol(pair: string): string { return pair.replace(/[^A-Za-z0-9]/g, '').toUpperCase(); }
 
 function applySymbolChange(sym: string) {
+  chartFeedStreamKey = '';
+  syncChartFeedPortSubscriptions();
   const upperSym = toBinanceSymbol(sym);
   timeScale.barSpacing = 1.5; timeScale.rightOffset = 0;
   workerViewportSynced = false;
@@ -486,17 +503,58 @@ watch(() => settings.vpvr, (on) => {
   else setTimeout(() => { if (settings.vpvr) startVpWorker(); }, 0);
 });
 
+let chartFeedStreamKey = '';
+
+function syncChartFeedPortSubscriptions(): void {
+  if (!chartFeedPort || !USE_SESSION_MUX) return;
+  const spec = {
+    symbol: settings.symbol,
+    timeframe: settings.timeframe,
+    stream: 16,
+    bucketGroup: 0,
+    aggregate: 'binance',
+  };
+  const nextKey = streamKeyFromSpec(spec);
+  if (chartFeedStreamKey && chartFeedStreamKey !== nextKey) {
+    chartFeedPort.postMessage({ type: 'unsubscribe_stream', streamKey: chartFeedStreamKey });
+  }
+  if (nextKey !== chartFeedStreamKey) {
+    subscribeFeedPortStream(chartFeedPort, spec);
+    chartFeedStreamKey = nextKey;
+  }
+}
+
 function startWorker() {
-  if (worker) return;
+  if (worker) {
+    worker.postMessage({ type: 'resume' });
+    return;
+  }
   const mc = mainCanvas.value;
   if (!mc) return;
+  if (mainCanvasTransferred) {
+    engineStatus.value = 'error';
+    fatalError.value = 'Chart canvas already transferred; reload the page.';
+    return;
+  }
   let osc: OffscreenCanvas | null = null;
-  try { osc = mc.transferControlToOffscreen(); } catch { osc = null; }
+  try {
+    osc = mc.transferControlToOffscreen();
+    mainCanvasTransferred = true;
+  } catch {
+    osc = null;
+    if (mainCanvasTransferred) {
+      engineStatus.value = 'error';
+      fatalError.value = 'Chart canvas transfer failed; reload the page.';
+      return;
+    }
+  }
   worker = new Worker(new URL('../workers/chartEngineWorker.ts', import.meta.url), { type: 'module' });
 
   if (USE_SESSION_MUX && typeof SharedArrayBuffer !== 'undefined') {
     const feedMc = new MessageChannel();
+    chartFeedPort = feedMc.port2;
     attachFeedPort(feedMc.port2);
+    syncChartFeedPortSubscriptions();
     worker.postMessage({ type: 'initFeedPort', port: feedMc.port1 }, [feedMc.port1]);
   }
 
@@ -566,27 +624,9 @@ function startWorker() {
       case 'error':
         debugWarn('[Chart]', m.msg);
         break;
-      case 'scriptPlots': {
-        scriptPlotOverlayScratch.length = 0;
-        for (const batch of m.batches ?? []) {
-          const templateId = (batch.templateId ?? 'key-levels') as ScriptIndicatorId;
-          const color = SCRIPT_INDICATOR_COLORS[templateId] ?? '#6eb5ff';
-          const prices = batch.prices;
-          if (!(prices instanceof Float64Array) || prices.length === 0) continue;
-          for (let i = 0; i < prices.length; i++) {
-            scriptPlotOverlayScratch.push({
-              price: prices[i],
-              color,
-              label: i === 0 ? batch.runtimeId : undefined,
-            });
-          }
-        }
-        if (scriptPlotOverlayScratch.length) {
-          scriptPlotLines.value = scriptPlotOverlayScratch.slice();
-          gridDirty = true;
-        }
+      case 'scriptPlots':
+        rebuildScriptPlotLines();
         break;
-      }
     }
   };
 
@@ -619,6 +659,11 @@ function stopWorker() {
   worker.postMessage({ type: 'stop' });
   worker.terminate();
   worker = null;
+  mainCanvasTransferred = false;
+  if (chartFeedPort) {
+    detachFeedPort(chartFeedPort);
+    chartFeedPort = null;
+  }
 }
 
 // Workers are spawned **once** per widget lifetime so the OffscreenCanvas
@@ -628,6 +673,7 @@ function attachObFeedPort(): void {
   const target = USE_EMSCRIPTEN_OB_HEATMAP ? worker : obWorker;
   if (!target || !USE_SESSION_MUX || obFeedPortAttached) return;
   const mc = new MessageChannel();
+  obFeedPort = mc.port2;
   attachFeedPort(mc.port2);
   target.postMessage({ type: 'initFeedPort', port: mc.port1 }, [mc.port1]);
   obFeedPortAttached = true;
@@ -981,7 +1027,7 @@ function pause() {
   else obWorker?.postMessage({ type: 'pause' });
   fpWorker?.postMessage({ type: 'pause' });
   vpWorker?.postMessage({ type: 'pause' });
-  stopWorker();
+  worker?.postMessage({ type: 'pause' });
   wrapEl.value?.removeEventListener('wheel', onWheel);
   resizeObs?.disconnect(); resizeObs = null;
 }
@@ -989,6 +1035,10 @@ function pause() {
 function terminateAllLayerWorkers() {
   stopObFeed();
   obFeedPortAttached = false;
+  if (obFeedPort) {
+    detachFeedPort(obFeedPort);
+    obFeedPort = null;
+  }
   const layerWorkers = USE_EMSCRIPTEN_OB_HEATMAP
     ? [fpWorker, vpWorker]
     : [obWorker, fpWorker, vpWorker];
@@ -1001,7 +1051,13 @@ function terminateAllLayerWorkers() {
 }
 
 onMounted(() => { paneRuntime.registerPane(); start(); });
-onUnmounted(() => { active = false; paneRuntime.teardown(); pause(); terminateAllLayerWorkers(); });
+onUnmounted(() => {
+  active = false;
+  paneRuntime.teardown();
+  pause();
+  stopWorker();
+  terminateAllLayerWorkers();
+});
 onActivated(() => { active = true; chartPaneSetActive(paneRuntime.scopeId, true); start(); });
 onDeactivated(() => { active = false; chartPaneSetActive(paneRuntime.scopeId, false); pause(); });
 

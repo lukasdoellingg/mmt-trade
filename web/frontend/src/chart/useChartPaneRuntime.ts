@@ -2,7 +2,8 @@
  * Bridges chart pane object tree, widget props, and script runtime workers.
  */
 import type { WidgetState } from '../workspace/types';
-import type { ChartSettings } from '../chart/chartSettings';
+import type { PaneChartSettings } from '../chart/chartPaneSettings';
+import { usePaneSettings } from '../chart/chartPaneSettings';
 import type { ChartRuntimeAttachment } from '../features/chart-runtime/chartRuntimeTypes';
 import { serializeChartRuntimeProps } from '../features/chart-runtime/serialize';
 import {
@@ -21,7 +22,7 @@ import {
 } from '../indicators/indicatorCatalog';
 import { USE_SESSION_MUX } from '../config/featureFlags';
 import { useWorkspace } from '../workspace/useWorkspace';
-import { useChartSettings } from './chartSettings';
+
 
 /**
  * Eager create_runtime for a detached script-indicator window.
@@ -60,7 +61,7 @@ export function mountScriptWindowRuntime(
 
 export function useChartPaneRuntime(
   widget: WidgetState,
-  settings: ChartSettings,
+  settings: PaneChartSettings,
 ) {
   const scriptRuntime = useScriptRuntime();
   const { updateProps } = useWorkspace();
@@ -80,7 +81,7 @@ export function useChartPaneRuntime(
     const flags: Partial<Record<ScriptIndicatorId, boolean>> = {};
     for (const decl of SCRIPT_INDICATORS) {
       const sk = scriptSettingsKey(decl.id);
-      if (sk) flags[decl.id] = !!settings[sk];
+      if (sk) flags[decl.id] = !!(settings as unknown as Record<string, boolean>)[sk];
     }
     return flags;
   }
@@ -180,14 +181,14 @@ export function spawnIndicatorWindow(
 
   const chartId = parentChartWidgetId ?? (props.parentChartWidgetId as string | undefined);
   if (chartId && type === 'script-indicator-pane') {
-    const settings = useChartSettings();
+    const pane = usePaneSettings(chartId);
     mountScriptWindowRuntime(
       w.id,
       chartId,
       props.scriptId as ScriptIndicatorId,
       props.localId as string,
-      settings.symbol,
-      settings.timeframe,
+      pane.symbol,
+      pane.timeframe,
     );
   }
 

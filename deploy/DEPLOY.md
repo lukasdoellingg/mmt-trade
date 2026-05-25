@@ -40,9 +40,13 @@ pm2 save
 ## Frontend
 
 ```bash
+# Session mux (script indicators, bar stats) is on by default; override only to disable:
+# VITE_USE_SESSION_MUX=0 npm run build
 npm run build
 # Serve web/frontend/dist behind TLS; proxy /api and /ws to backend :3001
 ```
+
+`web/frontend/.env.production` sets `VITE_USE_SESSION_MUX=1`. CI builds with the same flag.
 
 ## Security checklist
 

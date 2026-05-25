@@ -1,7 +1,7 @@
 /**
  * Indices within one candle record in shared `Float64Array` buffers.
  * Stride = {@link CANDLE_FLOAT64_FIELDS} from `heatmapLayoutConstants.ts`.
- * Same order as `heatmapWorker` and Odin `CANDLE` region.
+ * Same order as `chartEngineWorker` and Odin `CANDLE` region.
  */
 export const CANDLE_FIELD = {
   timeMs: 0,

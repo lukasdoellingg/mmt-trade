@@ -14,17 +14,19 @@ import WorkspaceGrid from '../../workspace/WorkspaceGrid.vue';
 import { useWorkspace } from '../../workspace/useWorkspace';
 import '../../workspace/widgets';
 import { useChartSettings } from '../../chart/chartSettings';
+import { initialChartWidgetProps, useActivePaneSettings } from '../../chart/chartPaneSettings';
 import { CELL_PX } from '../../workspace/useWorkspace';
 
 const props = defineProps<{ symbol?: string; exchange?: string; timeframe?: string }>();
 const emit = defineEmits<{ 'symbol-change': [payload: { exchange: string; symbol: string }] }>();
 
-const settings = useChartSettings();
+const shell = useChartSettings();
+const pane = useActivePaneSettings();
 const { store, ensureDefaults, fitToViewport, resetWorkspace } = useWorkspace();
 
-if (props.symbol) settings.symbol = props.symbol;
-if (props.exchange) settings.exchange = props.exchange;
-if (props.timeframe) settings.timeframe = props.timeframe;
+if (props.symbol) pane.symbol = props.symbol;
+if (props.exchange) pane.exchange = props.exchange;
+if (props.timeframe) pane.timeframe = props.timeframe;
 
 const canvasEl = ref<HTMLDivElement | null>(null);
 
@@ -38,7 +40,7 @@ function bootDefaults(): void {
   const ladW = Math.max(20, wCells - chartW);
   const halfH = Math.max(10, Math.floor(hCells / 2));
   ensureDefaults([
-    { type: 'chart', rect: { x: 0, y: 0, w: chartW, h: hCells } },
+    { type: 'chart', rect: { x: 0, y: 0, w: chartW, h: hCells }, props: initialChartWidgetProps() },
     { type: 'orderflow-ladder', rect: { x: chartW, y: 0, w: ladW, h: halfH },
       props: { aggregate: DEFAULT_SPOT_AGGREGATE_CSV } },
     { type: 'orderflow-ladder', rect: { x: chartW, y: halfH, w: ladW, h: hCells - halfH },
@@ -46,7 +48,13 @@ function bootDefaults(): void {
   ]);
   for (const w of store.widgets) {
     if (w.type === 'chart') {
-      chartPaneRegister(w.id, settings.symbol, settings.exchange, settings.timeframe);
+      const p = (w.props ?? {}) as Record<string, unknown>;
+      chartPaneRegister(
+        w.id,
+        String(p.symbol ?? pane.symbol),
+        String(p.exchange ?? pane.exchange),
+        String(p.timeframe ?? pane.timeframe),
+      );
     }
   }
 }
@@ -63,8 +71,8 @@ onMounted(() => {
   nextTick(applyViewportFit);
 });
 
-watch(() => settings.symbol, (sym) => emit('symbol-change', { exchange: settings.exchange, symbol: sym }));
-watch(() => settings.exchange, (ex) => emit('symbol-change', { exchange: ex, symbol: settings.symbol }));
+watch(() => pane.symbol, (sym) => emit('symbol-change', { exchange: pane.exchange, symbol: sym }));
+watch(() => pane.exchange, (ex) => emit('symbol-change', { exchange: ex, symbol: pane.symbol }));
 </script>
 
 <template>
@@ -76,16 +84,16 @@ watch(() => settings.exchange, (ex) => emit('symbol-change', { exchange: ex, sym
         <WorkspaceGrid />
       </div>
     </div>
-    <div v-if="settings.settingsModalOpen" class="ws-modal-backdrop" @click="settings.settingsModalOpen = false">
+    <div v-if="shell.settingsModalOpen" class="ws-modal-backdrop" @click="shell.settingsModalOpen = false">
       <div class="ws-modal" @click.stop>
         <header class="ws-modal-head">
           <span>Workspace settings</span>
-          <button class="ws-modal-x" @click="settings.settingsModalOpen = false">&times;</button>
+          <button class="ws-modal-x" @click="shell.settingsModalOpen = false">&times;</button>
         </header>
         <div class="ws-modal-body">
           <label class="ws-modal-row">
             <span>Active tool</span>
-            <select v-model="settings.tool">
+            <select v-model="shell.tool">
               <option value="cursor">Cursor</option>
               <option value="crosshair">Crosshair</option>
               <option value="pencil">Drawing</option>
@@ -93,21 +101,21 @@ watch(() => settings.exchange, (ex) => emit('symbol-change', { exchange: ex, sym
           </label>
           <label class="ws-modal-row">
             <span>Quote display</span>
-            <select v-model="settings.quoteUsd">
+            <select v-model="shell.quoteUsd">
               <option :value="true">USD</option>
               <option :value="false">% from mid</option>
             </select>
           </label>
           <label class="ws-modal-row">
             <span>OB heatmap binning</span>
-            <select v-model="settings.obBinMode">
+            <select v-model="pane.obBinMode">
               <option value="hd">HD (fine)</option>
               <option value="sd">SD (coarse)</option>
             </select>
           </label>
           <div class="ws-modal-row">
             <span>Layout</span>
-            <button class="ws-modal-btn" @click="resetWorkspace(); settings.settingsModalOpen = false">Reset workspace</button>
+            <button class="ws-modal-btn" @click="resetWorkspace(); shell.settingsModalOpen = false">Reset workspace</button>
           </div>
         </div>
       </div>

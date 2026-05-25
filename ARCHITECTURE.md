@@ -41,7 +41,7 @@ mmt-trade/
 │   └── frontend/                     # Legacy Vue/Vite UI — retired in Phase 7
 ├── docs/                             # MMT research, HAR analysis, captures (gitignored)
 ├── scripts/                          # build-wasm.sh, analyze-mmt-har.mjs, …
-└── .github/workflows/                # CI: lint, typecheck, audit, build
+└── .github/workflows/                # CI: lint, typecheck, format, build, regression, wasm verify
 ```
 
 ## Hybrid architecture (Vue + Emscripten chart_runtime)
@@ -58,7 +58,17 @@ Production chart path uses a **Vue control plane** with worker-hosted rendering:
 
 Build chart runtime: `npm run build:engine:chart` → `web/frontend/public/chart_runtime.{wasm,js}`.
 
-Feature flags (`.env`): `VITE_USE_SESSION_MUX` (on by default in dev), `VITE_USE_EMSCRIPTEN_WORKERS=1` (set `0` to fall back to legacy `/ws/heatmap` + `obHeatmapWorker`). See [`docs/INFO_STREAM.md`](./docs/INFO_STREAM.md).
+Feature flags: `VITE_USE_SESSION_MUX` (default **on** unless `=0`; set in `.env.production`), `VITE_USE_EMSCRIPTEN_WORKERS=1` (set `0` to fall back to legacy `/ws/heatmap` + `obHeatmapWorker`). Session uses local provider — no JWT ([`docs/INFO_STREAM.md`](./docs/INFO_STREAM.md)).
+
+### WASM build matrix
+
+| Artifact | Build script | Output | Consumer |
+| -------- | ------------ | ------ | -------- |
+| `engine.wasm` | `npm run build:wasm` | `web/frontend/public/engine.wasm` | `chartEngineWorker.ts` (candles/VWAP/EMA) |
+| `chart_runtime.wasm` | `npm run build:engine:chart` | `web/frontend/public/chart_runtime.wasm` | `chartEngineWorker.ts` (Emscripten pipeline) |
+| `terminal.wasm` | `packages/engine/build.sh` | `packages/shell/public/` | `packages/shell` bootloader (target) |
+
+CI: `node scripts/verify-wasm-artifacts.mjs` after regression tests.
 
 COOP/COEP headers remain required for SharedArrayBuffer when Emscripten WASM workers are fully enabled.
 

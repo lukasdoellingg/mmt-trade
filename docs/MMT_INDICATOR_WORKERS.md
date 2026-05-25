@@ -27,4 +27,4 @@
 
 `?scripts=1` or `mmt_direct=1` opens `/ws/session` and calls `_app_script_apply_runtime_json` for plot JSON.
 
-Build: `npm run build:engine -- --chart-only` (copies to `web/frontend/public/` and `packages/shell/public/`).
+Build: `npm run build:engine:chart` (copies to `web/frontend/public/` and `packages/shell/public/`).

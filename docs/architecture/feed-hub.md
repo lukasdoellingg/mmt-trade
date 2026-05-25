@@ -51,4 +51,4 @@ Chart OB heatmap uses [`heatmapFeedHub.ts`](../../web/frontend/src/features/heat
 
 ## Ops
 
-Rate limits and env: [ops/rate-limits.md](../ops/rate-limits.md).
+Rate limits and env: [deploy/DEPLOY.md](../../deploy/DEPLOY.md) and `web/backend/lib/security.js`.

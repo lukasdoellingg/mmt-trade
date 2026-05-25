@@ -854,6 +854,20 @@ self.onmessage = async (ev: MessageEvent) => {
       obHeatmap?.resize(canvasW, canvasH, devicePR);
       fullDirty = true;
       break;
+    case 'pause':
+      running = false;
+      stopSnap();
+      if (animId) { cancelAnimationFrame(animId); animId = 0; }
+      closeSocket();
+      break;
+    case 'resume':
+      if (!offscreen && !renderer) break;
+      running = true;
+      fpsTimestamp = performance.now();
+      openSocket();
+      startSnap();
+      loop();
+      break;
     case 'stop':
       running = false; stopSnap();
       obHeatmap?.destroy();

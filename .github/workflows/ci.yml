@@ -17,9 +17,14 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
+      - run: npm run format:check
+      - run: npm run build
+        env:
+          VITE_USE_SESSION_MUX: '1'
       - run: npm run audit:prod
       - run: node --test tests/regression/ws-safe.test.mjs
       - run: npm run test:regression
+      - run: node scripts/verify-wasm-artifacts.mjs
 
   engine-smoke:
     runs-on: ubuntu-latest

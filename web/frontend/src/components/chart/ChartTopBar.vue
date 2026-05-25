@@ -12,14 +12,17 @@
 import { computed, onBeforeUnmount, ref } from 'vue';
 import ChartSymbolBar from './ChartSymbolBar.vue';
 import { TIMEFRAMES, useChartSettings } from '../../chart/chartSettings';
+import { initialChartWidgetProps, useActivePaneSettings } from '../../chart/chartPaneSettings';
 import { useWorkspace, CELL_PX } from '../../workspace/useWorkspace';
 import { listWidgets } from '../../workspace/registry';
 import ChartObjectTreePanel from './ChartObjectTreePanel.vue';
 import { spawnIndicatorWindow } from '../../chart/useChartPaneRuntime';
 import { useDropdownAnchor } from './useDropdownAnchor';
 import { debugWarn } from '../../utils/debug';
+import { USE_SESSION_MUX } from '../../config/featureFlags';
 
-const settings = useChartSettings();
+const shell = useChartSettings();
+const pane = useActivePaneSettings();
 const { addWidget, findFreeSlot, store } = useWorkspace();
 
 const indicatorsOpen = ref(false);
@@ -50,12 +53,12 @@ onBeforeUnmount(() => window.removeEventListener('click', closeAllMenus));
 
 const widgetTypes = computed(() => listWidgets());
 
-function onPickTf(tf: string) { settings.timeframe = tf; }
-function toggleQuoteUsd() { settings.quoteUsd = !settings.quoteUsd; }
+function onPickTf(tf: string) { pane.timeframe = tf; }
+function toggleQuoteUsd() { shell.quoteUsd = !shell.quoteUsd; }
 function togglePencil() {
-  settings.tool = settings.tool === 'pencil' ? 'crosshair' : 'pencil';
+  shell.tool = shell.tool === 'pencil' ? 'crosshair' : 'pencil';
 }
-function openSettings() { settings.settingsModalOpen = true; }
+function openSettings() { shell.settingsModalOpen = true; }
 function toggleFullscreen() {
   const el = document.documentElement;
   if (!document.fullscreenElement) el.requestFullscreen?.();
@@ -112,8 +115,8 @@ async function takeScreenshot() {
 }
 
 function onSymbolBarChange(payload: { exchange: string; symbol: string }) {
-  settings.symbol = payload.symbol;
-  settings.exchange = payload.exchange;
+  pane.symbol = payload.symbol;
+  pane.exchange = payload.exchange;
 }
 
 function viewportCells(): { w: number; h: number } {
@@ -131,7 +134,7 @@ function addOrderflow() {
 function addChart() {
   const v = viewportCells();
   const slot = findFreeSlot(80, 60, v.w, v.h);
-  addWidget('chart', { x: slot.x, y: slot.y, w: 80, h: 60 });
+  addWidget('chart', { x: slot.x, y: slot.y, w: 80, h: 60 }, initialChartWidgetProps());
 }
 
 function addBarStats() {
@@ -173,30 +176,30 @@ function onAddWidgetClick(e: Event) { e.stopPropagation(); closeAllMenus(); addW
   <div class="topbar">
     <ChartSymbolBar
       class="topbar-symbol"
-      :exchange="settings.exchange"
-      :symbol="settings.symbol"
+      :exchange="pane.exchange"
+      :symbol="pane.symbol"
       @change="onSymbolBarChange"
     />
     <div class="tf-pills">
       <button
         v-for="t in TIMEFRAMES" :key="t"
-        :class="['tf-pill', { active: settings.timeframe === t }]"
+        :class="['tf-pill', { active: pane.timeframe === t }]"
         @click="onPickTf(t)"
       >{{ t }}</button>
     </div>
 
     <span class="tb-divider"></span>
 
-    <button class="ic-btn" :class="{ on: settings.obHeatmap }" title="Order Book heatmap" @click="settings.obHeatmap = !settings.obHeatmap">
+    <button class="ic-btn" :class="{ on: pane.obHeatmap }" title="Order Book heatmap" @click="pane.obHeatmap = !pane.obHeatmap">
       <svg width="14" height="14" viewBox="0 0 14 14"><path fill="currentColor" d="M2 2h3v10H2zM5.5 5h3v7h-3zM9 8h3v4H9z"/></svg>
     </button>
-    <button class="ic-btn" :class="{ on: settings.footprint }" title="Footprint" @click="settings.footprint = !settings.footprint">
+    <button class="ic-btn" :class="{ on: pane.footprint }" title="Footprint" @click="pane.footprint = !pane.footprint">
       <svg width="14" height="14" viewBox="0 0 14 14"><path fill="currentColor" d="M2 3h4v2H2zm6 0h4v2H8zM2 6h4v2H2zm6 0h4v2H8zM2 9h4v2H2zm6 0h4v2H8z"/></svg>
     </button>
-    <button class="ic-btn" :class="{ on: settings.vpvr }" title="VPVR" @click="settings.vpvr = !settings.vpvr">
+    <button class="ic-btn" :class="{ on: pane.vpvr }" title="VPVR" @click="pane.vpvr = !pane.vpvr">
       <svg width="14" height="14" viewBox="0 0 14 14"><path fill="currentColor" d="M11 2h2v10h-2zM8 5h2v7H8zM5 7h2v5H5zM2 9h2v3H2z"/></svg>
     </button>
-    <button class="ic-btn" :class="{ on: settings.liquidations }" title="Liquidations" @click="settings.liquidations = !settings.liquidations">
+    <button class="ic-btn" :class="{ on: pane.liquidations }" title="Liquidations" @click="pane.liquidations = !pane.liquidations">
       <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="3.5" cy="6" r="2" fill="currentColor"/><circle cx="10" cy="9" r="2.5" fill="currentColor" opacity=".8"/></svg>
     </button>
 
@@ -206,11 +209,11 @@ function onAddWidgetClick(e: Event) { e.stopPropagation(); closeAllMenus(); addW
       <button ref="indicatorsBtn" class="dd-btn" @click="onIndicatorsClick">Indicators <span class="dd-caret">&#9662;</span></button>
     </div>
 
-    <button class="ic-btn" :class="{ on: settings.tool === 'pencil' }" title="Drawing tool" @click="togglePencil">
+    <button class="ic-btn" :class="{ on: shell.tool === 'pencil' }" title="Drawing tool" @click="togglePencil">
       <svg width="14" height="14" viewBox="0 0 14 14"><path fill="currentColor" d="M11.5 1.5l1 1L4 11l-1.5.5L3 10z"/></svg>
     </button>
 
-    <button class="ic-btn" :class="{ on: settings.quoteUsd }" title="Toggle quote currency" @click="toggleQuoteUsd">{{ settings.quoteUsd ? '$ USD' : 'BASE' }}</button>
+    <button class="ic-btn" :class="{ on: shell.quoteUsd }" title="Toggle quote currency" @click="toggleQuoteUsd">{{ shell.quoteUsd ? '$ USD' : 'BASE' }}</button>
     <button class="ic-btn" title="Fullscreen" @click="toggleFullscreen">
       <svg width="14" height="14" viewBox="0 0 14 14"><path fill="currentColor" d="M2 2h4v1.5H3.5V6H2zm10 0v4h-1.5V3.5H8V2zM2 12V8h1.5v2.5H6V12zm10 0H8v-1.5h2.5V8H12z"/></svg>
     </button>
@@ -251,19 +254,19 @@ function onAddWidgetClick(e: Event) { e.stopPropagation(); closeAllMenus(); addW
 
   <Teleport to="body">
     <div v-if="indicatorsOpen" class="dd-float dd-menu" :style="indicatorsPos" @click.stop>
-      <label class="dd-row"><input type="checkbox" v-model="settings.vwapDaily" /> VWAP Daily</label>
-      <label class="dd-row"><input type="checkbox" v-model="settings.vwapWeekly" /> VWAP Weekly</label>
-      <label class="dd-row"><input type="checkbox" v-model="settings.vwapMonthly" /> VWAP Monthly</label>
-      <label class="dd-row"><input type="checkbox" v-model="settings.vwapBands" /> VWAP &#963; bands</label>
-      <label class="dd-row"><input type="checkbox" v-model="settings.ema" /> EMA 9/21</label>
-      <label class="dd-row"><input type="checkbox" v-model="settings.liquidations" /> Liquidations</label>
-      <label class="dd-row"><input type="checkbox" v-model="settings.obHeatmap" /> OB Heatmap</label>
-      <label class="dd-row"><input type="checkbox" v-model="settings.footprint" /> Footprint</label>
-      <label class="dd-row"><input type="checkbox" v-model="settings.vpvr" /> VPVR</label>
+      <label class="dd-row"><input type="checkbox" v-model="pane.vwapDaily" /> VWAP Daily</label>
+      <label class="dd-row"><input type="checkbox" v-model="pane.vwapWeekly" /> VWAP Weekly</label>
+      <label class="dd-row"><input type="checkbox" v-model="pane.vwapMonthly" /> VWAP Monthly</label>
+      <label class="dd-row"><input type="checkbox" v-model="pane.vwapBands" /> VWAP &#963; bands</label>
+      <label class="dd-row"><input type="checkbox" v-model="pane.ema" /> EMA 9/21</label>
+      <label class="dd-row"><input type="checkbox" v-model="pane.liquidations" /> Liquidations</label>
+      <label class="dd-row"><input type="checkbox" v-model="pane.obHeatmap" /> OB Heatmap</label>
+      <label class="dd-row"><input type="checkbox" v-model="pane.footprint" /> Footprint</label>
+      <label class="dd-row"><input type="checkbox" v-model="pane.vpvr" /> VPVR</label>
       <span class="dd-hint">Server scripts (/ws/session)</span>
-      <label class="dd-row"><input type="checkbox" v-model="settings.scriptKeyLevels" /> Key Levels</label>
-      <label class="dd-row"><input type="checkbox" v-model="settings.scriptNetPositioning" /> Net Positioning</label>
-      <label class="dd-row"><input type="checkbox" v-model="settings.scriptObImbalance" /> OB Imbalance</label>
+      <label class="dd-row"><input type="checkbox" v-model="pane.scriptKeyLevels" :disabled="!USE_SESSION_MUX" /> Key Levels</label>
+      <label class="dd-row"><input type="checkbox" v-model="pane.scriptNetPositioning" :disabled="!USE_SESSION_MUX" /> Net Positioning</label>
+      <label class="dd-row"><input type="checkbox" v-model="pane.scriptObImbalance" :disabled="!USE_SESSION_MUX" /> OB Imbalance</label>
     </div>
     <div v-if="orderflowOpen" class="dd-float dd-menu" :style="orderflowPos" @click.stop>
       <button class="dd-row" @click="addOrderflow(); orderflowOpen = false">+ Aggregated DOM ladder</button>

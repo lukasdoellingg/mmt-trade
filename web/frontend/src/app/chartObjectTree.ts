@@ -3,6 +3,7 @@
  * ChartRuntimeHost owns wire I/O; this module tracks mount metadata per widget.
  */
 import { ref } from 'vue';
+import { activeChartId } from '../workspace/useWorkspace';
 import type { ChartRuntimeAttachment, ChartWidgetRuntimeProps } from '../features/chart-runtime/chartRuntimeTypes';
 import { parseChartRuntimeProps } from '../features/chart-runtime/serialize';
 import type { ScriptIndicatorId } from '../indicators/indicatorCatalog';
@@ -65,6 +66,7 @@ export function chartPaneSetActive(widgetId: string, active: boolean): void {
     node.isActive = active;
     bumpTreeRevision();
   }
+  if (active) activeChartId.value = widgetId;
 }
 
 export function chartPaneSyncScriptMounts(

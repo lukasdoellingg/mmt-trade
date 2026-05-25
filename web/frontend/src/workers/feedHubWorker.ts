@@ -100,11 +100,15 @@ function fanoutRuntimePlot(streamKey: string, payload: ArrayBuffer): void {
   if (!parsed || parsed.count <= 0) return;
   const runtimeId = parsed.runtimeId || streamKey.slice('runtime:'.length);
   runtimePlotOut.set(runtimePriceScratch.subarray(0, parsed.count));
-  broadcast({
+  const msg: Record<string, unknown> = {
     type: 'script_plot_update',
     runtimeId,
     prices: runtimePlotOut.subarray(0, parsed.count),
-  });
+  };
+  if (parsed.roles && parsed.roles.length >= parsed.count) {
+    msg.roles = parsed.roles.subarray(0, parsed.count);
+  }
+  broadcast(msg);
 }
 
 function resubscribeAll(): void {
@@ -167,16 +171,24 @@ function openSocket(): void {
     }
 
     const entries = [...ports.values()];
-    for (let i = 0; i < entries.length; i++) {
-      const payload = entries.length === 1 ? parsed.payload : parsed.payload.slice(0);
-      entries[i].port.postMessage(
-        {
-          type: 'session_frame' as const,
-          streamKey: parsed.streamKey,
-          buffer: payload,
-        },
-        [payload],
-      );
+    const matching = entries.filter(
+      (e) => e.streams.size === 0 || e.streams.has(parsed.streamKey),
+    );
+    for (let i = 0; i < matching.length; i++) {
+      const entry = matching[i];
+      const payload = matching.length === 1 ? parsed.payload : parsed.payload.slice(0);
+      try {
+        entry.port.postMessage(
+          {
+            type: 'session_frame' as const,
+            streamKey: parsed.streamKey,
+            buffer: payload,
+          },
+          [payload],
+        );
+      } catch {
+        /* port closed — drop */
+      }
     }
   };
 }
@@ -187,8 +199,16 @@ function broadcast(msg: Record<string, unknown>): void {
   }
 }
 
+function detachPort(id: number): void {
+  const entry = ports.get(id);
+  if (!entry) return;
+  try { entry.port.close(); } catch { /* ignore */ }
+  ports.delete(id);
+}
+
 type WorkerInMsg =
-  | { type: 'init'; port: MessagePort }
+  | { type: 'init'; port: MessagePort; portId?: number }
+  | { type: 'detach'; portId: number }
   | { type: 'subscribe_spec'; spec: Record<string, unknown>; streamKey: string }
   | { type: 'unsubscribe_spec'; streamKey: string }
   | { type: 'subscribe_runtime'; runtimeId: string }
@@ -199,8 +219,13 @@ type WorkerInMsg =
 
 self.onmessage = (ev: MessageEvent<WorkerInMsg>) => {
   const msg = ev.data;
+  if (msg.type === 'detach') {
+    detachPort(msg.portId);
+    return;
+  }
   if (msg.type === 'init') {
-    const id = nextPortId++;
+    const id = typeof msg.portId === 'number' ? msg.portId : nextPortId++;
+    if (id >= nextPortId) nextPortId = id + 1;
     ports.set(id, { port: msg.port, streams: new Set() });
     msg.port.onmessage = (pev: MessageEvent) => {
       const inner = pev.data;

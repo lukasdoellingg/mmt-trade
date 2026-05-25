@@ -1,8 +1,10 @@
-/** Feature flags for hybrid architecture migration (opt-in — default is local /ws/heatmap). */
+/**
+ * Script indicators + bar stats via backend /ws/session (localEngine).
+ * Default on unless VITE_USE_SESSION_MUX=0 (dev and production builds).
+ */
 export const USE_SESSION_MUX =
-  import.meta.env.VITE_USE_SESSION_MUX === '1' ||
-  import.meta.env.VITE_USE_SESSION_MUX === 'true' ||
-  (import.meta.env.VITE_USE_SESSION_MUX !== '0' && import.meta.env.DEV);
+  import.meta.env.VITE_USE_SESSION_MUX !== '0' &&
+  import.meta.env.VITE_USE_SESSION_MUX !== 'false';
 
 export const USE_CHART_RUNTIME_INDICATORS =
   import.meta.env.VITE_USE_CHART_RUNTIME_INDICATORS === '1' ||

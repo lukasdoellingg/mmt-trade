@@ -46,6 +46,7 @@ import { shutdownAllBarStats } from './lib/indicators/barStatsLocal.js';
 import { shutdownObBookPool } from './lib/indicators/obBookPool.js';
 import { createDetachedWebSocketServer, mountWebSocketUpgradeRouter } from './lib/wsUpgradeRouter.js';
 import { registerHealthRoutes } from './src/platform/health.js';
+import { registerBootstrapRoutes } from './routes/bootstrap.js';
 import { logError, logInfo, installProcessErrorHandlers } from './src/platform/logger.js';
 
 const app = express();
@@ -405,8 +406,6 @@ registerHealthRoutes(app, {
   }),
 });
 
-app.get('/', (_, res) => res.json({ ok: true, name: 'MMT-Trade API' }));
-
 const clientErrorCounts = new Map();
 app.post('/api/client-errors', express.json({ limit: '8kb' }), (req, res) => {
   const ip = req.ip || 'unknown';
@@ -422,8 +421,6 @@ app.post('/api/client-errors', express.json({ limit: '8kb' }), (req, res) => {
   logError('client_error', { ip, route: body.route, component: body.component }, new Error(stack ? `${message}\n${stack}` : message));
   res.status(204).end();
 });
-app.get('/api/exchanges', (_, res) => res.json({ exchanges: EXCHANGES }));
-
 app.get('/api/chart/klines', async (req, res) => {
   const sym = validateHeatmapSymbol(req.query.symbol);
   if (!sym) return res.status(400).json({ error: 'Invalid symbol' });
@@ -446,28 +443,17 @@ app.get('/api/chart/klines', async (req, res) => {
   }
 });
 
-app.get('/api/symbols', async (req, res) => {
-  const id = validateExchangeId(req.query.exchange);
-  if (!id) return res.status(400).json({ error: 'Unsupported exchange' });
-  const limit = clampInteger(req.query.limit, 10, 1, 20);
-  const ck = `symbols:${id}:${limit}`;
-  const c = cached(ck, 120_000);
-  if (c) return res.json(c);
-  try {
-    await throttle(id);
-    const ex = getExchange(id);
-    await ensureMarkets(ex);
-    const tickers = await ex.fetchTickers();
-    const list = [];
-    for (const data of Object.values(tickers)) {
-      if (!String(data?.symbol || '').toUpperCase().endsWith('/USDT')) continue;
-      list.push({ symbol: data.symbol, volume: Number(data?.quoteVolume ?? 0) });
-    }
-    list.sort((a, b) => b.volume - a.volume);
-    const out = { symbols: list.slice(0, limit) };
-    setCache(ck, out);
-    safeSend(res, out);
-  } catch (e) { safeError(res, e); }
+registerBootstrapRoutes(app, {
+  EXCHANGES,
+  validateExchangeId,
+  clampInteger,
+  cached,
+  setCache,
+  safeSend,
+  safeError,
+  throttle,
+  getExchange,
+  ensureMarkets,
 });
 
 app.get('/api/ohlcv', async (req, res) => {

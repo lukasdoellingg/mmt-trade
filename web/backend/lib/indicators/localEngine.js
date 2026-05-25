@@ -5,7 +5,8 @@ import { RUNTIME_LIMITS, SCRIPT_IDS } from './runtimeLimits.js';
 import { timeframeToSec } from '../streamProtocol.js';
 import { parseAggregateExchanges } from '../../../../shared/exchangeIds.mjs';
 import { acquireObBook, releaseObBook, snapshotObImbalance } from './obBookPool.js';
-import { encodeRuntimePlotPayload } from '../infoStream/runtimePlot.js';
+import { encodeRuntimePlotPayload, encodeRuntimePlotPayloadWithRoles } from '../infoStream/runtimePlot.js';
+import { computeKeyLevelsDetailed } from './keyLevels.js';
 
 const BINANCE_INTERVALS = {
   '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
@@ -54,23 +55,11 @@ async function fetchKlines(symbol, tf) {
   }));
 }
 
-function computeKeyLevels(klines) {
-  if (!klines?.length) return [];
-  const levels = [];
-  const w = 3;
-  for (let i = w; i < klines.length - w; i++) {
-    let isHigh = true;
-    let isLow = true;
-    for (let j = 1; j <= w; j++) {
-      if (klines[i].high <= klines[i - j].high || klines[i].high <= klines[i + j].high) isHigh = false;
-      if (klines[i].low >= klines[i - j].low || klines[i].low >= klines[i + j].low) isLow = false;
-    }
-    if (isHigh) levels.push(klines[i].high);
-    if (isLow) levels.push(klines[i].low);
-  }
-  const last = klines[klines.length - 1];
-  if (last?.close > 0) levels.push(last.close);
-  return [...new Set(levels.map((p) => +p.toFixed(2)))].sort((a, b) => a - b).slice(-RUNTIME_LIMITS.maxLevels);
+/** @type {Map<string, { prices: number[], roles: number[] }>} */
+const keyLevelCache = new Map();
+
+function cacheKey(sym, tf) {
+  return `${sym}:${tf}`;
 }
 
 function computeNetPositioning(symbol, sessionDelta) {
@@ -99,7 +88,10 @@ async function computeLevels(scriptId, symbol, tf, inputs) {
   const sym = symbol.toUpperCase();
   if (scriptId === 'key-levels') {
     const klines = await fetchKlines(sym, tf);
-    return computeKeyLevels(klines);
+    if (!klines?.length) return [];
+    const detailed = computeKeyLevelsDetailed(klines, tf || '1h', RUNTIME_LIMITS.maxLevels);
+    keyLevelCache.set(cacheKey(sym, tf || '1h'), detailed);
+    return detailed.prices;
   }
   if (scriptId === 'aggregated-ob-imbalance') {
     const agg = parseAggregateExchanges(inputs?.aggregate ?? 'binance,bybit');
@@ -111,7 +103,10 @@ async function computeLevels(scriptId, symbol, tf, inputs) {
   return [];
 }
 
-function buildPlotPayload(runtimeId, prices) {
+function buildPlotPayload(runtimeId, prices, roles) {
+  if (roles?.length === prices?.length && roles.length > 0) {
+    return encodeRuntimePlotPayloadWithRoles(runtimeId, prices, roles);
+  }
   return encodeRuntimePlotPayload(runtimeId, prices);
 }
 
@@ -122,7 +117,10 @@ function schedulePush(slot, mux) {
   if (slot.timer) clearInterval(slot.timer);
   slot.timer = setInterval(async () => {
     slot.levels = await computeLevels(slot.scriptId, slot.symbol, slot.tf, slot.inputs);
-    const payload = buildPlotPayload(slot.runtimeId, slot.levels);
+    const roles = slot.scriptId === 'key-levels'
+      ? keyLevelCache.get(cacheKey(slot.symbol, slot.tf))?.roles
+      : undefined;
+    const payload = buildPlotPayload(slot.runtimeId, slot.levels, roles);
     mux.broadcastEnvelope(slot.runtimeId, payload);
   }, RUNTIME_LIMITS.pushIntervalMs);
 }
@@ -175,10 +173,13 @@ export async function mountLocalRuntime(client, scriptId, symbol, tf, inputs, cr
   slot.clients.add(client);
   mux.subscribeRuntime(client, runtimeId);
 
-  const payload = buildPlotPayload(runtimeId, slot.levels);
+  const roles = scriptId === 'key-levels'
+    ? keyLevelCache.get(cacheKey(sym, tf || '1h'))?.roles
+    : undefined;
+  const payload = buildPlotPayload(runtimeId, slot.levels, roles);
   mux.broadcastEnvelope(runtimeId, payload);
 
-  return { runtimeId, createToken, levels: slot.levels };
+  return { runtimeId, createToken, levels: slot.levels, roles };
 }
 
 export function updateLocalRuntime(runtimeId, overrides) {

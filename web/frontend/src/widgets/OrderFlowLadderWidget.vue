@@ -17,6 +17,7 @@ import { useWorkspace } from '../workspace/useWorkspace';
 import { LadderAggregator, type LadderSnapshot } from './orderflow/ladderState';
 import { decodeHeatmapFrame } from '../engine/heatmapProto';
 import { useChartSettings } from '../chart/chartSettings';
+import { useActivePaneSettings } from '../chart/chartPaneSettings';
 import { busEmit, busOn } from '../workspace/widgetBus';
 import { acquireHeatmapFeed } from '../features/heatmap/feed-hub/heatmapFeedHub';
 
@@ -30,7 +31,8 @@ interface LadderProps {
 }
 
 const props = defineProps<{ widget: WidgetState }>();
-const settings = useChartSettings();
+const shell = useChartSettings();
+const pane = useActivePaneSettings();
 const { updateProps } = useWorkspace();
 
 const ladderProps = computed<LadderProps>(() => props.widget.props as LadderProps);
@@ -39,7 +41,7 @@ const PG_PRESETS = [1, 5, 10, 25, 50, 100, 250];
 const pg = computed(() => ladderProps.value.pg ?? 25);
 const rowsPerSide = computed(() => ladderProps.value.rowsPerSide ?? 25);
 // Quote-display switch is global — same value as the topbar's `$ USD` chip.
-const quoteUsd = computed(() => settings.quoteUsd);
+const quoteUsd = computed(() => shell.quoteUsd);
 const aggregateCsv = computed(() => ladderProps.value.aggregate ?? 'binance,bybit');
 const aggregateCount = computed(() => aggregateCsv.value.split(',').filter(Boolean).length);
 const sortDir = computed<'asc' | 'desc'>(() => (ladderProps.value.sortDir ?? 'desc'));
@@ -57,7 +59,7 @@ let barsCtx: CanvasRenderingContext2D | null = null;
 const DPR = Math.min(window.devicePixelRatio || 1, 2);
 
 function symKey(): string {
-  return settings.symbol.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  return pane.symbol.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
 }
 
 function scheduleRender(): void {
@@ -98,8 +100,8 @@ function drawBars(): void {
   const rowH = h / totalRows;
 
   // Intensity controls (shared with chart's OB heatmap)
-  const lowNorm = Math.max(0, Math.min(1, settings.obLow));
-  const peakNorm = Math.max(0.1, Math.min(1, settings.obPeak));
+  const lowNorm = Math.max(0, Math.min(1, pane.obLow));
+  const peakNorm = Math.max(0.1, Math.min(1, pane.obPeak));
   const intensityMul = 0.9 + peakNorm * 1.1;
   const lowCutoff = lowNorm <= 0 ? 0 : s.maxSize * lowNorm * lowNorm;
   // Reference scale for normalising volumeToIntensity outputs into [0,1]
@@ -166,7 +168,7 @@ function openFeed(): void {
   closeFeed();
   releaseFeed = acquireHeatmapFeed(
     symKey(),
-    settings.timeframe,
+    pane.timeframe,
     aggregateCsv.value,
     (buffer) => handleFrame(buffer),
   );
@@ -190,7 +192,7 @@ function cyclePg(): void {
 }
 
 function toggleQuote(): void {
-  settings.quoteUsd = !settings.quoteUsd;
+  shell.quoteUsd = !shell.quoteUsd;
 }
 
 function toggleSort(): void {
@@ -254,9 +256,9 @@ const ro = new ResizeObserver(() => resizeCanvas());
 
 watch(pg, (v) => { agg.setPg(v); scheduleRender(); });
 watch(rowsPerSide, (v) => { agg.setRowsPerSide(v); scheduleRender(); });
-watch([() => settings.symbol, () => settings.timeframe, aggregateCsv], () => openFeed());
-watch([() => settings.obLow, () => settings.obPeak], () => scheduleRender());
-watch(() => settings.quoteUsd, () => scheduleRender());
+watch([() => pane.symbol, () => pane.timeframe, aggregateCsv], () => openFeed());
+watch([() => pane.obLow, () => pane.obPeak], () => scheduleRender());
+watch(() => shell.quoteUsd, () => scheduleRender());
 
 onMounted(() => {
   if (barsCanvas.value) ro.observe(barsCanvas.value);
@@ -311,11 +313,11 @@ function fmtDelta(d: number): string {
         <button class="lt-btn" :class="{ on: quoteUsd }" @click="toggleQuote" title="Toggle quote display">{{ quoteUsd ? '$ USD' : '% BASE' }}</button>
         <label class="lt-slider" title="Low cutoff (shared with chart heatmap)">
           <span>Low</span>
-          <input type="range" min="0" max="0.8" step="0.05" v-model.number="settings.obLow" />
+          <input type="range" min="0" max="0.8" step="0.05" v-model.number="pane.obLow" />
         </label>
         <label class="lt-slider" title="Peak intensity (shared with chart heatmap)">
           <span>Peak</span>
-          <input type="range" min="0.2" max="1" step="0.05" v-model.number="settings.obPeak" />
+          <input type="range" min="0.2" max="1" step="0.05" v-model.number="pane.obPeak" />
         </label>
         <button class="lt-btn" :class="{ on: sortDir === 'asc' }" title="Toggle sort direction" @click="toggleSort">&#8645;</button>
         <button class="lt-btn" :class="{ on: settingsOpen }" title="Widget settings" @click="toggleSettings">&#9881;</button>

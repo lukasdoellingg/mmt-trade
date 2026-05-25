@@ -5,7 +5,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import WorkspaceWidget from '../workspace/WorkspaceWidget.vue';
 import type { WidgetState } from '../workspace/types';
-import { useChartSettings } from '../chart/chartSettings';
+import { useActivePaneSettings } from '../chart/chartPaneSettings';
 import { useScriptRuntime } from '../chart/scriptRuntime';
 import { USE_SESSION_MUX } from '../config/featureFlags';
 import { symKeyFromSymbol } from '../constants';
@@ -19,7 +19,7 @@ interface BarRow {
 }
 
 const props = defineProps<{ widget: WidgetState }>();
-const settings = useChartSettings();
+const pane = useActivePaneSettings();
 const scriptRuntime = useScriptRuntime();
 
 const rows = ref<BarRow[]>([]);
@@ -67,8 +67,8 @@ function startFeed(): void {
   }
   wsStatus.value = 'connecting';
   releaseSessionFeed = scriptRuntime.subscribeBarStats(
-    settings.symbol,
-    settings.timeframe,
+    pane.symbol,
+    pane.timeframe,
     (text) => onMessage(text),
     bucketGroup.value,
   );
@@ -82,7 +82,7 @@ function stopFeed(): void {
   }
 }
 
-watch([() => settings.symbol, () => settings.timeframe, bucketGroup], () => {
+watch([() => pane.symbol, () => pane.timeframe, bucketGroup], () => {
   rows.value = [];
   startFeed();
 });
@@ -96,8 +96,8 @@ onUnmounted(() => stopFeed());
     <div class="bs-root">
       <div class="bs-head">
         <span :class="'bs-st st-' + wsStatus">{{ wsStatus }}</span>
-        <span class="bs-sym">{{ symKeyFromSymbol(settings.symbol).toLowerCase() }}</span>
-        <span class="bs-tf">{{ settings.timeframe }}</span>
+        <span class="bs-sym">{{ symKeyFromSymbol(pane.symbol).toLowerCase() }}</span>
+        <span class="bs-tf">{{ pane.timeframe }}</span>
       </div>
       <div class="bs-table">
         <div class="bs-row bs-h">

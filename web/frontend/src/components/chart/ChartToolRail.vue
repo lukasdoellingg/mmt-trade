@@ -11,15 +11,15 @@
 import { useChartSettings, type ChartTool } from '../../chart/chartSettings';
 import { useWorkspace } from '../../workspace/useWorkspace';
 
-const settings = useChartSettings();
+const shell = useChartSettings();
 const { resetWorkspace } = useWorkspace();
 
-function pick(t: ChartTool) { settings.tool = t; }
+function pick(t: ChartTool) { shell.tool = t; }
 function onRefresh() {
   if (confirm('Reset workspace layout? Your widget positions will be lost.')) resetWorkspace();
 }
-function openSettings() { settings.settingsModalOpen = true; }
-function isOn(t: ChartTool) { return settings.tool === t; }
+function openSettings() { shell.settingsModalOpen = true; }
+function isOn(t: ChartTool) { return shell.tool === t; }
 </script>
 
 <template>

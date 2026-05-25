@@ -16,10 +16,12 @@ export type FeedSubscribeSpec = {
 
 type FrameHandler = (streamKey: string, buffer: ArrayBuffer) => void;
 type JsonHandler = (text: string) => void;
-export type ScriptPlotHandler = (runtimeId: string, prices: Float64Array) => void;
+export type ScriptPlotHandler = (runtimeId: string, prices: Float64Array, roles?: Uint8Array) => void;
 
 let worker: Worker | null = null;
+let nextFeedPortId = 1;
 const feedPorts = new Set<MessagePort>();
+const feedPortIds = new Map<MessagePort, number>();
 const mainHandlers = new Map<string, Set<FrameHandler>>();
 const jsonHandlers = new Set<JsonHandler>();
 const plotHandlers = new Set<ScriptPlotHandler>();
@@ -32,7 +34,7 @@ function symbolToMmtPair(symbol: string): string {
   return `${base}/usd`;
 }
 
-function streamKeyFromSpec(spec: FeedSubscribeSpec): string {
+export function streamKeyFromSpec(spec: FeedSubscribeSpec): string {
   const stream = spec.stream ?? 16;
   const bg = spec.bucketGroup ?? 0;
   const tfSec = timeframeToSec(spec.timeframe);
@@ -67,7 +69,8 @@ function ensureWorker(): Worker {
       const prices = msg.prices instanceof Float64Array
         ? msg.prices
         : new Float64Array(msg.prices as ArrayLike<number>);
-      for (const h of plotHandlers) h(msg.runtimeId, prices);
+      const roles = msg.roles instanceof Uint8Array ? msg.roles : undefined;
+      for (const h of plotHandlers) h(msg.runtimeId, prices, roles);
       return;
     }
     if (msg.type !== 'session_frame' || !(msg.buffer instanceof ArrayBuffer)) return;
@@ -83,10 +86,32 @@ function ensureWorker(): Worker {
 }
 
 /** Attach a worker MessagePort for direct session_frame fan-out (zero main-thread parse). */
-export function attachFeedPort(port: MessagePort): void {
+export function attachFeedPort(port: MessagePort): number {
   ensureWorker();
+  const portId = nextFeedPortId++;
   feedPorts.add(port);
-  worker!.postMessage({ type: 'init', port }, [port]);
+  feedPortIds.set(port, portId);
+  worker!.postMessage({ type: 'init', port, portId }, [port]);
+  return portId;
+}
+
+/** Subscribe a feed port to a stream key (port-local fan-out filter). */
+export function subscribeFeedPortStream(port: MessagePort, spec: FeedSubscribeSpec): void {
+  port.postMessage({ type: 'subscribe_stream', streamKey: streamKeyFromSpec(spec) });
+}
+
+export function unsubscribeFeedPortStream(port: MessagePort, spec: FeedSubscribeSpec): void {
+  port.postMessage({ type: 'unsubscribe_stream', streamKey: streamKeyFromSpec(spec) });
+}
+
+/** Remove a port from the hub (call before worker terminate / chart unmount). */
+export function detachFeedPort(port: MessagePort): void {
+  const portId = feedPortIds.get(port);
+  if (portId == null) return;
+  feedPortIds.delete(port);
+  feedPorts.delete(port);
+  worker?.postMessage({ type: 'detach', portId });
+  try { port.close(); } catch { /* ignore */ }
 }
 
 /** @deprecated Use attachFeedPort */
@@ -194,9 +219,12 @@ export function createScriptRuntime(
 }
 
 export function shutdownFeedHubClient(): void {
+  for (const port of [...feedPorts]) detachFeedPort(port);
   worker?.terminate();
   worker = null;
   feedPorts.clear();
+  feedPortIds.clear();
+  nextFeedPortId = 1;
   mainHandlers.clear();
   jsonHandlers.clear();
   plotHandlers.clear();

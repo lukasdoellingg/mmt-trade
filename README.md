@@ -10,7 +10,7 @@ packages/
   shell/          # Minimaler HTML/TS-Bootloader unter COOP/COEP
 web/
   backend/        # Hardened Express-Proxy (Rate-Limit, Origin-Check, Heartbeat, Backoff)
-  frontend/       # Legacy Vue-UI (wird in Phase 7 ausgemustert)
+  frontend/       # Vue heatmap workspace (ChartWidget + feed hub + workers)
 ```
 
 ## Sicherheit (Phase 0 abgeschlossen)
@@ -64,7 +64,7 @@ web/
 ## 🛠 Tech Stack
 
 ### Backend
-- **Node.js 18+** – Runtime
+- **Node.js 20+** – Runtime
 - **Express** – Web-Server
 - **CCXT** – Unified Crypto Exchange API (Binance, Bybit, OKX, Deribit, Hyperliquid, Coinbase)
 - **Compression** – Gzip-Kompression für API-Responses
@@ -79,7 +79,7 @@ web/
 
 ## 📋 Voraussetzungen
 
-- **Node.js 18+** (für CCXT, Vite und Vue 3)
+- **Node.js 20+** (für CCXT, Vite und Vue 3)
 - **npm** oder **yarn**
 
 ## 🏗 Installation

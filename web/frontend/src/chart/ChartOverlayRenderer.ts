@@ -27,6 +27,8 @@ export interface ScriptPlotOverlayLine {
   price: number;
   color: string;
   label?: string;
+  /** Key-levels role u8 (optional). */
+  role?: number;
 }
 
 export class ChartOverlayRenderer {
@@ -97,9 +99,9 @@ export class ChartOverlayRenderer {
       const y = this.p2y(line.price, dispMin, dispMax, PH);
       if (y < 2 || y > PH - 2) continue;
       ctx.strokeStyle = line.color;
-      ctx.globalAlpha = 0.72;
-      ctx.lineWidth = 1;
-      ctx.setLineDash([5 * DPR, 4 * DPR]);
+      ctx.globalAlpha = line.role != null ? 0.82 : 0.72;
+      ctx.lineWidth = line.role != null ? 1.25 * DPR : 1;
+      ctx.setLineDash(line.role != null ? [] : [5 * DPR, 4 * DPR]);
       ctx.beginPath();
       ctx.moveTo(0, y + 0.5);
       ctx.lineTo(PW, y + 0.5);
@@ -117,6 +119,19 @@ export class ChartOverlayRenderer {
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
         ctx.fillText(line.label, 8 * DPR, y);
+      }
+      if (line.role != null) {
+        ctx.font = `bold ${8 * DPR}px ${FONT}`;
+        const axisText = this.fmtPrice(line.price);
+        const aw = ctx.measureText(axisText).width + 8 * DPR;
+        const ax = PW + 4 * DPR;
+        ctx.fillStyle = line.color;
+        this.rrect(ctx, ax, y - 7 * DPR, aw, 14 * DPR, 2 * DPR);
+        ctx.fill();
+        ctx.fillStyle = '#06060b';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(axisText, ax + 4 * DPR, y);
       }
     }
     ctx.restore();

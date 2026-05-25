@@ -102,19 +102,20 @@ function handleJsonMessage(socket, mux, text) {
 
   if (msg.op === 'create_runtime') {
     const count = socket._runtimeCount ?? 0;
+    const createToken = msg.createToken ?? count + 1;
     if (count >= MAX_RUNTIME_PER_CLIENT) {
-      socket.send(JSON.stringify({ type: 'error', message: 'runtime limit' }));
+      socket.send(JSON.stringify({ type: 'error', message: 'runtime limit', createToken }));
       return;
     }
-    const createToken = msg.createToken ?? count + 1;
     const sym = validateHeatmapSymbol(msg.context?.symbol ?? msg.symbol) || 'BTCUSDT';
     const tf = validateTimeframe(msg.context?.tf ?? msg.tf ?? '1h') ?? '1h';
     const scriptId = msg.scriptId;
     if (!scriptId) {
-      socket.send(JSON.stringify({ type: 'error', message: 'scriptId required' }));
+      socket.send(JSON.stringify({ type: 'error', message: 'scriptId required', createToken }));
       return;
     }
 
+    socket._runtimeCount = count + 1;
     mountLocalRuntime(
       socket,
       scriptId,
@@ -125,17 +126,18 @@ function handleJsonMessage(socket, mux, text) {
       mux,
     ).then((result) => {
       if (!result) {
-        socket.send(JSON.stringify({ type: 'error', message: 'create_runtime failed' }));
+        socket._runtimeCount = Math.max(0, (socket._runtimeCount ?? 1) - 1);
+        socket.send(JSON.stringify({ type: 'error', message: 'create_runtime failed', createToken }));
         return;
       }
-      socket._runtimeCount = count + 1;
       socket.send(JSON.stringify({
         type: 'runtime_created',
         runtime_id: result.runtimeId,
         createToken: result.createToken,
       }));
     }).catch(() => {
-      socket.send(JSON.stringify({ type: 'error', message: 'create_runtime failed' }));
+      socket._runtimeCount = Math.max(0, (socket._runtimeCount ?? 1) - 1);
+      socket.send(JSON.stringify({ type: 'error', message: 'create_runtime failed', createToken }));
     });
     return;
   }

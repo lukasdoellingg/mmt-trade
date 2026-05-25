@@ -563,7 +563,7 @@ Verwendet in Trade View und Heatmap-Sidebar.
 
 Updates werden gebündelt (ca. 150 ms) an die UI übergeben. Reconnect und Stale-Detection sind in den Stream-Factories implementiert.
 
-### Heatmap (`heatmapWorker.ts`)
+### Heatmap (`chartEngineWorker.ts`)
 
 Direkt im Web Worker, nicht über das Backend:
 

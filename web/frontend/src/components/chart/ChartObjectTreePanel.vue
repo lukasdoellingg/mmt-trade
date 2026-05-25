@@ -3,7 +3,7 @@
  * MMT.gg-style object tree — chart pane mounts + spawn indicator windows.
  */
 import { computed } from 'vue';
-import { useChartSettings } from '../../chart/chartSettings';
+import { usePaneSettings } from '../../chart/chartPaneSettings';
 import { useWorkspace, CELL_PX } from '../../workspace/useWorkspace';
 import {
   chartPaneGet,
@@ -22,7 +22,7 @@ import { spawnIndicatorWindow } from '../../chart/useChartPaneRuntime';
 import { USE_SESSION_MUX } from '../../config/featureFlags';
 
 const emit = defineEmits<{ close: [] }>();
-const settings = useChartSettings();
+
 const { store, addWidget, findFreeSlot, updateProps } = useWorkspace();
 
 const chartWidgets = computed(() => store.widgets.filter((w) => w.type === 'chart'));
@@ -40,13 +40,16 @@ function viewportCells(): { w: number; h: number } {
   return { w: Math.max(40, Math.floor(r.width / CELL_PX)), h: Math.max(40, Math.floor(r.height / CELL_PX)) };
 }
 
-function toggleNative(settingsKey: string, on: boolean): void {
-  (settings as Record<string, unknown>)[settingsKey] = on;
+function toggleNative(chartWidgetId: string, settingsKey: string, on: boolean): void {
+  const pane = usePaneSettings(chartWidgetId);
+  (pane as Record<string, unknown>)[settingsKey] = on;
 }
 
 function toggleScriptOverlay(scriptId: ScriptIndicatorId, chartWidgetId: string, on: boolean): void {
+  if (!USE_SESSION_MUX) return;
+  const pane = usePaneSettings(chartWidgetId);
   const sk = scriptSettingsKey(scriptId);
-  if (sk) (settings as Record<string, boolean>)[sk] = on;
+  if (sk) (pane as Record<string, boolean>)[sk] = on;
   if (on) {
     const mounts = chartPaneUpsertMount(chartWidgetId, {
       localId: scriptId,
@@ -80,13 +83,16 @@ function openBarStatsWindow(): void {
   emit('close');
 }
 
-function isScriptOverlayOn(scriptId: ScriptIndicatorId): boolean {
+function isScriptOverlayOn(scriptId: ScriptIndicatorId, chartWidgetId: string): boolean {
   const sk = scriptSettingsKey(scriptId);
-  return sk ? !!settings[sk] : false;
+  if (!sk) return false;
+  const pane = usePaneSettings(chartWidgetId);
+  return !!(pane as Record<string, boolean>)[sk];
 }
 
-function isNativeOn(settingsKey: string): boolean {
-  return !!(settings as Record<string, boolean>)[settingsKey];
+function isNativeOn(chartWidgetId: string, settingsKey: string): boolean {
+  const pane = usePaneSettings(chartWidgetId);
+  return !!(pane as Record<string, boolean>)[settingsKey];
 }
 </script>
 
@@ -112,8 +118,8 @@ function isNativeOn(settingsKey: string): boolean {
         >
           <input
             type="checkbox"
-            :checked="isNativeOn(n.settingsKey)"
-            @change="toggleNative(n.settingsKey, ($event.target as HTMLInputElement).checked)"
+            :checked="isNativeOn(pane!.widgetId, n.settingsKey)"
+            @change="toggleNative(pane!.widgetId, n.settingsKey, ($event.target as HTMLInputElement).checked)"
           />
           <span>{{ n.label }}</span>
         </label>
@@ -125,7 +131,7 @@ function isNativeOn(settingsKey: string): boolean {
           <label class="tree-row">
             <input
               type="checkbox"
-              :checked="isScriptOverlayOn(s.id)"
+              :checked="isScriptOverlayOn(s.id, pane!.widgetId)"
               @change="toggleScriptOverlay(s.id, pane!.widgetId, ($event.target as HTMLInputElement).checked)"
             />
             <span class="tree-dot" :style="{ background: s.color }"></span>

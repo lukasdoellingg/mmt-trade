@@ -9,5 +9,5 @@ export const RUNTIME_LIMITS = {
   maxRuntimesGlobal: 64,
   maxLevels: 32,
   pushIntervalMs: 1000,
-  klinesLimit: 80,
+  klinesLimit: 200,
 };

@@ -4,6 +4,7 @@
 import { parseScriptRuntimePayload, plotLinesToPrices } from './parseScriptRuntimePayload';
 
 export const RUNTIME_PLOT_VERSION = 1;
+export const RUNTIME_PLOT_VERSION_ROLES = 2;
 export const MAX_RUNTIME_PLOT_PRICES = 64;
 
 const plotPriceScratch = new Float64Array(MAX_RUNTIME_PLOT_PRICES);
@@ -12,6 +13,8 @@ const plotIdDecoder = new TextDecoder();
 export type RuntimePlotParsed = {
   runtimeId: string;
   count: number;
+  /** Parallel u8 role tags when payload version is 2. */
+  roles?: Uint8Array;
 };
 
 /**
@@ -25,7 +28,8 @@ export function parseRuntimePlotPayload(
   max: number,
 ): RuntimePlotParsed | null {
   const view = new DataView(payload);
-  if (payload.byteLength >= 5 && view.getUint8(0) === RUNTIME_PLOT_VERSION) {
+  const ver = view.getUint8(0);
+  if (payload.byteLength >= 5 && (ver === RUNTIME_PLOT_VERSION || ver === RUNTIME_PLOT_VERSION_ROLES)) {
     const idLen = view.getUint16(1, false);
     let o = 3 + idLen;
     if (payload.byteLength < o + 2) return null;
@@ -37,7 +41,12 @@ export function parseRuntimePlotPayload(
       outPrices[i] = view.getFloat64(o, false);
       o += 8;
     }
-    return { runtimeId, count };
+    let roles: Uint8Array | undefined;
+    if (ver === RUNTIME_PLOT_VERSION_ROLES && payload.byteLength >= o + count) {
+      roles = new Uint8Array(count);
+      for (let i = 0; i < count; i++) roles[i] = view.getUint8(o + i);
+    }
+    return { runtimeId, count, roles };
   }
 
   const text = plotIdDecoder.decode(new Uint8Array(payload));
