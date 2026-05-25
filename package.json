@@ -25,7 +25,11 @@
     "typecheck": "npm --workspace web/frontend exec -- tsc --noEmit",
     "audit:prod": "npm audit --omit=dev",
     "test:mmt-cbor": "node scripts/test-mmt-cbor.mjs",
-    "analyze:mmt-har": "node scripts/analyze-mmt-har.mjs"
+    "test:regression": "node --test tests/regression/*.test.mjs tests/load/*.test.mjs",
+    "monitor": "node packages/monitor/src/supervisor.js",
+    "analyze:mmt-har": "node scripts/analyze-mmt-har.mjs",
+    "build:engine:smoke": "bash packages/engine/build.sh --smoke",
+    "build:engine:chart": "bash packages/engine/build.sh --chart-only"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.0.0",

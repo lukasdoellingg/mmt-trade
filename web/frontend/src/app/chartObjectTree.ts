@@ -63,7 +63,7 @@ export function chartPaneSyncScriptMounts(
   const parsed = parseChartRuntimeProps(
     props as unknown as Record<string, unknown> | undefined,
   );
-  node.scriptMounts = parsed.runtimes;
+  node.scriptMounts = parsed.runtimes ?? [];
   return node.scriptMounts;
 }
 

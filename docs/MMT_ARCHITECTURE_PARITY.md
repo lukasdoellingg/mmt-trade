@@ -24,9 +24,11 @@
 | **VPVR** | `vpvr_layer.odin` | Worker-Stub | ○ |
 | **Daten Chart** | WS v2 JWT, `getrange` | Binance REST/WS direkt | ✗ bewusst |
 | **Daten Heatmap** | CBOR Bulk, stream 16 | Protobuf `/ws/heatmap` | ✗ bewusst |
-| **Worker** | Emscripten WASM-Threads | 3× Dedicated JS Worker | ◐ Parallel, anderes Modell |
+| **Worker** | Emscripten WASM-Threads (`decode` / `indicator` / `texture`) | FeedHubWorker + ChartEngineWorker + `chart_runtime.wasm` (SAB + `-sWASM_WORKERS=1`) | ● Strukturell identisch |
+| **Session** | Browser JWT → MMT v2 | Backend MUX `/ws/session` (server JWT) | ● Sicherer |
+| **Daten Heatmap** | CBOR Bulk, stream 16 | `/ws/session` → decode worker; OB-Layer rendert via `obHeatmapWorker` | ◐ Decode in WASM, Display Übergang |
 | **Loop** | `emscripten` RAF + `step(dt)` | `rAF` pro Worker | ● |
-| **Memory** | SAB-Patch in `odin.js` | `ArrayBuffer` + Transfer | ○ optional später |
+| **Memory** | SAB-Patch in `odin.js` | `chart_runtime` SharedArrayBuffer + Transfer | ● (chart-only build) |
 
 Legende: ● nah dran · ◐ teilweise · ○ angefangen · ✗ absichtlich anders
 
@@ -44,9 +46,14 @@ web/frontend/src/
 │   ├── ObHeatmapRenderer.ts  # OB heatmap texture
 │   └── obColumn.ts           # Binning HD/SD
 ├── workers/
-│   ├── heatmapWorker.ts      # Chart + WASM + IndicatorHost
-│   ├── obHeatmapWorker.ts    # OB layer
+│   ├── feedHubWorker.ts      # 1× /ws/session per tab (MUX)
+│   ├── chartEngineWorker.ts  # Chart + engine.wasm + chart_runtime.wasm
+│   ├── obHeatmapWorker.ts    # Legacy OB layer (flag fallback)
 │   └── footprintLayerWorker.ts
+├── engine/
+│   ├── feedHubClient.ts      # Main-thread MUX coordinator
+│   ├── chartRuntimeBridge.ts # Emscripten chart_runtime loader
+│   └── rings/                # FrameRing / FlatHeatmap / Indicator handoff
 ├── indicators/               # Registry + optional sub-workers
 └── views/HeatmapView.vue     # Compose layers + toolbar
 ```

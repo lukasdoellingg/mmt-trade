@@ -10,6 +10,7 @@ FEED_HUB_DEFAULT_AGG_EXCHANGES :: "binance:bitfinex:bybit:coinbase:deribit:krake
 FeedHub :: struct {
     streamRegistry:       data.StreamRegistry,
     mmtSocket:            WebSocketSubscription,
+    frameRing:            data.FrameRing,
     rpcBuffer:            [FEED_HUB_RPC_BUFFER_BYTES]u8,
     urlBytes:             [FEED_HUB_MAX_URL_BYTES]u8,
     urlLength:            i32,
@@ -30,6 +31,7 @@ feed_hub :: proc "contextless" () -> ^FeedHub {
 
 feed_hub_init :: proc "contextless" (hub: ^FeedHub) {
     data.stream_registry_init(&hub.streamRegistry)
+    data.frame_ring_init(&hub.frameRing)
     hub.mmtSocket = {}
     hub.urlLength = 0
     hub.isMmtConnected = false
@@ -184,6 +186,9 @@ feed_hub_on_mmt_close :: proc "contextless" (hub: ^FeedHub) {
 }
 
 // Per-frame maintenance (ping, pending subscribes).
+@(private="file")
+feed_hub_ping_accumulator: f32
+
 feed_hub_tick :: proc "contextless" (hub: ^FeedHub, delta_seconds: f32) {
     if !hub.isMmtConnected { return }
     if hub.useBackendProxy { return }

@@ -15,10 +15,15 @@ const sorted = computed(() => {
 const lazyChart = defineAsyncComponent(() => import('../widgets/ChartWidget.vue'));
 const lazyOrderflow = defineAsyncComponent(() => import('../widgets/OrderFlowLadderWidget.vue'));
 
+const lazyBarStats = defineAsyncComponent(() => import('../widgets/BarStatsWidget.vue'));
+
 function renderBody(w: WidgetState) {
   const reg = getWidget(w.type);
   if (!reg) return h('div', { class: 'ws-fallback' }, 'Unknown widget: ' + w.type);
-  const Comp = w.type === 'chart' ? lazyChart : lazyOrderflow;
+  const Comp =
+    w.type === 'chart' ? lazyChart
+    : w.type === 'bar-stats' ? lazyBarStats
+    : lazyOrderflow;
   return h(Comp, { widget: w });
 }
 </script>

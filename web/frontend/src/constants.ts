@@ -1,3 +1,11 @@
+export const WS_RECONNECT_BASE_MS = 3000;
+export const WS_RECONNECT_MAX_MS = 120_000;
+
+/** Normalized symbol key for backend WS routes (e.g. BTCUSDT). */
+export function symKeyFromSymbol(pair: string): string {
+  return pair.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+}
+
 export const EXCHANGE_IDS: Record<string, string> = {
   Binance: 'binance', Coinbase: 'coinbase', Bybit: 'bybit',
   OKX: 'okx', Deribit: 'deribit', Hyperliquid: 'hyperliquid',

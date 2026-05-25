@@ -44,7 +44,24 @@ mmt-trade/
 └── .github/workflows/                # CI: lint, typecheck, audit, build
 ```
 
-## Target runtime
+## Hybrid architecture (Vue + Emscripten chart_runtime)
+
+Production chart path uses a **Vue control plane** with worker-hosted rendering:
+
+| Layer | Module | Role |
+| ----- | ------ | ---- |
+| Control plane | `web/frontend/src/widgets/ChartWidget.vue` | Input forward, overlay ≤10 Hz, settings bus |
+| Feed hub | `web/frontend/src/workers/feedHubWorker.ts` | One `/ws/session` per tab → backend `MmtSessionMultiplexer` |
+| Chart engine | `web/frontend/src/workers/chartEngineWorker.ts` | OffscreenCanvas + `engine.wasm` (candles) + optional `chart_runtime.wasm` |
+| Backend MUX | `web/backend/lib/mmtSession.js` | Refcount MMT v2 streams (4/5/6/13/16), binary envelopes |
+| Odin runtime | `packages/engine/src/main_chart.odin` | decode / indicator / texture worker entry points |
+
+Build chart runtime: `npm run build:engine:chart` → `web/frontend/public/chart_runtime.{wasm,js}`.
+
+Feature flags (`.env`): `VITE_USE_SESSION_MUX=1`, `VITE_USE_EMSCRIPTEN_WORKERS=1` (set `0` to fall back to legacy `/ws/heatmap` + `obHeatmapWorker`).
+
+COOP/COEP headers remain required for SharedArrayBuffer when Emscripten WASM workers are fully enabled.
+
 
 ```mermaid
 flowchart TB
@@ -91,19 +108,26 @@ All hardened in Phase 0. Key invariants:
 - One instanced draw call per layer; sort by shader/texture.
 - WS decode pre-allocated into `wasm.memory.buffer` (zero-copy).
 
-## Migration status
+## Hybrid migration status (plan phases 0–4)
+
+| Phase | Scope | Status |
+| ----- | ----- | ------ |
+| **0** | MUX `/ws/session`, protocol RPC, `chart_runtime` build, security | **Done** — `mmtSession.js`, `wsSession.js`, `build.sh --chart-only` |
+| **1** | decode / texture / indicator workers, FeedHubWorker | **Done** — protobuf + CBOR decode in Odin; texture worker via `textureDirty` + `chart_runtime_step` |
+| **2** | ChartEngineWorker, zero-Vue hot path | **Done** — MUX feed ports, dual WASM, OB layer via `obHeatmapWorker` until Sokol GPU port |
+| **3** | Server indicators, BarStats stream 13 | **Done** — `create_runtime` async relay, BarStats MUX path, `scriptRuntime` lifecycle |
+| **4** | Hardening, engine.wasm port, load tests | **Done** — load smoke, CI `engine-chart`, session probe, regression tests (WS smoke skips offline) |
+
+Feature flags: `VITE_USE_SESSION_MUX`, `VITE_USE_EMSCRIPTEN_WORKERS` (see `web/frontend/.env.development`).
+
+## Legacy migration status (terminal.wasm rewrite)
 
 | phase                                          | status      |
 | ---------------------------------------------- | ----------- |
 | Phase 0: Security & Git-hygiene                | ✓ completed |
 | Phase 1: Monorepo, ESLint, Prettier, CI        | ✓ completed |
-| Phase 2: Emscripten + Odin toolchain (stop-gate, scripts ready) | ✓ completed |
-| Phase 3: Chart engine source split (skeleton in `packages/engine/src/`) | ✓ completed |
-| Phase 4: Network (WS, CBOR, MMT, Binance protocols) | ✓ completed |
-| Phase 5: Layer parity (heatmap_gpu, footprint, vpvr, ob_depth, liq_heatmap, cvd, oi) | ✓ completed |
-| Phase 6: WASM workers + SAB + COOP/COEP        | ✓ completed |
-| Phase 7: Renames + cleanup                     | ✓ completed |
-| Phase 8: Performance / RAM / FPS               | ✓ completed |
+| Phase 2: Emscripten + Odin toolchain           | ✓ completed |
+| Phase 3–8: Full terminal.wasm monolith         | **Deferred** — hybrid chart_runtime path preferred |
 
 ## Performance budget (Phase 8 verification checklist)
 

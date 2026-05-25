@@ -150,3 +150,30 @@ mmt_build_ping :: proc "contextless" (builder: ^MmtRpcBuilder) -> bool {
     mmt_builder_reset(builder)
     return write_string(builder, "{\"method\":\"ping\"}")
 }
+
+// Writes wss://host/path?token=JWT into dest; returns byte length or 0 on overflow.
+mmt_build_ws_url :: proc "contextless" (
+    dest: [^]u8,
+    dest_capacity: i32,
+    host: string,
+    jwt: string,
+) -> i32 {
+    header := "wss://"
+    path := MMT_DEFAULT_PATH + "?token="
+    total := len(header) + len(host) + len(path) + len(jwt)
+    if total >= int(dest_capacity) { return 0 }
+    cursor: i32 = 0
+    for ch in header {
+        dest[cursor] = u8(ch); cursor += 1
+    }
+    for ch in host {
+        dest[cursor] = u8(ch); cursor += 1
+    }
+    for ch in path {
+        dest[cursor] = u8(ch); cursor += 1
+    }
+    for ch in jwt {
+        dest[cursor] = u8(ch); cursor += 1
+    }
+    return cursor
+}

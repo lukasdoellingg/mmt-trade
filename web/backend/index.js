@@ -24,6 +24,7 @@ import {
   corsOriginValidator,
   validateSymbol,
   validateHeatmapSymbol,
+  validateTimeframe,
   clampInteger,
   createRateLimiters,
   createWebSocketSecurityGate,
@@ -31,8 +32,15 @@ import {
   createBackoffController,
   MAX_WEBSOCKET_PAYLOAD_BYTES,
 } from './lib/security.js';
+import { createBarStatsWebSocket, closeAllBarStatsUpstreams } from './lib/wsBarStats.js';
+import { createSessionWebSocket } from './lib/wsSession.js';
+import { setMmtSessionHeatmapFrameType, shutdownMmtSession } from './lib/mmtSession.js';
+import { createDetachedWebSocketServer, mountWebSocketUpgradeRouter } from './lib/wsUpgradeRouter.js';
+import { registerHealthRoutes } from './src/platform/health.js';
+import { logError, logInfo, installProcessErrorHandlers } from './src/platform/logger.js';
 
 const app = express();
+installProcessErrorHandlers();
 app.set('trust proxy', 1);
 
 const allowedCorsOrigins = parseAllowedCorsOrigins(process.env.CORS_ALLOWED_ORIGINS || process.env.CORS_ORIGIN);
@@ -94,6 +102,7 @@ message HeatmapFrame {
 
 const heatmapRoot = protobuf.parse(HEATMAP_PROTO).root;
 const HeatmapFrame = heatmapRoot.lookupType('HeatmapFrame');
+setMmtSessionHeatmapFrameType(HeatmapFrame);
 
 // --------------- Utilities ---------------
 
@@ -203,7 +212,7 @@ function safeSend(res, data) {
   if (!res.headersSent && !res.timedOut) res.json(data);
 }
 function safeError(res, e) {
-  console.error('[API Error]', e?.message || e);
+  logError('api_error', {}, e instanceof Error ? e : new Error(String(e)));
   if (!res.headersSent && !res.timedOut) res.status(500).json({ error: 'Internal server error' });
 }
 
@@ -375,7 +384,40 @@ function validateExchangeId(raw) {
 
 // --------------- Routes ---------------
 
+registerHealthRoutes(app, {
+  getReadiness: () => ({
+    ok: true,
+    feeds: {
+      heatmap: 'up',
+      barstats: process.env.MMT_WS_TOKEN ? 'configured' : 'requires_MMT_WS_TOKEN',
+      mmt: process.env.MMT_WS_TOKEN ? 'configured' : 'binance_fallback',
+      heatmapUpstream:
+        (process.env.HEATMAP_USE_MMT === '1' || process.env.HEATMAP_USE_MMT === 'true') &&
+        process.env.MMT_WS_TOKEN
+          ? 'mmt'
+          : 'local_binance_bybit',
+    },
+    ccxt: 'ok',
+  }),
+});
+
 app.get('/', (_, res) => res.json({ ok: true, name: 'MMT-Trade API' }));
+
+const clientErrorCounts = new Map();
+app.post('/api/client-errors', express.json({ limit: '8kb' }), (req, res) => {
+  const ip = req.ip || 'unknown';
+  const count = (clientErrorCounts.get(ip) || 0) + 1;
+  clientErrorCounts.set(ip, count);
+  if (count > 30) {
+    res.status(429).json({ error: 'Too many client error reports' });
+    return;
+  }
+  const body = req.body || {};
+  const message = typeof body.message === 'string' ? body.message.slice(0, 500) : 'client_error';
+  const stack = typeof body.stack === 'string' ? body.stack.slice(0, 2000) : undefined;
+  logError('client_error', { ip, route: body.route, component: body.component }, new Error(stack ? `${message}\n${stack}` : message));
+  res.status(204).end();
+});
 app.get('/api/exchanges', (_, res) => res.json({ exchanges: EXCHANGES }));
 
 app.get('/api/symbols', async (req, res) => {
@@ -1002,18 +1044,15 @@ app.get('/api/tradfi/cme-options', async (req, res) => {
 
 // Global error handler — prevents Express from leaking stack traces
 app.use((err, _req, res, _next) => {
-  console.error('[Unhandled]', err?.message || err);
+  logError('express_unhandled', {}, err);
   if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
 });
 
 // --------------- WebSocket Heatmap Firehose ---------------
 
 const MAX_HEATMAP_SYMBOLS = 10;
-const VALID_HEATMAP_SYMBOLS = new Set(['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT']);
 
 function startBinanceHeatmap(symbolKey, timeframeMs = 3600e3) {
-  if (!VALID_HEATMAP_SYMBOLS.has(symbolKey)) return null;
-
   const lowercaseSymbol = symbolKey.toLowerCase();
   const wsUrl = `wss://fstream.binance.com/ws/${lowercaseSymbol}@depth@100ms`;
   const snapshotUrl = `https://fapi.binance.com/fapi/v1/depth?symbol=${symbolKey}&limit=1000`;
@@ -1155,18 +1194,25 @@ function releaseHeatmapUpstream(upstreamKey, upstream, { mmtMode, useAgg }) {
 
 // --------------- Graceful shutdown & server start ---------------
 
-const server = app.listen(PORT, () => console.log(`MMT-Trade Backend on http://localhost:${PORT}`));
+const server = app.listen(PORT, () => {
+  logInfo('backend_listening', { port: PORT });
+});
 
 const webSocketGate = createWebSocketSecurityGate(allowedCorsOrigins);
 
-const wss = new WebSocketServer({
-  server,
-  path: '/ws/heatmap',
-  verifyClient: webSocketGate.verifyClient,
-  maxPayload: MAX_WEBSOCKET_PAYLOAD_BYTES,
-});
+const wss = createDetachedWebSocketServer({ maxPayload: MAX_WEBSOCKET_PAYLOAD_BYTES });
+const barStatsWss = createBarStatsWebSocket(webSocketGate, validateHeatmapSymbol, MAX_HEATMAP_SYMBOLS);
+const sessionWss = createSessionWebSocket(webSocketGate);
+
+mountWebSocketUpgradeRouter(server, webSocketGate, [
+  { path: '/ws/heatmap', wss },
+  { path: '/ws/barstats', wss: barStatsWss },
+  { path: '/ws/session', wss: sessionWss },
+]);
 
 installHeartbeat(wss);
+installHeartbeat(barStatsWss);
+installHeartbeat(sessionWss);
 
 wss.on('connection', (socket, req) => {
   const clientIp = webSocketGate.trackOpen(req);
@@ -1178,11 +1224,14 @@ wss.on('connection', (socket, req) => {
     return;
   }
   const sym = requestedSymbol;
-  const tf = url.searchParams.get('tf') || '1h';
+  const tfRaw = url.searchParams.get('tf') || '1h';
+  const tf = validateTimeframe(tfRaw) ?? '1h';
   const timeframeMs = timeframeToMs(tf);
   const timeframeSec = timeframeToSec(tf);
   const exchanges = parseAggregateExchanges(url.searchParams.get('aggregate'));
-  const useMmt = !!process.env.MMT_WS_TOKEN;
+  const heatmapUseMmt =
+    process.env.HEATMAP_USE_MMT === '1' || process.env.HEATMAP_USE_MMT === 'true';
+  const useMmt = heatmapUseMmt && !!process.env.MMT_WS_TOKEN;
   const useAgg = !useMmt && (exchanges.length > 1 || (exchanges.length === 1 && exchanges[0] !== 'binance'));
 
   let upstreamKey = sym;
@@ -1255,7 +1304,7 @@ wss.on('connection', (socket, req) => {
 });
 
 function shutdown(signal) {
-  console.log(`\n${signal} received, shutting down gracefully...`);
+  logInfo('shutdown', { signal });
   for (const [, ex] of exchangeCache) { try { ex.close?.(); } catch { /* ignore */ } }
   for (const [, upstream] of heatmapUpstreams) {
     cancelUpstreamIdleClose(upstream);
@@ -1264,7 +1313,11 @@ function shutdown(signal) {
     for (const client of upstream.clients) { try { client.close(1001, 'server shutdown'); } catch { /* ignore */ } }
   }
   heatmapUpstreams.clear();
+  closeAllBarStatsUpstreams();
+  shutdownMmtSession();
   wss.close();
+  barStatsWss.close();
+  sessionWss.close();
   server.close(() => {
     console.log('HTTP server closed');
     process.exit(0);

@@ -57,10 +57,10 @@ read_be_u16 :: #force_inline proc "contextless" (reader: ^CborReader) -> (u16, b
 @(private)
 read_be_u32 :: #force_inline proc "contextless" (reader: ^CborReader) -> (u32, bool) {
     if reader.offset + 4 > reader.length { return 0, false }
-    value := u32(reader.bytes[reader.offset]) << 24
-           | u32(reader.bytes[reader.offset + 1]) << 16
-           | u32(reader.bytes[reader.offset + 2]) << 8
-           | u32(reader.bytes[reader.offset + 3])
+    value := (u32(reader.bytes[reader.offset]) << 24) |
+             (u32(reader.bytes[reader.offset + 1]) << 16) |
+             (u32(reader.bytes[reader.offset + 2]) << 8) |
+             u32(reader.bytes[reader.offset + 3])
     reader.offset += 4
     return value, true
 }
@@ -128,6 +128,54 @@ cbor_read_float64 :: proc "contextless" (reader: ^CborReader) -> (value: f64, ok
     raw, raw_ok := read_be_u64(reader)
     if !raw_ok { return 0, false }
     return transmute(f64) raw, true
+}
+
+// Read an unsigned or negative integer as i64 (MMT timestamps / map keys).
+cbor_read_int64 :: proc "contextless" (reader: ^CborReader) -> (value: i64, ok: bool) {
+    major_type, argument_value, head_ok := cbor_read_head(reader)
+    if !head_ok { return 0, false }
+    #partial switch major_type {
+    case .UnsignedInteger:
+        return i64(argument_value), true
+    case .NegativeInteger:
+        return -i64(argument_value) - 1, true
+    case:
+        return 0, false
+    }
+}
+
+// Read a byte string; returns a view into the original buffer (zero-copy).
+cbor_read_byte_string :: proc "contextless" (
+    reader: ^CborReader,
+) -> (data: [^]u8, byte_length: u32, ok: bool) {
+    major_type, argument_value, head_ok := cbor_read_head(reader)
+    if !head_ok || major_type != .ByteString { return nil, 0, false }
+    if argument_value == 0xFFFF_FFFF_FFFF_FFFF { return nil, 0, false }
+    byte_length = u32(argument_value)
+    if reader.offset + byte_length > reader.length { return nil, 0, false }
+    data = &reader.bytes[reader.offset]
+    reader.offset += byte_length
+    return data, byte_length, true
+}
+
+// Read a float64 (additional info 27) or float32 (26) from a SimpleOrFloat head.
+cbor_read_number :: proc "contextless" (reader: ^CborReader) -> (value: f64, ok: bool) {
+    saved := reader.offset
+    major_type, argument_value, head_ok := cbor_read_head(reader)
+    if !head_ok { return 0, false }
+    if major_type == .UnsignedInteger { return f64(argument_value), true }
+    if major_type == .NegativeInteger { return f64(-i64(argument_value) - 1), true }
+    if major_type != .SimpleOrFloat { reader.offset = saved; return 0, false }
+    switch argument_value {
+    case 26:
+        f32_value, f32_ok := cbor_read_float32(reader)
+        return f64(f32_value), f32_ok
+    case 27:
+        return cbor_read_float64(reader)
+    case:
+        reader.offset = saved
+        return 0, false
+    }
 }
 
 // Skip the next item entirely (used to step past tags or unknown map keys).

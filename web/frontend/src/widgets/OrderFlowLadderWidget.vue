@@ -18,7 +18,7 @@ import { LadderAggregator, type LadderSnapshot } from './orderflow/ladderState';
 import { decodeHeatmapFrame } from '../engine/heatmapProto';
 import { useChartSettings } from '../chart/chartSettings';
 import { busEmit, busOn } from '../workspace/widgetBus';
-import { debugWarn } from '../utils/debug';
+import { acquireHeatmapFeed } from '../features/heatmap/feed-hub/heatmapFeedHub';
 
 interface LadderProps {
   aggregate?: string;      // CSV of exchanges, default 'binance,bybit'
@@ -49,28 +49,15 @@ const settingsOpen = ref(false);
 const agg = new LadderAggregator({ pg: pg.value, rowsPerSide: rowsPerSide.value });
 const snap = ref<LadderSnapshot>({ midPrice: 0, pg: pg.value, asks: [], bids: [], maxSize: 0, topAbsorption: 0, topAbsorptionPrice: 0 });
 let midPrice = 0;
-let socket: WebSocket | null = null;
+let releaseFeed: (() => void) | null = null;
 let renderPending = false;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let reconnectDelay = 750;
 
 const barsCanvas = ref<HTMLCanvasElement | null>(null);
 let barsCtx: CanvasRenderingContext2D | null = null;
 const DPR = Math.min(window.devicePixelRatio || 1, 2);
 
-function wsBaseUrl(): string {
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${proto}://${window.location.host}`;
-}
-
 function symKey(): string {
   return settings.symbol.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-}
-
-function buildWsUrl(): string {
-  const params = new URLSearchParams({ symbol: symKey(), tf: settings.timeframe });
-  if (aggregateCsv.value) params.set('aggregate', aggregateCsv.value);
-  return `${wsBaseUrl()}/ws/heatmap?${params.toString()}`;
 }
 
 function scheduleRender(): void {
@@ -148,49 +135,48 @@ function drawBars(): void {
   for (let i = 0; i < s.bids.length; i++) drawBar(asksDesc.length + 1 + i, s.bids[i].size, 61, 201, 133);
 }
 
+function deriveMidFromLevels(levels: { price: number; isBid: boolean }[]): number {
+  let bestBid = -Infinity;
+  let bestAsk = Infinity;
+  for (let i = 0; i < levels.length; i++) {
+    const lv = levels[i];
+    if (lv.isBid) {
+      if (lv.price > bestBid) bestBid = lv.price;
+    } else if (lv.price < bestAsk) {
+      bestAsk = lv.price;
+    }
+  }
+  if (bestBid !== -Infinity && bestAsk !== Infinity) return (bestBid + bestAsk) * 0.5;
+  if (bestBid !== -Infinity) return bestBid;
+  if (bestAsk !== Infinity) return bestAsk;
+  return levels[0]?.price ?? 0;
+}
+
 function handleFrame(buf: ArrayBuffer): void {
   const f = decodeHeatmapFrame(buf);
   if (!f || !f.levels.length) return;
-  // Derive a mid: highest bid + lowest ask if both present, else mean of book.
-  let bestBid = -Infinity, bestAsk = Infinity;
-  for (let i = 0; i < f.levels.length; i++) {
-    const lv = f.levels[i];
-    if (lv.isBid) { if (lv.price > bestBid) bestBid = lv.price; }
-    else          { if (lv.price < bestAsk) bestAsk = lv.price; }
-  }
-  if (bestBid !== -Infinity && bestAsk !== Infinity) midPrice = (bestBid + bestAsk) * 0.5;
+  const derived = deriveMidFromLevels(f.levels);
+  if (derived > 0) midPrice = derived;
+  if (midPrice <= 0) return;
   agg.ingest(f.levels, midPrice);
   scheduleRender();
 }
 
-function openSocket(): void {
-  closeSocket();
-  const url = buildWsUrl();
-  try { socket = new WebSocket(url); }
-  catch (e) { debugWarn('[Ladder] ws open failed', e); scheduleReconnect(); return; }
-  socket.binaryType = 'arraybuffer';
-  socket.onmessage = (ev: MessageEvent) => {
-    if (ev.data instanceof ArrayBuffer) handleFrame(ev.data);
-  };
-  socket.onerror = () => { /* close handler kicks reconnect */ };
-  socket.onclose = () => { socket = null; scheduleReconnect(); };
-  socket.onopen = () => { reconnectDelay = 750; };
+function openFeed(): void {
+  closeFeed();
+  releaseFeed = acquireHeatmapFeed(
+    symKey(),
+    settings.timeframe,
+    aggregateCsv.value,
+    (buffer) => handleFrame(buffer),
+  );
 }
 
-function scheduleReconnect(): void {
-  if (reconnectTimer !== null) return;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    reconnectDelay = Math.min(reconnectDelay * 2, 8000);
-    openSocket();
-  }, reconnectDelay);
-}
-
-function closeSocket(): void {
-  if (!socket) return;
-  socket.onmessage = socket.onopen = socket.onerror = socket.onclose = null;
-  try { socket.close(); } catch { /* ignore */ }
-  socket = null;
+function closeFeed(): void {
+  if (releaseFeed) {
+    releaseFeed();
+    releaseFeed = null;
+  }
 }
 
 function cyclePg(): void {
@@ -240,6 +226,11 @@ const bidsDisplay = computed(() => {
 
 // Listen for link-group syncs from other ladders.
 const unsubBus = busOn((e) => {
+  if (e.type === 'midPrice' && e.price > 0) {
+    midPrice = e.price;
+    scheduleRender();
+    return;
+  }
   if (e.type !== 'orderflow:ping') return;
   if (!linkGroup.value || e.widgetId === props.widget.id) return;
   // Find the originating ladder's pg from the workspace store via shared state.
@@ -263,20 +254,19 @@ const ro = new ResizeObserver(() => resizeCanvas());
 
 watch(pg, (v) => { agg.setPg(v); scheduleRender(); });
 watch(rowsPerSide, (v) => { agg.setRowsPerSide(v); scheduleRender(); });
-watch([() => settings.symbol, () => settings.timeframe, aggregateCsv], () => openSocket());
+watch([() => settings.symbol, () => settings.timeframe, aggregateCsv], () => openFeed());
 watch([() => settings.obLow, () => settings.obPeak], () => scheduleRender());
 watch(() => settings.quoteUsd, () => scheduleRender());
 
 onMounted(() => {
   if (barsCanvas.value) ro.observe(barsCanvas.value);
   resizeCanvas();
-  openSocket();
+  openFeed();
 });
 onUnmounted(() => {
   ro.disconnect();
-  closeSocket();
+  closeFeed();
   unsubBus();
-  if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 });
 
 function fmtPrice(p: number): string {

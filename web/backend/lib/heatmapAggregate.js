@@ -10,14 +10,11 @@ import { safeCloseWebSocket } from './wsTeardown.js';
 
 const UPSTREAM_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 
-const MAX_BOOK_SIZE = HEATMAP_MAX_BOOK_SIZE;
-const SUPPORTED_AGG = new Set(['binance', 'bybit']);
+import { parseAggregateExchanges as parseAggregateFromShared } from '../../../shared/exchangeIds.mjs';
 
-export function parseAggregateExchanges(param) {
-  if (!param) return ['binance'];
-  const list = param.split(',').map(s => s.trim().toLowerCase()).filter(s => SUPPORTED_AGG.has(s));
-  return list.length ? list : ['binance'];
-}
+const MAX_BOOK_SIZE = HEATMAP_MAX_BOOK_SIZE;
+
+export { parseAggregateFromShared as parseAggregateExchanges };
 
 export function aggregateUpstreamKey(symbolKey, exchanges) {
   return `AGG:${symbolKey}:${[...exchanges].sort().join(',')}`;

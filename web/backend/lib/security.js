@@ -55,6 +55,17 @@ export function validateHeatmapSymbol(rawSymbol) {
   return HEATMAP_SYMBOL_REGEX.test(upper) ? upper : null;
 }
 
+const ALLOWED_TIMEFRAMES = new Set(['1m', '5m', '15m', '30m', '1h', '4h', '1D', '1W']);
+
+/** @param {string | null | undefined} rawTf */
+export function validateTimeframe(rawTf) {
+  if (typeof rawTf !== 'string' || rawTf.length === 0) return null;
+  const tf = rawTf.trim();
+  if (ALLOWED_TIMEFRAMES.has(tf)) return tf;
+  if (TIMEFRAME_REGEX.test(tf) && tf.length <= 6) return tf;
+  return null;
+}
+
 export function clampInteger(rawValue, defaultValue, minValue, maxValue) {
   const parsed = parseInt(rawValue, 10);
   const safe = Number.isFinite(parsed) ? parsed : defaultValue;
@@ -81,7 +92,9 @@ export function createRateLimiters() {
 
 // ── WebSocket gate: Origin allow-list + per-IP concurrency cap ─────
 
-export const MAX_WEBSOCKETS_PER_IP = Number(process.env.WS_MAX_PER_IP || 3);
+export const MAX_WEBSOCKETS_PER_IP = Number(
+  process.env.WS_MAX_PER_IP || (process.env.NODE_ENV === 'production' ? 3 : 12),
+);
 export const MAX_WEBSOCKET_PAYLOAD_BYTES = Number(process.env.WS_MAX_PAYLOAD_BYTES || 65_536);
 export const HEARTBEAT_INTERVAL_MS = 30_000;
 export const MISSED_HEARTBEATS_BEFORE_TERMINATE = 2;
@@ -101,6 +114,12 @@ export function createWebSocketSecurityGate(allowedOrigins) {
 
   function verifyClient(info, done) {
     const origin = info.req.headers.origin;
+    const requireOrigin =
+      process.env.WS_REQUIRE_ORIGIN === '1' ||
+      (process.env.NODE_ENV === 'production' && process.env.WS_REQUIRE_ORIGIN !== '0');
+    if (requireOrigin && !origin) {
+      return done(false, 403, 'Origin header required');
+    }
     if (origin && !allowOriginSet.has(origin)) {
       return done(false, 403, 'Origin not allowed');
     }

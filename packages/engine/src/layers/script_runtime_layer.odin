@@ -24,7 +24,7 @@ PlotLine :: struct {
     colorRed:             u8,
     colorGreen:           u8,
     colorBlue:            u8,
-    alpha:                f8,
+    alpha:                u8,
     lineWidth:            f32,
 }
 
@@ -69,7 +69,7 @@ script_runtime_set_plot_lines :: proc "contextless" (
         plot.colorRed = base_red
         plot.colorGreen = base_green
         plot.colorBlue = base_blue
-        plot.alpha = 0.85
+        plot.alpha = 217
         plot.lineWidth = 1.0
         layer.plotLineCount += 1
     }

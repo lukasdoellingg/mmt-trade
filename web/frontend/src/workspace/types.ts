@@ -10,7 +10,7 @@
  * Layouts are persisted to localStorage as JSON.
  */
 
-export type WidgetType = 'chart' | 'orderflow-ladder';
+export type WidgetType = 'chart' | 'orderflow-ladder' | 'bar-stats';
 
 export interface WidgetRect {
   x: number;

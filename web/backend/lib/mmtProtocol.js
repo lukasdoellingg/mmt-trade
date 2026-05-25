@@ -8,6 +8,8 @@ export const MMT_WS_PATH = '/api/v2/ws';
 
 /** Aggregated multi-exchange OB heatmap */
 export const STREAM_HEATMAP_AGG = 16;
+/** Per-bar buy/sell / delta stats */
+export const STREAM_BAR_STATS = 13;
 /** Per-exchange streams (candles / heatmap HD / SD / footprint — app-dependent) */
 export const STREAM_PER_EX_4 = 4;
 export const STREAM_PER_EX_5 = 5;
@@ -76,6 +78,47 @@ export function rpcUnsubscribe({ exchange, symbol, stream, timeframeSec = 0, buc
       bucket_group: bucketGroup,
     },
   });
+}
+
+export function rpcPing() {
+  return JSON.stringify({ method: 'ping' });
+}
+
+export function rpcCreateRuntime({ createToken, context, code, rbv = 0 }) {
+  return JSON.stringify({
+    method: 'create_runtime',
+    data: {
+      create_token: createToken,
+      context,
+      code,
+      rbv,
+    },
+  });
+}
+
+export function rpcUpdateInputs({ runtimeId, overrides }) {
+  return JSON.stringify({
+    method: 'update_inputs',
+    data: {
+      runtime_id: runtimeId,
+      overrides,
+    },
+  });
+}
+
+export function rpcUpdateContext({ runtimeId, context }) {
+  return JSON.stringify({
+    method: 'update_context',
+    data: {
+      runtime_id: runtimeId,
+      context,
+    },
+  });
+}
+
+/** Canonical stream key for multiplexer registry */
+export function buildStreamKey({ exchange, symbol, stream, timeframeSec = 0, bucketGroup = 0 }) {
+  return `${exchange}:${symbol}:${stream}:${timeframeSec}:${bucketGroup}`;
 }
 
 /** Map our UI timeframe string → MMT seconds */

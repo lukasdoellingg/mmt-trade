@@ -57,8 +57,8 @@ feed_hub_request_connect :: proc "contextless" () {
     )
     if written <= 0 { return }
 
-    for index in 0..<written {
-        ws_url_storage[index] = hub.urlBytes[index]
+    for byte_index in 0..<written {
+        ws_url_storage[byte_index] = hub.urlBytes[byte_index]
     }
     ws_url_storage[written] = 0
     ws_url_cstring = cstring(&ws_url_storage[0])

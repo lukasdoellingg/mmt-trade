@@ -8,7 +8,7 @@ import { getWidget } from './registry';
 import { busEmit } from './widgetBus';
 
 const STORAGE_KEY = 'mmt-workspace-v1';
-const LAYOUT_VERSION = 1;
+const LAYOUT_VERSION = 2;
 /** Grid step in CSS pixels. Snap targets are integer multiples. */
 export const CELL_PX = 8;
 

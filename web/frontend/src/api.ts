@@ -1,4 +1,15 @@
-const API = (import.meta.env?.VITE_API_URL || '/api').replace(/\/$/, '');
+const API = resolveApiBase();
+
+/** Dev: same-origin `/api` proxy (avoids CSP + CORS). Prod: `VITE_API_URL` or `/api`. */
+function resolveApiBase(): string {
+  const envUrl = import.meta.env?.VITE_API_URL as string | undefined;
+  if (import.meta.env.DEV && typeof window !== 'undefined') {
+    if (!envUrl || /localhost:3001|127\.0\.0\.1:3001/.test(envUrl)) {
+      return '/api';
+    }
+  }
+  return (envUrl || '/api').replace(/\/$/, '');
+}
 
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 1000;

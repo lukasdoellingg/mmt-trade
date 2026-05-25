@@ -24,16 +24,14 @@ const TF_MS: Record<string, number> = {
   '4h': 144e5, '1D': 864e5, '1W': 6048e5,
 };
 
-let ws: WebSocket | null = null;
 let symbol = 'BTCUSDT';
 let timeframe = '1h';
 let timeframeMs = 36e5;
 let running = false;
+
 let canvasW = 800;
 let canvasH = 600;
 let devicePR = 1;
-let wsBase = 'ws://localhost:5173';
-let aggregateExchanges = ''; // e.g. "binance,bybit"
 
 let minPrice = 0;
 let maxPrice = 1;
@@ -63,12 +61,6 @@ let lastLevelCount = 0;
 let snapshotCount = 0;
 let binMode: BinMode = 'hd';
 let refVolume = 0;
-
-function wsUrl(sym: string): string {
-  let q = `${wsBase}/ws/heatmap?symbol=${sym}&tf=${encodeURIComponent(timeframe)}`;
-  if (aggregateExchanges) q += `&aggregate=${encodeURIComponent(aggregateExchanges)}`;
-  return q;
-}
 
 function plotRect() {
   const pr = devicePR;
@@ -159,34 +151,6 @@ function rebuildTexture(candleTsBuf: Float64Array | null, candleCount: number) {
   frameDirty = true;
 }
 
-function openWs() {
-  closeWs();
-  try {
-    ws = new WebSocket(wsUrl(symbol));
-    ws.binaryType = 'arraybuffer';
-  } catch {
-    post({ type: 'error', msg: 'WebSocket failed' });
-    return;
-  }
-  ws.onopen = () => post({ type: 'wsConnected' });
-  ws.onclose = () => { if (running) setTimeout(openWs, 3000); };
-  ws.onerror = () => post({ type: 'error', msg: 'Heatmap WS — backend :3001?' });
-  ws.onmessage = (ev) => {
-    if (!(ev.data instanceof ArrayBuffer)) return;
-    const frame = decodeHeatmapFrame(ev.data);
-    if (!frame?.levels.length) return;
-    onObFrame(frame.ts, frame.levels);
-  };
-}
-
-function closeWs() {
-  if (ws) {
-    ws.onclose = null;
-    try { ws.close(); } catch { /* ignore */ }
-  }
-  ws = null;
-}
-
 function loop() {
   if (!running) return;
   animId = requestAnimationFrame(loop);
@@ -238,13 +202,26 @@ function post(msg: unknown) {
   (self as unknown as Worker).postMessage(msg);
 }
 
+function onSessionFrame(buffer: ArrayBuffer): void {
+  const frame = decodeHeatmapFrame(buffer);
+  if (!frame?.levels.length) return;
+  onObFrame(frame.ts, frame.levels);
+}
+
+function bindFeedPort(port: MessagePort): void {
+  port.onmessage = (ev: MessageEvent) => {
+    const msg = ev.data;
+    if (msg.type === 'session_frame' && msg.buffer instanceof ArrayBuffer) {
+      onSessionFrame(msg.buffer);
+    }
+  };
+}
+
 self.onmessage = async (ev: MessageEvent) => {
   const msg = ev.data;
   switch (msg.type) {
     case 'init': {
       symbol = (msg.symbol || 'BTCUSDT').toUpperCase();
-      if (typeof msg.aggregate === 'string') aggregateExchanges = msg.aggregate;
-      wsBase = msg.wsBase || wsBase;
       timeframe = msg.tf || '1h';
       timeframeMs = TF_MS[timeframe] || 36e5;
       devicePR = msg.dpr || 1;
@@ -258,31 +235,32 @@ self.onmessage = async (ev: MessageEvent) => {
         cv.height = canvasH;
         if (!(await initGl(cv))) return;
       }
-      openWs();
       loop();
+      break;
+    }
+    case 'initFeedPort':
+      if (msg.port) bindFeedPort(msg.port as MessagePort);
+      break;
+    case 'obFrame': {
+      const buf = msg.buffer as ArrayBuffer;
+      const frame = decodeHeatmapFrame(buf);
+      if (!frame?.levels.length) break;
+      onObFrame(frame.ts, frame.levels);
       break;
     }
     case 'setSymbol': {
       const sym = (msg.symbol || 'BTCUSDT').toUpperCase();
-      if (sym === symbol && msg.aggregate === aggregateExchanges) break;
+      if (sym === symbol) break;
       symbol = sym;
-      if (typeof msg.aggregate === 'string') aggregateExchanges = msg.aggregate;
       resetSnapshots();
-      openWs();
       break;
     }
-    case 'setAggregate':
-      aggregateExchanges = msg.exchanges || '';
-      resetSnapshots();
-      openWs();
-      break;
     case 'setTimeframe': {
       const tf = msg.tf as string;
       if (tf === timeframe) break;
       timeframe = tf;
       timeframeMs = TF_MS[tf] || 36e5;
       resetSnapshots();
-      openWs();
       break;
     }
     case 'setPriceRange':
@@ -331,18 +309,15 @@ self.onmessage = async (ev: MessageEvent) => {
     case 'pause':
       running = false;
       if (animId) { cancelAnimationFrame(animId); animId = 0; }
-      closeWs();
       break;
     case 'resume':
       if (running) break;
       running = true;
-      openWs();
       loop();
       break;
     case 'stop':
       running = false;
       if (animId) cancelAnimationFrame(animId);
-      closeWs();
       break;
   }
 };

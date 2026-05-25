@@ -5,7 +5,7 @@ import DashboardView from './views/DashboardView.vue';
 import TradeView from './views/TradeView.vue';
 import TradFiView from './views/TradFiView.vue';
 import TradFiMarketsView from './views/TradFiMarketsView.vue';
-import HeatmapView from './views/HeatmapView.vue';
+import HeatmapView from './features/heatmap/HeatmapView.vue';
 import {
   DEFAULT_EXCHANGE,
   DEFAULT_SYMBOL,

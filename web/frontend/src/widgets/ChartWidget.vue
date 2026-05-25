@@ -7,18 +7,21 @@
  * top bar and side widgets can drive the chart without prop drilling.
  *
  * Worker layout per chart:
- *   - heatmapWorker       (WebGL2 candle/VWAP/EMA/Liq, owned by OffscreenCanvas)
- *   - obHeatmapWorker     (OB heatmap layer)
+ *   - chartEngineWorker  (WebGL2 candle/VWAP/EMA/Liq + optional Emscripten heatmap pipeline)
+ *   - obHeatmapWorker     (OB heatmap layer — legacy when Emscripten workers disabled)
  *   - footprintLayerWorker
  *   - vpvrLayerWorker
  */
-import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { ChartOverlayRenderer, type ChartOverlayLayout } from '../chart/ChartOverlayRenderer';
 import { ChartRenderFlagsBuilder } from '../chart/ChartRenderFlags';
 import { ChartTimeScale } from '../chart/ChartTimeScale';
 import { useChartSettings } from '../chart/chartSettings';
 import { busEmit } from '../workspace/widgetBus';
 import { debugWarn } from '../utils/debug';
+import { acquireHeatmapFeed } from '../features/heatmap/feed-hub/heatmapFeedHub';
+import { attachFeedPort, subscribeFeedStream } from '../engine/feedHubClient';
+import { USE_EMSCRIPTEN_WORKERS, USE_SESSION_MUX, HUD_THROTTLE_MS } from '../config/featureFlags';
 import WorkspaceWidget from '../workspace/WorkspaceWidget.vue';
 import type { WidgetState } from '../workspace/types';
 
@@ -36,18 +39,19 @@ const vpvrCanvas      = ref<HTMLCanvasElement | null>(null);
 const mainCanvas      = ref<HTMLCanvasElement | null>(null);
 const crossCanvas     = ref<HTMLCanvasElement | null>(null);
 
-const fps          = ref(0);
+const fps          = shallowRef(0);
 const engineStatus = ref('loading');
 const fatalError   = ref('');
-const hudOpen  = ref(0);
-const hudHigh  = ref(0);
-const hudLow   = ref(0);
-const hudClose = ref(0);
-const hudDelta = ref(0);
-const hudDeltaPct = ref(0);
-const hudBull  = ref(true);
+const hudOpen  = shallowRef(0);
+const hudHigh  = shallowRef(0);
+const hudLow   = shallowRef(0);
+const hudClose = shallowRef(0);
+const hudDelta = shallowRef(0);
+const hudDeltaPct = shallowRef(0);
+const hudBull  = shallowRef(true);
 const hudHover = ref(false);
 const liveTagText = ref('');
+let lastHudMetaMs = 0;
 
 const overlay = new ChartOverlayRenderer();
 const timeScale = new ChartTimeScale(0.5, 2);
@@ -69,6 +73,8 @@ function syncRenderFlags() {
 
 let worker: Worker | null = null;
 let obWorker: Worker | null = null;
+let releaseObFeed: (() => void) | null = null;
+let obFeedPortAttached = false;
 let fpWorker: Worker | null = null;
 let vpWorker: Worker | null = null;
 let overlayAxisPending = false;
@@ -100,11 +106,6 @@ function syncPriceToVpvr() {
   vpWorker.postMessage({ type: 'setPriceRange', minPrice: displayedMinPrice, maxPrice: displayedMaxPrice });
 }
 
-function wsBaseUrl(): string {
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${proto}://${window.location.host}`;
-}
-
 function syncPriceToOb() {
   if (!obWorker || displayedMinPrice <= 0 || displayedMaxPrice <= displayedMinPrice) return;
   obWorker.postMessage({ type: 'setPriceRange', minPrice: displayedMinPrice, maxPrice: displayedMaxPrice });
@@ -126,11 +127,46 @@ function syncIntensityToOb() {
 }
 
 function obAggregateParam(): string {
-  return settings.obAggregate ? 'binance,bybit' : '';
+  return settings.obAggregate ? 'binance,bybit' : 'binance';
+}
+
+function stopObFeed(): void {
+  if (releaseObFeed) {
+    releaseObFeed();
+    releaseObFeed = null;
+  }
+}
+
+/** Heatmap feed — session MUX with direct worker port, main-thread relay as fallback. */
+function startObFeed(): void {
+  stopObFeed();
+  if (!settings.obHeatmap) return;
+  const sym = toBinanceSymbol(settings.symbol);
+  const aggregate = obAggregateParam();
+
+  if (USE_SESSION_MUX) {
+    attachObFeedPort();
+    releaseObFeed = subscribeFeedStream(
+      { symbol: sym, timeframe: settings.timeframe, stream: 16, aggregate },
+      obFeedPortAttached
+        ? undefined
+        : (_key, buffer) => {
+            if (!obWorker) return;
+            obWorker.postMessage({ type: 'obFrame', buffer }, [buffer]);
+          },
+    );
+    return;
+  }
+
+  if (!obWorker) return;
+  releaseObFeed = acquireHeatmapFeed(sym, settings.timeframe, aggregate, (buffer) => {
+    if (!obWorker) return;
+    obWorker.postMessage({ type: 'obFrame', buffer }, [buffer]);
+  });
 }
 
 function syncAggregateToOb() {
-  obWorker?.postMessage({ type: 'setAggregate', exchanges: obAggregateParam() });
+  startObFeed();
 }
 
 function syncTimeAxisToFp() {
@@ -346,6 +382,7 @@ function applyTimeframeChange(tf: string) {
   stopKinetic();
   worker?.postMessage({ type: 'setTimeframe', tf });
   obWorker?.postMessage({ type: 'setTimeframe', tf });
+  startObFeed();
   fpWorker?.postMessage({ type: 'setTimeframe', tf });
   scheduleOverlayAxisSync();
 }
@@ -365,6 +402,7 @@ function applySymbolChange(sym: string) {
   if (worker) worker.postMessage({ type: 'setSymbol', symbol: upperSym });
   else { stopWorker(); startWorker(); }
   obWorker?.postMessage({ type: 'setSymbol', symbol: upperSym });
+  startObFeed();
   fpWorker?.postMessage({ type: 'setSymbol', symbol: upperSym.toLowerCase() });
 }
 
@@ -376,8 +414,8 @@ watch([
 ], () => syncRenderFlags());
 
 watch(() => settings.obHeatmap, (on) => {
-  if (!on) stopObWorker();
-  else setTimeout(() => { if (settings.obHeatmap) startObWorker(); }, 0);
+  if (!on) { stopObFeed(); stopObWorker(); }
+  else { setTimeout(() => { if (settings.obHeatmap) { startObWorker(); startObFeed(); } }, 0); }
 });
 watch(() => settings.obBinMode, (mode) => obWorker?.postMessage({ type: 'setBinMode', mode }));
 watch(() => settings.obAggregate, () => syncAggregateToOb());
@@ -397,12 +435,21 @@ function startWorker() {
   if (!mc) return;
   let osc: OffscreenCanvas | null = null;
   try { osc = mc.transferControlToOffscreen(); } catch { osc = null; }
-  worker = new Worker(new URL('../workers/heatmapWorker.ts', import.meta.url), { type: 'module' });
+  worker = new Worker(new URL('../workers/chartEngineWorker.ts', import.meta.url), { type: 'module' });
+
+  if (USE_SESSION_MUX && typeof SharedArrayBuffer !== 'undefined') {
+    const feedMc = new MessageChannel();
+    attachFeedPort(feedMc.port2);
+    worker.postMessage({ type: 'initFeedPort', port: feedMc.port1 }, [feedMc.port1]);
+  }
 
   worker.onmessage = (ev: MessageEvent) => {
     const m = ev.data;
     switch (m.type) {
-      case 'meta':
+      case 'meta': {
+        const now = performance.now();
+        if (now - lastHudMetaMs < HUD_THROTTLE_MS) break;
+        lastHudMetaMs = now;
         midP = m.midPrice;
         targetMinPrice = m.minPrice; targetMaxPrice = m.maxPrice;
         if (displayedMinPrice === 0 && displayedMaxPrice === 0) { displayedMinPrice = targetMinPrice; displayedMaxPrice = targetMaxPrice; }
@@ -413,6 +460,7 @@ function startWorker() {
         syncPriceToFp();
         syncPriceToVpvr();
         break;
+      }
       case 'candles':
         candleSnapshotBuffer = m.buf instanceof Float64Array ? m.buf : new Float64Array(m.buf);
         candleSnapshotCount = m.count;
@@ -468,6 +516,7 @@ function startWorker() {
   const initMsg: Record<string, unknown> = {
     type: 'init', symbol: sym, tf: settings.timeframe, dpr: DPR, w: W, h: H,
     renderFlags: renderFlags(),
+    useEmscriptenPipeline: USE_EMSCRIPTEN_WORKERS && USE_SESSION_MUX,
   };
   if (osc) { initMsg.canvas = osc; worker.postMessage(initMsg, [osc]); }
   else worker.postMessage(initMsg);
@@ -483,10 +532,20 @@ function stopWorker() {
 // Workers are spawned **once** per widget lifetime so the OffscreenCanvas
 // transfer (which can only happen once per HTMLCanvasElement) is never lost.
 // Toggling a layer off sends a pause message; toggling on sends resume.
+function attachObFeedPort(): void {
+  if (!obWorker || !USE_SESSION_MUX || obFeedPortAttached) return;
+  const mc = new MessageChannel();
+  attachFeedPort(mc.port2);
+  obWorker.postMessage({ type: 'initFeedPort', port: mc.port1 }, [mc.port1]);
+  obFeedPortAttached = true;
+}
+
 function startObWorker() {
   if (obWorker) {
     obWorker.postMessage({ type: 'resume' });
-    syncPriceToOb(); syncIntensityToOb(); syncAggregateToOb();
+    syncPriceToOb(); syncIntensityToOb();
+    attachObFeedPort();
+    startObFeed();
     return;
   }
   const oc = obHeatmapCanvas.value;
@@ -497,18 +556,19 @@ function startObWorker() {
   const sym = toBinanceSymbol(settings.symbol);
   const init: Record<string, unknown> = {
     type: 'init', symbol: sym, tf: settings.timeframe, dpr: DPR, w: W, h: H,
-    wsBase: wsBaseUrl(), aggregate: obAggregateParam(),
   };
   if (osc) { init.canvas = osc; obWorker.postMessage(init, [osc]); }
   else obWorker.postMessage(init);
   obWorker.postMessage({ type: 'resize', w: W, h: H, dpr: DPR });
   syncPriceToOb();
   syncIntensityToOb();
-  syncAggregateToOb();
+  attachObFeedPort();
+  startObFeed();
 }
 
 function stopObWorker() {
   if (!obWorker) return;
+  stopObFeed();
   obWorker.postMessage({ type: 'pause' });
 }
 
@@ -787,7 +847,7 @@ function start() {
   // succeed against their (always-mounted, v-show'd) HTMLCanvasElements. If
   // the user has the layer off we pause the worker immediately — that frees
   // its WebSocket and rAF loop without losing the offscreen handle.
-  startObWorker(); if (!settings.obHeatmap) obWorker?.postMessage({ type: 'pause' });
+  startObWorker(); if (!settings.obHeatmap) obWorker?.postMessage({ type: 'pause' }); else startObFeed();
   startFpWorker(); if (!settings.footprint) fpWorker?.postMessage({ type: 'pause' });
   startVpWorker(); if (!settings.vpvr) vpWorker?.postMessage({ type: 'pause' });
   startWorker();
@@ -798,9 +858,7 @@ function start() {
 }
 function pause() {
   if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = 0; }
-  // Final teardown: pause workers, terminate the main one (it'll be recreated
-  // on next mount). Layer-workers stay live for activate/deactivate cycles —
-  // they only fully terminate on unmount.
+  stopObFeed();
   obWorker?.postMessage({ type: 'pause' });
   fpWorker?.postMessage({ type: 'pause' });
   vpWorker?.postMessage({ type: 'pause' });
@@ -810,6 +868,8 @@ function pause() {
 }
 
 function terminateAllLayerWorkers() {
+  stopObFeed();
+  obFeedPortAttached = false;
   for (const w of [obWorker, fpWorker, vpWorker]) {
     if (!w) continue;
     w.postMessage({ type: 'stop' });

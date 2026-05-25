@@ -11,11 +11,13 @@ import {
   rpcSubscribe,
   rpcGetRange,
   STREAM_HEATMAP_AGG,
+  STREAM_BAR_STATS,
   symbolToMmtPair,
   exchangesToMmtString,
   DEFAULT_AGG_EXCHANGES,
 } from './mmtProtocol.js';
-import { decodeMmtHeatmapMessage, capLevels } from './mmtCbor.js';
+import { decodeMmtHeatmapMessage, decodeMmtBarStatsMessage, capLevels } from './mmtCbor.js';
+import { parseAggregateExchanges, backendExchangesToMmtString } from '../../../shared/exchangeIds.mjs';
 import { encodeHeatmapFrame, broadcastToClients } from './heatmapBook.js';
 import { createBackoffController } from './security.js';
 import { safeCloseWebSocket } from './wsTeardown.js';
@@ -186,6 +188,120 @@ export function startMmtHeatmapUpstream(symbolKey, exchanges, HeatmapFrame, time
 
   connect();
   upstream.requestBackfill = () => requestBackfill(upstream.ws);
+  return upstream;
+}
+
+/**
+ * MMT stream 13 — bar buy/sell stats relayed as JSON to browser clients.
+ * @param {string} symbolKey
+ * @param {string[]} exchanges raw CSV tokens (aliases ok)
+ * @param {number} timeframeSec
+ * @param {number} bucketGroup MMT bucket_group 5–9
+ */
+export function startMmtBarStatsUpstream(symbolKey, exchanges, timeframeSec = 3600, bucketGroup = 6) {
+  const authToken = process.env.MMT_WS_TOKEN;
+  if (!authToken) return null;
+
+  const backendExchanges = Array.isArray(exchanges)
+    ? exchanges
+    : parseAggregateExchanges(typeof exchanges === 'string' ? exchanges : null);
+  const mmtPair = symbolToMmtPair(symbolKey);
+  const exchangeString =
+    backendExchanges.length > 1
+      ? backendExchangesToMmtString(backendExchanges)
+      : backendExchangesToMmtString(
+          backendExchanges.length ? backendExchanges : DEFAULT_AGG_EXCHANGES,
+        );
+
+  const upstream = {
+    ws: null,
+    clients: new Set(),
+    pingTimer: null,
+    reconnectTimer: null,
+    pair: mmtPair,
+    exchange: exchangeString,
+    timeframeSec,
+    bucketGroup,
+    reconnectBackoff: createBackoffController({ maxAttempts: MMT_RECONNECT_ATTEMPTS }),
+    destroyed: false,
+  };
+
+  function broadcastBarStats(decoded) {
+    if (!decoded?.bars?.length || !upstream.clients.size) return;
+    const payload = JSON.stringify({ type: 'barstats', bars: decoded.bars });
+    for (const client of upstream.clients) {
+      if (client.readyState === 1) {
+        try { client.send(payload); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  function connect() {
+    if (upstream.destroyed) return;
+
+    const upstreamUrl = buildMmtWsUrl(authToken);
+    const ws = new WebSocket(upstreamUrl, { maxPayload: MMT_WS_MAX_PAYLOAD_BYTES });
+    upstream.ws = ws;
+
+    ws.on('open', () => {
+      upstream.reconnectBackoff.reset();
+      try {
+        ws.send(rpcGetServerConfig(process.env.MMT_APP_VERSION || '4.2.2'));
+        ws.send(
+          rpcSubscribe({
+            exchange: exchangeString,
+            symbol: mmtPair,
+            stream: STREAM_BAR_STATS,
+            timeframeSec: upstream.timeframeSec,
+            bucketGroup: upstream.bucketGroup,
+          }),
+        );
+      } catch (openError) {
+        console.error('[MMT barstats] subscribe failed:', openError.message);
+      }
+      upstream.pingTimer = setInterval(() => {
+        if (ws.readyState === 1) {
+          try { ws.send(JSON.stringify({ method: 'ping' })); } catch { /* ignore */ }
+        }
+      }, PING_INTERVAL_MS);
+      console.log(`[MMT barstats] upstream ${symbolKey} ${exchangeString} tf=${timeframeSec}s bg=${bucketGroup}`);
+    });
+
+    ws.on('message', (raw) => {
+      if (typeof raw === 'string') return;
+      try {
+        const decoded = decodeMmtBarStatsMessage(Buffer.from(raw));
+        if (decoded) broadcastBarStats(decoded);
+      } catch (decodeError) {
+        console.error('[MMT barstats] decode error:', decodeError.message);
+      }
+    });
+
+    ws.on('error', (wsError) => console.error('[MMT barstats] ws error:', wsError.message || 'unknown'));
+
+    ws.on('close', () => {
+      if (upstream.pingTimer) {
+        clearInterval(upstream.pingTimer);
+        upstream.pingTimer = null;
+      }
+      if (upstream.destroyed) return;
+      if (!upstream.clients.size) return;
+      if (upstream.reconnectBackoff.isExhausted()) {
+        for (const client of upstream.clients) {
+          try { client.close(1011, 'Upstream unavailable'); } catch { /* ignore */ }
+        }
+        upstream.clients.clear();
+        return;
+      }
+      const delayMs = upstream.reconnectBackoff.nextDelayMs();
+      upstream.reconnectTimer = setTimeout(() => {
+        upstream.reconnectTimer = null;
+        connect();
+      }, delayMs);
+    });
+  }
+
+  connect();
   return upstream;
 }
 

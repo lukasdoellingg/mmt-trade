@@ -24,6 +24,7 @@ dist/
 # ── Environment and secrets ───────────────────────────────────────
 .env
 .env.*
+logs/
 !.env.example
 *.pem
 *.key
@@ -76,8 +77,12 @@ docs/captures/*.har
 # ── WASM artifacts (generated, not source) ────────────────────────
 web/frontend/public/engine.wasm
 web/frontend/public/terminal.wasm
+web/frontend/public/chart_runtime.wasm
+web/frontend/public/chart_runtime.js
 packages/shell/public/engine.wasm
 packages/shell/public/terminal.wasm
+packages/shell/public/chart_runtime.wasm
+packages/shell/public/chart_runtime.js
 .odin-sdk/
 
 # ── Reference MMT binaries (never commit, licensing unclear) ──────

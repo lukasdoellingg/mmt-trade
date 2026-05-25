@@ -92,6 +92,71 @@ export function columnToLevels(col) {
  * @param {{ price: number, volume: number, isBid: boolean }[]} levels
  * @param {number} maxLevels per side cap (0 = no cap)
  */
+/**
+ * Decode MMT stream 13 bar-stats CBOR → JSON rows for /ws/barstats clients.
+ * @param {Buffer|Uint8Array} raw
+ * @returns {{ bars: { ts: number, buyVol: number, sellVol: number, delta: number, pct?: number }[] } | null}
+ */
+export function decodeMmtBarStatsMessage(raw) {
+  const buf = Buffer.from(raw);
+  if (buf.length < 4) return null;
+
+  let envelope;
+  try {
+    envelope = cbor.decode(buf);
+  } catch {
+    return null;
+  }
+
+  if (Array.isArray(envelope)) envelope = envelope[0];
+  if (Buffer.isBuffer(envelope) || envelope instanceof Uint8Array) {
+    try {
+      envelope = cbor.decode(Buffer.from(envelope));
+    } catch {
+      return null;
+    }
+  }
+  if (!envelope || typeof envelope !== 'object') return null;
+
+  const colBuf = envelope['3'];
+  if (!colBuf) return null;
+
+  let col;
+  try {
+    col = cbor.decode(Buffer.from(colBuf));
+  } catch {
+    return null;
+  }
+  if (!col || typeof col !== 'object') return null;
+
+  const openTimes = col[0] ?? col['0'];
+  const buyVols = col[7] ?? col['7'] ?? col[2] ?? col['2'];
+  const sellVols = col[8] ?? col['8'] ?? col[3] ?? col['3'];
+
+  if (!Array.isArray(openTimes) || !Array.isArray(buyVols) || !Array.isArray(sellVols)) {
+    return null;
+  }
+
+  const bars = [];
+  const n = Math.min(openTimes.length, buyVols.length, sellVols.length);
+  for (let i = 0; i < n; i++) {
+    let ts = Number(openTimes[i]);
+    if (ts > 1e12) ts = Math.floor(ts / 1000);
+    const buyVol = +buyVols[i] || 0;
+    const sellVol = +sellVols[i] || 0;
+    const total = buyVol + sellVol;
+    bars.push({
+      ts,
+      buyVol,
+      sellVol,
+      delta: buyVol - sellVol,
+      pct: total > 0 ? ((buyVol - sellVol) / total) * 100 : 0,
+    });
+  }
+
+  return bars.length ? { bars } : null;
+}
+
 export function capLevels(levels, maxLevels = 800) {
   if (!maxLevels || levels.length <= maxLevels * 2) return levels;
 
