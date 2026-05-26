@@ -13,7 +13,11 @@
     "lib": ["DOM", "DOM.Iterable", "ESNext", "WebWorker"],
     "types": ["vite/client"],
     "allowImportingTsExtensions": true,
-    "noEmit": true
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["../../shared/*"]
+    }
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue"]
 }

@@ -8,6 +8,10 @@ This document describes the **target architecture**. Some phases are still in
 progress — see [the rewrite plan](./.cursor/plans/mmt_full_clone_rewrite_ff9f2dc3.plan.md)
 for current status.
 
+**Runtime / IPO audit (Ist-Stand):** [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md),
+[`docs/audit/PERFORMANCE_BASELINE.md`](./docs/audit/PERFORMANCE_BASELINE.md),
+[`docs/audit/MODULE_OWNERSHIP.md`](./docs/audit/MODULE_OWNERSHIP.md).
+
 ## Monorepo layout
 
 ```
@@ -35,16 +39,43 @@ mmt-trade/
 │       ├── src/odin-runtime.ts       # typed wrapper around odin.js
 │       └── vite.config.ts            # dev-only, sets COOP+COEP headers
 ├── web/
-│   ├── backend/                      # Express proxy: CCXT REST + Binance/Bybit/MMT WS
+│   ├── backend/                      # Express proxy: CCXT REST + Binance/Bybit WS
 │   │   ├── index.js                  # server entry (rate-limited, validated, hardened)
-│   │   └── lib/                      # security, heatmapBook, mmtUpstream, …
+│   │   └── lib/                      # security, heatmapBook, infoStream, indicators, …
 │   └── frontend/                     # Legacy Vue/Vite UI — retired in Phase 7
 ├── docs/                             # MMT research, HAR analysis, captures (gitignored)
 ├── scripts/                          # build-wasm.sh, analyze-mmt-har.mjs, …
-└── .github/workflows/                # CI: lint, typecheck, audit, build
+└── .github/workflows/                # CI: lint, typecheck, format, build, regression, wasm verify
 ```
 
-## Target runtime
+## Hybrid architecture (Vue + Emscripten chart_runtime)
+
+Production chart path uses a **Vue control plane** with worker-hosted rendering:
+
+| Layer | Module | Role |
+| ----- | ------ | ---- |
+| Control plane | `web/frontend/src/widgets/ChartWidget.vue` | Input forward, overlay ≤10 Hz, settings bus |
+| Feed hub | `web/frontend/src/workers/feedHubWorker.ts` | One `/ws/session` per tab → backend `InfoStreamMultiplexer` |
+| Chart engine | `web/frontend/src/workers/chartEngineWorker.ts` | OffscreenCanvas + `engine.wasm` (candles) + optional `chart_runtime.wasm` |
+| Backend MUX | `web/backend/lib/infoStream/` | Local script plots + bar stats; binary envelopes |
+| Odin runtime | `packages/engine/src/main_chart.odin` | decode / indicator / texture worker entry points |
+
+Build chart runtime: `npm run build:engine:chart` → `web/frontend/public/chart_runtime.{wasm,js}`.
+
+Feature flags: `VITE_USE_SESSION_MUX` (default **on** unless `=0`; set in `.env.production`), `VITE_USE_EMSCRIPTEN_WORKERS=1` (set `0` to fall back to legacy `/ws/heatmap` + `obHeatmapWorker`). Session uses local provider — no JWT ([`docs/INFO_STREAM.md`](./docs/INFO_STREAM.md)).
+
+### WASM build matrix
+
+| Artifact | Build script | Output | Consumer |
+| -------- | ------------ | ------ | -------- |
+| `engine.wasm` | `npm run build:wasm` | `web/frontend/public/engine.wasm` | `chartEngineWorker.ts` (candles/VWAP/EMA) |
+| `chart_runtime.wasm` | `npm run build:engine:chart` | `web/frontend/public/chart_runtime.wasm` | `chartEngineWorker.ts` (Emscripten pipeline) |
+| `terminal.wasm` | `packages/engine/build.sh` | `packages/shell/public/` | `packages/shell` bootloader (target) |
+
+CI: `node scripts/verify-wasm-artifacts.mjs` after regression tests.
+
+COOP/COEP headers remain required for SharedArrayBuffer when Emscripten WASM workers are fully enabled.
+
 
 ```mermaid
 flowchart TB
@@ -81,7 +112,7 @@ All hardened in Phase 0. Key invariants:
 - **Heartbeat**: 30 s ping, terminate after 2 missed pongs.
 - **Upstream reconnect**: exponential backoff with jitter, capped at 5 attempts.
 - **Zero-allocation book→levels**: pre-allocated `Float64Array` scratch + object pool.
-- **MMT token**: read from `MMT_WS_TOKEN`, never logged in URLs.
+- **Session MUX**: first-party `/ws/session` — no upstream JWT; script plots computed locally.
 
 ## Performance budget
 
@@ -91,19 +122,26 @@ All hardened in Phase 0. Key invariants:
 - One instanced draw call per layer; sort by shader/texture.
 - WS decode pre-allocated into `wasm.memory.buffer` (zero-copy).
 
-## Migration status
+## Hybrid migration status (plan phases 0–4)
+
+| Phase | Scope | Status |
+| ----- | ----- | ------ |
+| **0** | MUX `/ws/session`, local info stream, `chart_runtime` build, security | **Done** — `infoStream/`, `wsSession.js`, `build.sh --chart-only` |
+| **1** | decode / texture / indicator workers, FeedHubWorker | **Done** — protobuf + CBOR decode in Odin; texture worker via `textureDirty` + `chart_runtime_step` |
+| **2** | ChartEngineWorker, zero-Vue hot path | **Done** — MUX feed ports, dual WASM, OB layer via `obHeatmapWorker` until Sokol GPU port |
+| **3** | Server indicators, BarStats stream 13 | **Done** — `create_runtime` async relay, BarStats MUX path, `scriptRuntime` lifecycle |
+| **4** | Hardening, engine.wasm port, load tests | **Done** — load smoke, CI `engine-chart`, session probe, regression tests (WS smoke skips offline) |
+
+Feature flags: `VITE_USE_SESSION_MUX`, `VITE_USE_EMSCRIPTEN_WORKERS` (see `web/frontend/.env.development`).
+
+## Legacy migration status (terminal.wasm rewrite)
 
 | phase                                          | status      |
 | ---------------------------------------------- | ----------- |
 | Phase 0: Security & Git-hygiene                | ✓ completed |
 | Phase 1: Monorepo, ESLint, Prettier, CI        | ✓ completed |
-| Phase 2: Emscripten + Odin toolchain (stop-gate, scripts ready) | ✓ completed |
-| Phase 3: Chart engine source split (skeleton in `packages/engine/src/`) | ✓ completed |
-| Phase 4: Network (WS, CBOR, MMT, Binance protocols) | ✓ completed |
-| Phase 5: Layer parity (heatmap_gpu, footprint, vpvr, ob_depth, liq_heatmap, cvd, oi) | ✓ completed |
-| Phase 6: WASM workers + SAB + COOP/COEP        | ✓ completed |
-| Phase 7: Renames + cleanup                     | ✓ completed |
-| Phase 8: Performance / RAM / FPS               | ✓ completed |
+| Phase 2: Emscripten + Odin toolchain           | ✓ completed |
+| Phase 3–8: Full terminal.wasm monolith         | **Deferred** — hybrid chart_runtime path preferred |
 
 ## Performance budget (Phase 8 verification checklist)
 

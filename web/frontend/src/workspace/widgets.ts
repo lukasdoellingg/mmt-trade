@@ -3,6 +3,7 @@
  * shell wires component metadata into the registry without pulling in the
  * widget code itself (the components are lazy-loaded by WorkspaceGrid).
  */
+import { DEFAULT_SPOT_AGGREGATE_CSV } from '@shared/exchangeIds';
 import { registerWidget } from './registry';
 
 registerWidget('chart', {
@@ -11,15 +12,45 @@ registerWidget('chart', {
   defaultSize: { w: 90, h: 90 },
   defaultProps: () => ({}),
 });
+registerWidget('bar-stats', {
+  componentName: 'BarStatsWidget',
+  label: 'Bar Stats',
+  defaultSize: { w: 28, h: 40 },
+  defaultProps: () => ({ bucketGroup: 6 }),
+});
+
+registerWidget('script-indicator-pane', {
+  componentName: 'ScriptIndicatorPaneWidget',
+  label: 'Script Indicator',
+  defaultSize: { w: 34, h: 30 },
+  defaultProps: () => ({
+    scriptId: 'key-levels',
+    localId: 'key-levels-pane',
+  }),
+});
 
 registerWidget('orderflow-ladder', {
   componentName: 'OrderFlowLadderWidget',
   label: 'Order Flow Ladder',
   defaultSize: { w: 32, h: 45 },
   defaultProps: () => ({
-    aggregate: 'binance,bybit',
+    aggregate: DEFAULT_SPOT_AGGREGATE_CSV,
     pg: 25,
     rowsPerSide: 25,
     quoteUsd: true,
   }),
+});
+
+registerWidget('coin-scanner', {
+  componentName: 'CoinScannerWidget',
+  label: 'Coin Scanner',
+  defaultSize: { w: 28, h: 90 },
+  defaultProps: () => ({}),
+});
+
+registerWidget('futures-metric-pane', {
+  componentName: 'FuturesMetricPaneWidget',
+  label: 'Futures Metric',
+  defaultSize: { w: 34, h: 28 },
+  defaultProps: () => ({ metric: 'funding', timeframe: '1w' }),
 });

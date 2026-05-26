@@ -23,6 +23,14 @@ export interface VwapAxisLabel {
   fg: string;
 }
 
+export interface ScriptPlotOverlayLine {
+  price: number;
+  color: string;
+  label?: string;
+  /** Key-levels role u8 (optional). */
+  role?: number;
+}
+
 export class ChartOverlayRenderer {
   private readonly pad = (n: number) => (n < 10 ? '0' + n : '' + n);
   private readonly axisDate = new Date(0);
@@ -38,7 +46,7 @@ export class ChartOverlayRenderer {
 
   p2y(p: number, dispMin: number, dispMax: number, PH: number): number {
     if (dispMax <= dispMin) return PH / 2;
-    return ((dispMax - p) / (dispMax - dispMin)) * PH + 0.5 | 0;
+    return (((dispMax - p) / (dispMax - dispMin)) * PH + 0.5) | 0;
   }
 
   y2p(y: number, dispMin: number, dispMax: number, plotH: number): number {
@@ -57,8 +65,13 @@ export class ChartOverlayRenderer {
     }
     if (tf === '1h' || tf === '30m' || tf === '15m') {
       return (
-        this.pad(d.getMonth() + 1) + '/' + this.pad(d.getDate()) + ' ' +
-        this.pad(d.getHours()) + ':' + this.pad(d.getMinutes())
+        this.pad(d.getMonth() + 1) +
+        '/' +
+        this.pad(d.getDate()) +
+        ' ' +
+        this.pad(d.getHours()) +
+        ':' +
+        this.pad(d.getMinutes())
       );
     }
     return this.pad(d.getHours()) + ':' + this.pad(d.getMinutes());
@@ -70,9 +83,70 @@ export class ChartOverlayRenderer {
       return d.getFullYear() + '-' + this.pad(d.getMonth() + 1) + '-' + this.pad(d.getDate());
     }
     return (
-      this.pad(d.getMonth() + 1) + '/' + this.pad(d.getDate()) + ' ' +
-      this.pad(d.getHours()) + ':' + this.pad(d.getMinutes()) + ':' + this.pad(d.getSeconds())
+      this.pad(d.getMonth() + 1) +
+      '/' +
+      this.pad(d.getDate()) +
+      ' ' +
+      this.pad(d.getHours()) +
+      ':' +
+      this.pad(d.getMinutes()) +
+      ':' +
+      this.pad(d.getSeconds())
     );
+  }
+
+  /** Horizontal script-indicator levels (session create_runtime plots). */
+  drawScriptPlotLines(
+    ctx: CanvasRenderingContext2D,
+    L: ChartOverlayLayout,
+    dispMin: number,
+    dispMax: number,
+    lines: readonly ScriptPlotOverlayLine[],
+  ): void {
+    if (!lines.length || dispMin <= 0 || dispMax <= dispMin) return;
+    const { PW, PH, DPR } = L;
+    ctx.save();
+    for (const line of lines) {
+      if (line.price <= 0) continue;
+      const y = this.p2y(line.price, dispMin, dispMax, PH);
+      if (y < 2 || y > PH - 2) continue;
+      ctx.strokeStyle = line.color;
+      ctx.globalAlpha = line.role != null ? 0.82 : 0.72;
+      ctx.lineWidth = line.role != null ? 1.25 * DPR : 1;
+      ctx.setLineDash(line.role != null ? [] : [5 * DPR, 4 * DPR]);
+      ctx.beginPath();
+      ctx.moveTo(0, y + 0.5);
+      ctx.lineTo(PW, y + 0.5);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      if (line.label) {
+        ctx.font = `bold ${8 * DPR}px ${FONT}`;
+        const tw = ctx.measureText(line.label).width + 8 * DPR;
+        const lh = 14 * DPR;
+        ctx.fillStyle = line.color;
+        this.rrect(ctx, 4 * DPR, y - lh * 0.5, tw, lh, 2 * DPR);
+        ctx.fill();
+        ctx.fillStyle = '#06060b';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(line.label, 8 * DPR, y);
+      }
+      if (line.role != null) {
+        ctx.font = `bold ${8 * DPR}px ${FONT}`;
+        const axisText = this.fmtPrice(line.price);
+        const aw = ctx.measureText(axisText).width + 8 * DPR;
+        const ax = PW + 4 * DPR;
+        ctx.fillStyle = line.color;
+        this.rrect(ctx, ax, y - 7 * DPR, aw, 14 * DPR, 2 * DPR);
+        ctx.fill();
+        ctx.fillStyle = '#06060b';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(axisText, ax + 4 * DPR, y);
+      }
+    }
+    ctx.restore();
   }
 
   /** Plot area only — sits under WebGL (z0). */
@@ -85,8 +159,8 @@ export class ChartOverlayRenderer {
     visEnd: number,
     candleSnapshotBuffer: Float64Array,
     candleSnapshotCount: number,
-    cf: number,
-    tf: string,
+    _cf: number,
+    _tf: string,
   ): void {
     const { W, H, PW, PH, DPR } = L;
     ctx.clearRect(0, 0, W, H);
@@ -212,7 +286,7 @@ export class ChartOverlayRenderer {
       lastBarX: number;
     },
   ): void {
-    const { W, PW, PH, DPR } = L;
+    const { PW, PH, DPR } = L;
 
     if (opts.midPrice > 0 && opts.dispMin > 0 && opts.dispMax > opts.dispMin) {
       const my = this.p2y(opts.midPrice, opts.dispMin, opts.dispMax, PH);
@@ -331,14 +405,7 @@ export class ChartOverlayRenderer {
     return (n <= 1.5 ? 1 : n <= 3 ? 2 : n <= 7 ? 5 : 10) * mag;
   }
 
-  private rrect(
-    ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    r: number,
-  ): void {
+  private rrect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
     ctx.beginPath();
     ctx.moveTo(x + r, y);
     ctx.lineTo(x + w - r, y);

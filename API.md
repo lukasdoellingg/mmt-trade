@@ -259,7 +259,7 @@ Aktuelles Open Interest (Snapshot).
 
 #### `GET /api/open-interest-history`
 
-Open-Interest-Verlauf.
+Open-Interest-Verlauf. Für Deribit/Hyperliquid kann `"synthetic": true` gesetzt sein, wenn nur ein flacher Fallback aus dem aktuellen OI-Snapshot gebaut wurde (`syntheticExchanges`).
 
 **Query Parameters:**
 
@@ -274,6 +274,8 @@ Open-Interest-Verlauf.
 ```json
 {
   "symbol": "BTC/USDT",
+  "synthetic": false,
+  "syntheticExchanges": [],
   "history": {
     "binance": [
       { "ts": 1704067200000, "oi": 5340000000 }
@@ -320,7 +322,9 @@ Futures-vs.-Spot-Basis (annualisiert).
 
 #### `GET /api/liquidations`
 
-Geschätzte Liquidations (aggregiert).
+Geschätzte Liquidations (aggregiert). **Nicht** echte Exchange-Liquidations-Events — Heuristik aus OHLCV-Volumen-Spikes.
+
+**Response** enthält `"synthetic": true`.
 
 **Query Parameters:**
 
@@ -336,6 +340,7 @@ Geschätzte Liquidations (aggregiert).
 {
   "symbol": "BTC/USDT",
   "timeframe": "1h",
+  "synthetic": true,
   "liquidations": [
     { "ts": 1704067200000, "liq": 1234567 }
   ]
@@ -563,7 +568,7 @@ Verwendet in Trade View und Heatmap-Sidebar.
 
 Updates werden gebündelt (ca. 150 ms) an die UI übergeben. Reconnect und Stale-Detection sind in den Stream-Factories implementiert.
 
-### Heatmap (`heatmapWorker.ts`)
+### Heatmap (`chartEngineWorker.ts`)
 
 Direkt im Web Worker, nicht über das Backend:
 

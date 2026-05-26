@@ -1,7 +1,4 @@
-import {
-  MIN_BAR_WIDTH_CSS_PX,
-  MIN_VISIBLE_BARS_COUNT,
-} from './heatmapLayoutConstants';
+import { MIN_BAR_WIDTH_CSS_PX, MIN_VISIBLE_BARS_COUNT } from './heatmapLayoutConstants';
 
 export type ChartViewportAccessors = {
   /** Plot width in CSS pixels (excluding right price margin). */
@@ -66,7 +63,7 @@ export class ChartTimeScaleViewport {
     const w = this.chartWidthCss();
     const s = this.barSpacingCss;
     if (w <= 0 || s <= 0) return 0;
-    return Math.floor(w * 0.5 / s);
+    return Math.floor((w * 0.5) / s);
   }
 
   clampRightEdgeOffset(): void {
@@ -174,7 +171,7 @@ export class ChartTimeScaleViewport {
     const span = Math.max(1, visEnd - visStart);
     this.barSpacingCss = w / span;
     this.clampBarSpacing();
-    this.rightEdgeOffsetBars = (visEnd - 1) - Math.max(0, loadedBarCount - 1);
+    this.rightEdgeOffsetBars = visEnd - 1 - Math.max(0, loadedBarCount - 1);
     this.clampRightEdgeOffset();
     this.syncVisibleRange();
   }

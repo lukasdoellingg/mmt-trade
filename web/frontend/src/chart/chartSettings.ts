@@ -1,30 +1,30 @@
 /**
- * Global chart settings shared by ChartWidget, ChartTopBar, ChartToolRail and
- * the Order-Flow widgets. Backed by a single reactive ref so all subscribers
- * stay in sync — no prop drilling.
- *
- * Persisted to localStorage so reload restores the user's indicator setup.
+ * Workspace shell settings (tool, quote display, modal) — shared across heatmap workspace.
+ * Per-chart symbol/TF/indicators live in chartPaneSettings.ts (widget.props).
  */
 import { reactive, watch } from 'vue';
-import { DEFAULT_SYMBOL } from '../core/defaults';
 
-const STORAGE_KEY = 'mmt-chart-settings-v1';
+const STORAGE_KEY = 'mmt-chart-shell-settings-v1';
 
 export type ChartTool = 'cursor' | 'crosshair' | 'pencil';
 
-export interface ChartSettings {
+export interface ChartShellSettings {
+  quoteUsd: boolean;
+  tool: ChartTool;
+  settingsModalOpen: boolean;
+}
+
+/** Full settings shape (shell + pane) for type re-exports and indicator catalog. */
+export interface ChartSettings extends ChartShellSettings {
   symbol: string;
   exchange: string;
-  /** UI timeframe key — one of `TIMEFRAMES`. */
   timeframe: string;
-  /** Indicator visibility flags. */
   vwapDaily: boolean;
   vwapWeekly: boolean;
   vwapMonthly: boolean;
   vwapBands: boolean;
   ema: boolean;
   liquidations: boolean;
-  /** Layer toggles. */
   obHeatmap: boolean;
   obBinMode: 'hd' | 'sd';
   obAggregate: boolean;
@@ -32,60 +32,62 @@ export interface ChartSettings {
   obLow: number;
   footprint: boolean;
   vpvr: boolean;
-  /** Quote-currency display switch ("$ USD" vs base symbol). */
-  quoteUsd: boolean;
-  /** Active tool from the left rail. */
-  tool: ChartTool;
-  /** Show a settings modal (handled at HeatmapView shell level). */
-  settingsModalOpen: boolean;
+  scriptKeyLevels: boolean;
+  scriptNetPositioning: boolean;
+  scriptObImbalance: boolean;
 }
 
 export const TIMEFRAMES = ['1m', '15m', '30m', '1h', '4h', '1D', '1W'] as const;
 
-function defaults(): ChartSettings {
-  return {
-    symbol: DEFAULT_SYMBOL,
-    exchange: 'Binance',
-    timeframe: '1h',
-    vwapDaily: true,
-    vwapWeekly: true,
-    vwapMonthly: true,
-    vwapBands: true,
-    ema: true,
-    liquidations: true,
-    obHeatmap: true,
-    obBinMode: 'hd',
-    obAggregate: false,
-    obPeak: 1.0,
-    obLow: 0,
-    footprint: false,
-    vpvr: false,
-    quoteUsd: true,
-    tool: 'crosshair',
-    settingsModalOpen: false,
-  };
+function shellDefaults(): ChartShellSettings {
+  return { quoteUsd: true, tool: 'crosshair', settingsModalOpen: false };
 }
 
-function loadSettings(): ChartSettings {
+function loadShell(): ChartShellSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return defaults();
-    const parsed = JSON.parse(raw) as Partial<ChartSettings>;
-    return { ...defaults(), ...parsed };
-  } catch { return defaults(); }
+    if (!raw) {
+      const legacy = localStorage.getItem('mmt-chart-settings-v1');
+      if (legacy) {
+        const parsed = JSON.parse(legacy) as Partial<ChartShellSettings>;
+        return { ...shellDefaults(), ...pickShell(parsed) };
+      }
+      return shellDefaults();
+    }
+    const parsed = JSON.parse(raw) as Partial<ChartShellSettings>;
+    return { ...shellDefaults(), ...pickShell(parsed) };
+  } catch {
+    return shellDefaults();
+  }
 }
 
-const state = reactive<ChartSettings>(loadSettings());
+function pickShell(parsed: Partial<ChartShellSettings>): Partial<ChartShellSettings> {
+  const out: Partial<ChartShellSettings> = {};
+  if (parsed.quoteUsd !== undefined) out.quoteUsd = parsed.quoteUsd;
+  if (parsed.tool !== undefined) out.tool = parsed.tool;
+  if (parsed.settingsModalOpen !== undefined) out.settingsModalOpen = parsed.settingsModalOpen;
+  return out;
+}
+
+const state = reactive<ChartShellSettings>(loadShell());
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
-watch(state, () => {
-  if (saveTimer !== null) return;
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { /* quota */ }
-  }, 200);
-}, { deep: true });
+watch(
+  state,
+  () => {
+    if (saveTimer !== null) return;
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch {
+        /* quota */
+      }
+    }, 200);
+  },
+  { deep: true },
+);
 
-export function useChartSettings(): ChartSettings {
+export function useChartSettings(): ChartShellSettings {
   return state;
 }

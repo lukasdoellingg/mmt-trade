@@ -1,0 +1,13 @@
+{
+  "name": "@mmt-trade/monitor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Ops supervisor — polls backend health and heatmap WS",
+  "scripts": {
+    "start": "node src/supervisor.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

@@ -11,15 +11,15 @@ const props = defineProps({
 const loading = ref(true);
 
 const TF_OPTS = [
-  { label: '1m',  range: '1d',  interval: '1m'  },
-  { label: '5m',  range: '5d',  interval: '5m'  },
-  { label: '15m', range: '5d',  interval: '15m' },
+  { label: '1m', range: '1d', interval: '1m' },
+  { label: '5m', range: '5d', interval: '5m' },
+  { label: '15m', range: '5d', interval: '15m' },
   { label: '30m', range: '1mo', interval: '30m' },
-  { label: '1h',  range: '1mo', interval: '1h'  },
-  { label: '4h',  range: '6mo', interval: '1d'  },
-  { label: '1D',  range: '1y',  interval: '1d'  },
-  { label: '1W',  range: '5y',  interval: '1wk' },
-  { label: '1M',  range: 'max', interval: '1mo' },
+  { label: '1h', range: '1mo', interval: '1h' },
+  { label: '4h', range: '6mo', interval: '1d' },
+  { label: '1D', range: '1y', interval: '1d' },
+  { label: '1W', range: '5y', interval: '1wk' },
+  { label: '1M', range: 'max', interval: '1mo' },
 ];
 
 const activeTf = ref(TF_OPTS[6]);
@@ -47,7 +47,11 @@ const TICKER_MAP = {
 async function loadOverview(signal) {
   try {
     overview.value = await fetchTradFiOverview(props.symbol, signal);
-  } catch (e) { if (e.name !== 'AbortError') { /* silent */ } }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      /* silent */
+    }
+  }
 }
 
 async function loadChart(ticker, target, signal) {
@@ -55,7 +59,11 @@ async function loadChart(ticker, target, signal) {
     const tf = activeTf.value;
     const res = await fetchTradFiChart(ticker, tf.range, tf.interval, signal);
     target.value = res.data || [];
-  } catch (e) { if (e.name !== 'AbortError') { /* silent */ } }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      /* silent */
+    }
+  }
 }
 
 async function loadAll() {
@@ -73,7 +81,9 @@ async function loadAll() {
       loadChart(TICKER_MAP.GBTC, gbtcData, signal),
       loadChart(TICKER_MAP.ETHE, etheData, signal),
     ]);
-  } catch { /* silent */ }
+  } catch {
+    /* silent */
+  }
   if (!signal.aborted) loading.value = false;
 }
 
@@ -85,8 +95,14 @@ function startTimer() {
   refreshTimer = setInterval(loadAll, 120_000);
 }
 function stopTimer() {
-  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
-  if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+  if (abortCtrl) {
+    abortCtrl.abort();
+    abortCtrl = null;
+  }
 }
 
 onMounted(startTimer);
@@ -113,7 +129,9 @@ const xDt = computed(() => {
 function yDollarAxis() {
   return {
     labels: {
-      formatter() { return '$' + compactFmt.format(this.value); },
+      formatter() {
+        return '$' + compactFmt.format(this.value);
+      },
       style: { color: '#5a6a7a', fontSize: '9px' },
     },
     gridLineColor: '#14141e',
@@ -123,7 +141,9 @@ function yDollarAxis() {
 function yPlainAxis(decimals = 1) {
   return {
     labels: {
-      formatter() { return this.value.toFixed(decimals); },
+      formatter() {
+        return this.value.toFixed(decimals);
+      },
       style: { color: '#5a6a7a', fontSize: '9px' },
     },
     gridLineColor: '#14141e',
@@ -158,11 +178,13 @@ function makeChart(data, name, color, yAxis, isCandle) {
           lineWidth: 1,
         },
       },
-      series: [{
-        name,
-        type: 'candlestick',
-        data: data.map(d => [d.ts, d.open, d.high, d.low, d.close]),
-      }],
+      series: [
+        {
+          name,
+          type: 'candlestick',
+          data: data.map((d) => [d.ts, d.open, d.high, d.low, d.close]),
+        },
+      ],
     };
   }
   return {
@@ -171,21 +193,31 @@ function makeChart(data, name, color, yAxis, isCandle) {
     yAxis,
     plotOptions: {
       area: {
-        fillColor: { linearGradient: { x1: 0, y1: 0, x2: 0, y2: 1 }, stops: [[0, hexToRgba(color, 0.35)], [1, hexToRgba(color, 0.02)]] },
+        fillColor: {
+          linearGradient: { x1: 0, y1: 0, x2: 0, y2: 1 },
+          stops: [
+            [0, hexToRgba(color, 0.35)],
+            [1, hexToRgba(color, 0.02)],
+          ],
+        },
         lineWidth: 1.5,
         color,
       },
     },
-    series: [{ name, color, data: data.map(d => [d.ts, d.close]) }],
+    series: [{ name, color, data: data.map((d) => [d.ts, d.close]) }],
   };
 }
 
 const isCandle = computed(() => chartMode.value === 'candle');
 
 const chartDxy = computed(() => makeChart(dxyData.value, 'DXY', '#3861fb', yPlainAxis(1), isCandle.value));
-const chartSpx = computed(() => makeChart(spxData.value, 'S&P 500', '#3dc985', yDollarAxis(), isCandle.value));
+const chartSpx = computed(() =>
+  makeChart(spxData.value, 'S&P 500', '#3dc985', yDollarAxis(), isCandle.value),
+);
 const chartGold = computed(() => makeChart(goldData.value, 'Gold', '#f5a623', yDollarAxis(), isCandle.value));
-const chartUs10y = computed(() => makeChart(us10yData.value, 'US 10Y Yield', '#e8d44d', yPctAxis, isCandle.value));
+const chartUs10y = computed(() =>
+  makeChart(us10yData.value, 'US 10Y Yield', '#e8d44d', yPctAxis, isCandle.value),
+);
 const chartGbtc = computed(() => makeChart(gbtcData.value, 'GBTC', '#c850c0', yDollarAxis(), isCandle.value));
 const chartEthe = computed(() => makeChart(etheData.value, 'ETHE', '#5b8def', yDollarAxis(), isCandle.value));
 
@@ -199,7 +231,7 @@ const tickerItems = computed(() => {
     { label: 'US 10Y', ...(idx['US10Y'] || {}) },
     { label: 'GBTC', ...(g.GBTC || {}) },
     { label: 'ETHE', ...(g.ETHE || {}) },
-  ].filter(d => d.price != null);
+  ].filter((d) => d.price != null);
 });
 
 function fmtPrice(v) {
@@ -221,25 +253,63 @@ function fmtChange(v) {
       <div v-for="item in tickerItems" :key="item.label" class="ticker-item">
         <span class="ticker-label">{{ item.label }}</span>
         <span class="ticker-price">{{ fmtPrice(item.price) }}</span>
-        <span class="ticker-change" :class="{ up: item.change > 0, down: item.change < 0 }">{{ fmtChange(item.change) }}</span>
+        <span class="ticker-change" :class="{ up: item.change > 0, down: item.change < 0 }">{{
+          fmtChange(item.change)
+        }}</span>
       </div>
       <div class="ticker-spacer"></div>
 
       <div class="mode-group">
-        <button class="mode-btn" :class="{ active: chartMode === 'area' }" @click="chartMode = 'area'" title="Area">
-          <svg width="14" height="14" viewBox="0 0 14 14"><path d="M1 12 L4 6 L7 8 L10 3 L13 5 L13 12 Z" fill="currentColor" opacity=".3" stroke="currentColor" stroke-width="1.2"/></svg>
+        <button
+          class="mode-btn"
+          :class="{ active: chartMode === 'area' }"
+          title="Area"
+          @click="chartMode = 'area'"
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14">
+            <path
+              d="M1 12 L4 6 L7 8 L10 3 L13 5 L13 12 Z"
+              fill="currentColor"
+              opacity=".3"
+              stroke="currentColor"
+              stroke-width="1.2"
+            />
+          </svg>
         </button>
-        <button class="mode-btn" :class="{ active: chartMode === 'candle' }" @click="chartMode = 'candle'" title="Candlestick">
-          <svg width="14" height="14" viewBox="0 0 14 14"><line x1="4" y1="1" x2="4" y2="13" stroke="currentColor" stroke-width="1"/><rect x="2" y="4" width="4" height="5" fill="currentColor" rx=".5"/><line x1="10" y1="2" x2="10" y2="12" stroke="currentColor" stroke-width="1"/><rect x="8" y="5" width="4" height="4" fill="none" stroke="currentColor" stroke-width="1" rx=".5"/></svg>
+        <button
+          class="mode-btn"
+          :class="{ active: chartMode === 'candle' }"
+          title="Candlestick"
+          @click="chartMode = 'candle'"
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14">
+            <line x1="4" y1="1" x2="4" y2="13" stroke="currentColor" stroke-width="1" />
+            <rect x="2" y="4" width="4" height="5" fill="currentColor" rx=".5" />
+            <line x1="10" y1="2" x2="10" y2="12" stroke="currentColor" stroke-width="1" />
+            <rect
+              x="8"
+              y="5"
+              width="4"
+              height="4"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1"
+              rx=".5"
+            />
+          </svg>
         </button>
       </div>
 
       <div class="tf-group">
         <button
-          v-for="tf in TF_OPTS" :key="tf.label"
-          class="tf-btn" :class="{ active: activeTf.label === tf.label }"
+          v-for="tf in TF_OPTS"
+          :key="tf.label"
+          class="tf-btn"
+          :class="{ active: activeTf.label === tf.label }"
           @click="onTfChange(tf)"
-        >{{ tf.label }}</button>
+        >
+          {{ tf.label }}
+        </button>
       </div>
     </div>
 
@@ -300,24 +370,30 @@ function fmtChange(v) {
   white-space: nowrap;
 }
 .ticker-label {
-  font-size: .58rem;
+  font-size: 0.58rem;
   color: #5a6a7a;
   text-transform: uppercase;
-  letter-spacing: .5px;
+  letter-spacing: 0.5px;
 }
 .ticker-price {
-  font-size: .68rem;
+  font-size: 0.68rem;
   color: #d0e0f0;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 .ticker-change {
-  font-size: .58rem;
+  font-size: 0.58rem;
   color: #5a6a7a;
 }
-.ticker-change.up { color: #3dc985; }
-.ticker-change.down { color: #ef4f60; }
-.ticker-spacer { flex: 1; }
+.ticker-change.up {
+  color: #3dc985;
+}
+.ticker-change.down {
+  color: #ef4f60;
+}
+.ticker-spacer {
+  flex: 1;
+}
 
 .mode-group {
   display: flex;
@@ -336,10 +412,17 @@ function fmtChange(v) {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background .15s, color .15s;
+  transition:
+    background 0.15s,
+    color 0.15s;
 }
-.mode-btn:hover { color: #a0b0c0; }
-.mode-btn.active { background: #2a2a3a; color: #d0e0f0; }
+.mode-btn:hover {
+  color: #a0b0c0;
+}
+.mode-btn.active {
+  background: #2a2a3a;
+  color: #d0e0f0;
+}
 
 .tf-group {
   display: flex;
@@ -354,14 +437,18 @@ function fmtChange(v) {
   border: none;
   color: #5a6a7a;
   font: inherit;
-  font-size: .55rem;
+  font-size: 0.55rem;
   padding: 3px 6px;
   cursor: pointer;
   text-transform: uppercase;
-  letter-spacing: .3px;
-  transition: background .15s, color .15s;
+  letter-spacing: 0.3px;
+  transition:
+    background 0.15s,
+    color 0.15s;
 }
-.tf-btn:hover { color: #a0b0c0; }
+.tf-btn:hover {
+  color: #a0b0c0;
+}
 .tf-btn.active {
   background: #2a2a3a;
   color: #d0e0f0;

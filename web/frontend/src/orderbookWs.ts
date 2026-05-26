@@ -63,7 +63,7 @@ function pruneMap(map: BookMap, keepTop: number, desc: boolean): void {
   if (map.size <= keepTop) return;
   const entries: [number, number][] = [];
   for (const [p, q] of map) entries.push([+p, q]);
-  entries.sort((a, b) => desc ? b[0] - a[0] : a[0] - b[0]);
+  entries.sort((a, b) => (desc ? b[0] - a[0] : a[0] - b[0]));
   map.clear();
   for (let i = 0; i < keepTop && i < entries.length; i++) {
     map.set(String(entries[i][0]), entries[i][1]);
@@ -72,7 +72,8 @@ function pruneMap(map: BookMap, keepTop: number, desc: boolean): void {
 
 function makeStream(connect: ConnectFn, flushKey: string) {
   let ws: WebSocket | null = null;
-  let closed = false, retries = 0;
+  let closed = false,
+    retries = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let staleTimer: ReturnType<typeof setTimeout> | null = null;
   const bids: BookMap = new Map();
@@ -108,22 +109,35 @@ function makeStream(connect: ConnectFn, flushKey: string) {
     if (asks.size > PRUNE_MAX_LEVELS) pruneMap(asks, PRUNE_MAX_LEVELS, false);
     const bidArr: DepthLevel[] = new Array(Math.min(bids.size, PRUNE_MAX_LEVELS));
     const askArr: DepthLevel[] = new Array(Math.min(asks.size, PRUNE_MAX_LEVELS));
-    let bi = 0, ai = 0;
-    for (const [p, q] of bids) { if (bi >= bidArr.length) break; bidArr[bi++] = [+p, q]; }
-    for (const [p, q] of asks) { if (ai >= askArr.length) break; askArr[ai++] = [+p, q]; }
+    let bi = 0,
+      ai = 0;
+    for (const [p, q] of bids) {
+      if (bi >= bidArr.length) break;
+      bidArr[bi++] = [+p, q];
+    }
+    for (const [p, q] of asks) {
+      if (ai >= askArr.length) break;
+      askArr[ai++] = [+p, q];
+    }
     bidArr.sort((a, b) => b[0] - a[0]);
     askArr.sort((a, b) => a[0] - b[0]);
     const book: DepthBook = { bids: bidArr, asks: askArr };
     if (book.bids.length || book.asks.length) {
       onUpdate(book);
-      if (!loaded) { loaded = true; onLoaded(); }
+      if (!loaded) {
+        loaded = true;
+        onLoaded();
+      }
     }
   }
 
   function start(onUpdate: OnUpdate, onLoaded: OnLoaded): void {
     if (closed) return;
     ws = connect({
-      bids, asks, apply, snap,
+      bids,
+      asks,
+      apply,
+      snap,
       markDirty,
       flush: () => scheduleDepthFlush(flushKey, () => flush(onUpdate, onLoaded)),
     });
@@ -152,7 +166,11 @@ function makeStream(connect: ConnectFn, flushKey: string) {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function parse(raw: unknown): any {
-  try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return null; }
+  try {
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch {
+    return null;
+  }
 }
 
 function binanceStream(symbol: string) {
@@ -160,10 +178,11 @@ function binanceStream(symbol: string) {
   return makeStream(({ bids, asks, apply: ap, markDirty, flush }) => {
     // Spot only allows @depth, @depth@100ms, @depth@1000ms — not @500ms (no events → loading stuck).
     const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${wsSym}@depth@1000ms`);
-    ws.onmessage = e => {
+    ws.onmessage = (e) => {
       const d = parse(e.data);
       if (!d || d.e !== 'depthUpdate') return;
-      ap(bids, d.b || []); ap(asks, d.a || []);
+      ap(bids, d.b || []);
+      ap(asks, d.a || []);
       markDirty();
       flush();
     };
@@ -183,14 +202,22 @@ function bybitStream(symbol: string) {
       }, 20000);
     };
     ws.addEventListener('close', () => {
-      if (pingIv) { clearInterval(pingIv); pingIv = null; }
+      if (pingIv) {
+        clearInterval(pingIv);
+        pingIv = null;
+      }
     });
-    ws.onmessage = e => {
+    ws.onmessage = (e) => {
       const d = parse(e.data);
       if (d?.op === 'pong' || d?.op === 'subscribe') return;
       if (!d?.topic?.startsWith('orderbook') || !d.data) return;
-      if (d.type === 'snapshot') { sn(bids, d.data.b || []); sn(asks, d.data.a || []); }
-      else { ap(bids, d.data.b || []); ap(asks, d.data.a || []); }
+      if (d.type === 'snapshot') {
+        sn(bids, d.data.b || []);
+        sn(asks, d.data.a || []);
+      } else {
+        ap(bids, d.data.b || []);
+        ap(asks, d.data.a || []);
+      }
       markDirty();
       flush();
     };
@@ -210,9 +237,12 @@ function okxStream(symbol: string) {
       }, 25000);
     };
     ws.addEventListener('close', () => {
-      if (pingIv) { clearInterval(pingIv); pingIv = null; }
+      if (pingIv) {
+        clearInterval(pingIv);
+        pingIv = null;
+      }
     });
-    ws.onmessage = e => {
+    ws.onmessage = (e) => {
       const d = parse(e.data);
       if (d?.op === 'ping') {
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ op: 'pong', ts: d.ts }));
@@ -221,8 +251,13 @@ function okxStream(symbol: string) {
       if (d?.op === 'pong' || d?.event === 'subscribe' || d?.op === 'subscribe') return;
       if (!d?.data?.[0] || !d.action) return;
       const row = d.data[0];
-      if (d.action === 'snapshot') { sn(bids, row.bids || []); sn(asks, row.asks || []); }
-      else { ap(bids, row.bids || []); ap(asks, row.asks || []); }
+      if (d.action === 'snapshot') {
+        sn(bids, row.bids || []);
+        sn(asks, row.asks || []);
+      } else {
+        ap(bids, row.bids || []);
+        ap(asks, row.asks || []);
+      }
       markDirty();
       flush();
     };
@@ -235,20 +270,26 @@ function coinbaseStream(symbol: string) {
   const pid = `${base}-USD`;
   return makeStream(({ bids, asks, snap: sn, markDirty, flush }) => {
     const ws = new WebSocket('wss://ws-feed.exchange.coinbase.com');
-    ws.onopen = () => ws.send(JSON.stringify({ type: 'subscribe', product_ids: [pid], channels: ['level2_batch'] }));
-    ws.onmessage = e => {
+    ws.onopen = () =>
+      ws.send(JSON.stringify({ type: 'subscribe', product_ids: [pid], channels: ['level2_batch'] }));
+    ws.onmessage = (e) => {
       const d = parse(e.data);
       if (!d) return;
       if (d.type === 'snapshot' && d.product_id === pid) {
-        sn(bids, d.bids || []); sn(asks, d.asks || []);
-        markDirty(); flush();
+        sn(bids, d.bids || []);
+        sn(asks, d.asks || []);
+        markDirty();
+        flush();
       } else if (d.type === 'l2update' && d.product_id === pid) {
         const ch = d.changes;
-        if (ch) for (let i = 0; i < ch.length; i++) {
-          const c = ch[i], m = c[0] === 'buy' ? bids : asks;
-          +c[2] === 0 ? m.delete(String(c[1])) : m.set(String(c[1]), +c[2]);
-        }
-        markDirty(); flush();
+        if (ch)
+          for (let i = 0; i < ch.length; i++) {
+            const c = ch[i],
+              m = c[0] === 'buy' ? bids : asks;
+            +c[2] === 0 ? m.delete(String(c[1])) : m.set(String(c[1]), +c[2]);
+          }
+        markDirty();
+        flush();
       }
     };
     return ws;
@@ -268,7 +309,10 @@ export function createAllOrderbooksWs(
     ['coinbase', coinbaseStream],
   ];
   const cleanups = streams.map(([id, factory]) =>
-    factory(symbol)((ob) => onUpdate(id, ob), () => onLoaded(id)),
+    factory(symbol)(
+      (ob) => onUpdate(id, ob),
+      () => onLoaded(id),
+    ),
   );
-  return () => cleanups.forEach(fn => fn());
+  return () => cleanups.forEach((fn) => fn());
 }

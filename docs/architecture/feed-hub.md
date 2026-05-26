@@ -1,63 +1,54 @@
 # FeedHub (shared WebSocket multiplexer)
 
-Single data plane for all market streams and MMT script runtimes inside `terminal.wasm`.
+Single data plane for script runtimes, bar stats, and (via separate socket) heatmap frames.
 
-## Stream key
+## Stream keys
 
-```
-{exchange}:{symbol}:{stream_id}:{timeframe_sec}:{bucket_group}
-```
+| Stream | Key format | Socket |
+|--------|------------|--------|
+| Script runtime plots | `runtime:{runtime_id}` | `/ws/session` |
+| Bar stats (stream 13) | `barstats:{SYMBOL}:{tfSec}:{bucketGroup}` | `/ws/session` |
+| OB heatmap (stream 16) | N/A — use `/ws/heatmap` protobuf | `/ws/heatmap` |
 
-Example (aggregated heatmap, 5m):
+Example bar stats key: `barstats:BTCUSDT:3600:6`
 
-```
-binance:bitfinex:bybit:coinbase:deribit:kraken:okx:btc/usd:16:300:0
-```
-
-Matches backend [`heatmapStreamKey`](../../web/backend/lib/feeds/heatmapUpstreamManager.js) semantics extended with MMT `stream` + `bucket_group`.
-
-## Lifecycle
+## Lifecycle (`/ws/session`)
 
 ```mermaid
 sequenceDiagram
-  participant Pane as ChartPaneNode
-  participant Hub as FeedHub
-  participant Reg as StreamRegistry
-  participant MMT as MmtSession WS
+  participant Tab as feedHubWorker
+  participant MUX as InfoStreamMultiplexer
+  participant Engine as LocalIndicatorEngine
 
-  Pane->>Hub: acquire_stream(key)
-  Hub->>Reg: refcount++
-  alt refcount was 0
-    Hub->>MMT: subscribe RPC
-  end
-  MMT-->>Hub: CBOR frames
-  Hub->>Reg: decode into FlatHeatmap / CandleStore ring
-  Pane->>Hub: release_stream(key)
-  Hub->>Reg: refcount--
-  alt refcount hits 0
-    Hub->>MMT: unsubscribe RPC
-  end
+  Tab->>MUX: subscribe / create_runtime
+  MUX->>Engine: mount script or bar-stats hub
+  Engine-->>MUX: runtime:* or barstats:* envelopes
+  MUX-->>Tab: binary frames
+  Tab->>MUX: unsubscribe / disconnect
+  MUX->>Engine: refcount--, drop idle runtimes
 ```
 
 ## Sessions
 
-| Session | When | Upstream |
-|---------|------|----------|
-| **MmtSession** | `MMT_WS_TOKEN` / JS-injected JWT | `wss://{host}/api/v2/ws?token=…` |
-| **PublicSession** (later) | `HEATMAP_PUBLIC_ONLY` | Binance/Bybit via backend proxy or direct Emscripten |
+| Session | Upstream | Token |
+|---------|----------|-------|
+| **InfoStream** | Local Node backend | None |
+| **Heatmap** | Binance / Binance+Bybit aggregate | None |
 
-Target: **≤2 WebSockets per browser tab** (one MMT + optional public fallback).
+Target: **≤2 WebSockets per browser tab** (`/ws/session` + `/ws/heatmap`).
 
-## Decode path
+## Decode path (browser)
 
-1. WS callback (main thread) writes frame into SAB ring → [`workers/decode_worker.odin`](../../packages/engine/src/workers/decode_worker.odin).
-2. Decoder updates [`data/flat_heatmap.odin`](../../packages/engine/src/data/flat_heatmap.odin) or [`data/candle_store.odin`](../../packages/engine/src/data/candle_store.odin).
-3. RAF reads rings only — no allocation on hot path.
+1. `feedHubWorker` parses binary envelopes → `session_frame` / `script_plot_update`.
+2. `chartEngineWorker` + `chart_runtime.wasm` handle candles / native indicators (EMA, VWAP).
+3. `ChartOverlayRenderer.drawScriptPlotLines` renders horizontal script levels.
+
+See [`INFO_STREAM.md`](../INFO_STREAM.md) for ops and JSON RPC.
 
 ## Transition (Vue shell)
 
-Until `terminal.wasm` owns the canvas, the thin shell uses [`web/frontend/src/features/feed-hub/heatmapFeedHub.ts`](../../web/frontend/src/features/feed-hub/heatmapFeedHub.ts) — one `/ws/heatmap` refcount for chart OB + ladders.
+Chart OB heatmap uses [`heatmapFeedHub.ts`](../../web/frontend/src/features/heatmap/feed-hub/heatmapFeedHub.ts) — always `/ws/heatmap`, independent of session MUX.
 
 ## Ops
 
-Rate limits and env: [ops/rate-limits.md](../ops/rate-limits.md).
+Rate limits and env: [deploy/DEPLOY.md](../../deploy/DEPLOY.md) and `web/backend/lib/security.js`.

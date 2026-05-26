@@ -13,3 +13,11 @@ initialize_graphics_backend :: proc "contextless" () {
 shutdown_graphics_backend :: proc "contextless" () {
     // sg.shutdown()
 }
+
+// Stub for chart_runtime / layers compile when full Sokol candle pipeline is not linked.
+candle_pipeline_append_pixel_quad :: proc "contextless" (
+    _x, _y, _w, _h: f32,
+    _color: [4]f32,
+    _chart_width, _chart_height: f32,
+) {
+}

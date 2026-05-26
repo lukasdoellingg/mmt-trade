@@ -3,6 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; worker-src 'self' blob:; child-src 'self' blob:; base-uri 'self';"
+    />
     <title>MMT-Trade Terminal</title>
     <style>
       html,
@@ -20,6 +24,15 @@
         width: 100vw;
         height: 100vh;
         display: block;
+      }
+      #fpsOverlay {
+        position: fixed;
+        top: 8px;
+        right: 10px;
+        font: 11px Consolas, monospace;
+        color: #6a7a8c;
+        pointer-events: none;
+        z-index: 10;
       }
       #loaderOverlay {
         position: fixed;
@@ -39,6 +52,7 @@
   </head>
   <body>
     <canvas id="terminalCanvas" tabindex="0"></canvas>
+    <div id="fpsOverlay"></div>
     <div id="loaderOverlay">Loading terminal.wasm…</div>
     <script type="module" src="/src/main.ts"></script>
   </body>

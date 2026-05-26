@@ -20,8 +20,14 @@ export function subsampleLevels(
   maxPerSide = 1200,
 ) {
   if (levels.length <= maxPerSide * 2) return levels;
-  const bids = levels.filter((l) => l.isBid).sort((a, b) => b.volume - a.volume).slice(0, maxPerSide);
-  const asks = levels.filter((l) => !l.isBid).sort((a, b) => b.volume - a.volume).slice(0, maxPerSide);
+  const bids = levels
+    .filter((l) => l.isBid)
+    .sort((a, b) => b.volume - a.volume)
+    .slice(0, maxPerSide);
+  const asks = levels
+    .filter((l) => !l.isBid)
+    .sort((a, b) => b.volume - a.volume)
+    .slice(0, maxPerSide);
   return [...bids, ...asks];
 }
 

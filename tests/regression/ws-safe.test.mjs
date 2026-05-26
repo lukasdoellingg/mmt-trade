@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { WebSocket } from 'ws';
-import { safeCloseWebSocket } from '../../web/backend/lib/feeds/wsSafe.js';
+import { safeCloseWebSocket } from '../../web/backend/lib/wsTeardown.js';
 
 test('safeCloseWebSocket on CONNECTING socket does not crash the process', async () => {
   const client = new WebSocket('ws://10.255.255.1:59999/');

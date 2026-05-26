@@ -7,50 +7,96 @@
  * top bar and side widgets can drive the chart without prop drilling.
  *
  * Worker layout per chart:
- *   - heatmapWorker       (WebGL2 candle/VWAP/EMA/Liq, owned by OffscreenCanvas)
- *   - obHeatmapWorker     (OB heatmap layer)
+ *   - chartEngineWorker  (WebGL2 candle/VWAP/EMA/Liq + optional Emscripten heatmap pipeline)
+ *   - obHeatmapWorker     (OB heatmap layer — legacy when Emscripten workers disabled)
  *   - footprintLayerWorker
  *   - vpvrLayerWorker
  */
-import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue';
-import { ChartOverlayRenderer, type ChartOverlayLayout } from '../chart/ChartOverlayRenderer';
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
+import {
+  ChartOverlayRenderer,
+  type ChartOverlayLayout,
+  type ScriptPlotOverlayLine,
+} from '../chart/ChartOverlayRenderer';
+import { useChartPaneRuntime } from '../chart/useChartPaneRuntime';
+import { chartPaneSetActive } from '../app/chartObjectTree';
+import type { ScriptIndicatorId } from '../indicators/scriptIndicatorIds';
+import { buildKeyLevelPlotLines } from '../indicators/keyLevelsDisplay';
+import { SCRIPT_INDICATOR_COLORS, SCRIPT_INDICATOR_LABELS } from '../indicators/indicatorCatalog';
 import { ChartRenderFlagsBuilder } from '../chart/ChartRenderFlags';
 import { ChartTimeScale } from '../chart/ChartTimeScale';
-import { useChartSettings } from '../chart/chartSettings';
+import { usePaneSettings, releasePaneSettingsSnapshot } from '../chart/chartPaneSettings';
 import { busEmit } from '../workspace/widgetBus';
 import { debugWarn } from '../utils/debug';
+import {
+  USE_CHART_RUNTIME_INDICATORS,
+  USE_EMSCRIPTEN_OB_HEATMAP,
+  USE_EMSCRIPTEN_WORKERS,
+  USE_SESSION_MUX,
+  HUD_THROTTLE_MS,
+} from '../config/featureFlags';
+import { attachFeedPort, detachFeedPort } from '../engine/feedHubClient';
+import { spawnChartEngineWorker, spawnObHeatmapWorker, spawnFootprintLayerWorker, spawnVpvrLayerWorker } from '../chart/useChartWorkers';
+import {
+  attachObFeedPort,
+  startObFeed as startObFeedPort,
+  stopObFeed as stopObFeedPort,
+  syncChartFeedPortSubscriptions as syncChartFeedPorts,
+  teardownObFeedPort,
+  type ChartFeedPortsHost,
+} from '../chart/useChartFeedPorts';
+import { createChartRenderLoop } from '../chart/useChartRenderLoop';
 import WorkspaceWidget from '../workspace/WorkspaceWidget.vue';
 import type { WidgetState } from '../workspace/types';
+import { useWorkspace } from '../workspace/useWorkspace';
 
 const props = defineProps<{ widget: WidgetState }>();
-const settings = useChartSettings();
+const { closeChartWidget } = useWorkspace();
+let closing = false;
 
-const widgetTitle = computed(() => `${settings.symbol.toLowerCase()} @ ${settings.exchange.toLowerCase()}f`);
-const widgetBadge = computed(() => settings.timeframe);
+function onChartClose(): void {
+  if (closing) return;
+  closing = true;
+  closeChartWidget(props.widget.id);
+}
+const settings = usePaneSettings(props.widget.id);
 
-const wrapEl         = ref<HTMLDivElement | null>(null);
-const gridCanvas     = ref<HTMLCanvasElement | null>(null);
-const obHeatmapCanvas  = ref<HTMLCanvasElement | null>(null);
+const widgetTitle = computed(() => {
+  const p = props.widget.props as Record<string, unknown>;
+  const sym = String(p.symbol ?? 'BTCUSDT');
+  const ex = String(p.exchange ?? 'Binance');
+  return `${sym.toLowerCase()} @ ${ex.toLowerCase()}f`;
+});
+const widgetBadge = computed(() => String((props.widget.props as Record<string, unknown>).timeframe ?? '1h'));
+
+const wrapEl = ref<HTMLDivElement | null>(null);
+const gridCanvas = ref<HTMLCanvasElement | null>(null);
+const obHeatmapCanvas = ref<HTMLCanvasElement | null>(null);
 const footprintCanvas = ref<HTMLCanvasElement | null>(null);
-const vpvrCanvas      = ref<HTMLCanvasElement | null>(null);
-const mainCanvas      = ref<HTMLCanvasElement | null>(null);
-const crossCanvas     = ref<HTMLCanvasElement | null>(null);
+const vpvrCanvas = ref<HTMLCanvasElement | null>(null);
+const mainCanvas = ref<HTMLCanvasElement | null>(null);
+const crossCanvas = ref<HTMLCanvasElement | null>(null);
 
-const fps          = ref(0);
+const fps = shallowRef(0);
 const engineStatus = ref('loading');
-const fatalError   = ref('');
-const hudOpen  = ref(0);
-const hudHigh  = ref(0);
-const hudLow   = ref(0);
-const hudClose = ref(0);
-const hudDelta = ref(0);
-const hudDeltaPct = ref(0);
-const hudBull  = ref(true);
+const fatalError = ref('');
+const hudOpen = shallowRef(0);
+const hudHigh = shallowRef(0);
+const hudLow = shallowRef(0);
+const hudClose = shallowRef(0);
+const hudDelta = shallowRef(0);
+const hudDeltaPct = shallowRef(0);
+const hudBull = shallowRef(true);
 const hudHover = ref(false);
 const liveTagText = ref('');
+let lastHudMetaMs = 0;
 
 const overlay = new ChartOverlayRenderer();
 const timeScale = new ChartTimeScale(0.5, 2);
+const paneRuntime = useChartPaneRuntime(props.widget, settings);
+const scriptRuntime = paneRuntime.scriptRuntime;
+
+const scriptPlotLines = shallowRef<ScriptPlotOverlayLine[]>([]);
 
 function renderFlags(): number {
   return new ChartRenderFlagsBuilder()
@@ -68,19 +114,44 @@ function syncRenderFlags() {
 }
 
 let worker: Worker | null = null;
+/** Set after successful transferControlToOffscreen — transfer is one-shot per canvas. */
+let mainCanvasTransferred = false;
 let obWorker: Worker | null = null;
+let releaseObFeed: (() => void) | null = null;
+let obFeedPortAttached = false;
+let chartFeedPort: MessagePort | null = null;
+let obFeedPort: MessagePort | null = null;
 let fpWorker: Worker | null = null;
 let vpWorker: Worker | null = null;
 let overlayAxisPending = false;
+let lastOverlayAxisMs = 0;
+const OVERLAY_AXIS_MIN_MS = 100;
+
+function flushOverlayAxisSync() {
+  syncTimeAxisToOb();
+  syncTimeAxisToFp();
+  syncTimeAxisToVpvr();
+}
 
 function scheduleOverlayAxisSync() {
+  const now = performance.now();
+  if (now - lastOverlayAxisMs >= OVERLAY_AXIS_MIN_MS) {
+    lastOverlayAxisMs = now;
+    overlayAxisPending = false;
+    flushOverlayAxisSync();
+    return;
+  }
   if (overlayAxisPending) return;
   overlayAxisPending = true;
   requestAnimationFrame(() => {
     overlayAxisPending = false;
-    syncTimeAxisToOb();
-    syncTimeAxisToFp();
-    syncTimeAxisToVpvr();
+    const t = performance.now();
+    if (t - lastOverlayAxisMs < OVERLAY_AXIS_MIN_MS) {
+      scheduleOverlayAxisSync();
+      return;
+    }
+    lastOverlayAxisMs = t;
+    flushOverlayAxisSync();
   });
 }
 
@@ -90,7 +161,13 @@ function syncTimeAxisToVpvr() {
   const copy = new Float64Array(n);
   copy.set(candleSnapshotBuffer.subarray(0, n));
   vpWorker.postMessage(
-    { type: 'setTimeAxis', visStart: visibleStartIndex, visEnd: visibleEndIndex, candleTsBuf: copy, candleCount: candleSnapshotCount },
+    {
+      type: 'setTimeAxis',
+      visStart: visibleStartIndex,
+      visEnd: visibleEndIndex,
+      candleTsBuf: copy,
+      candleCount: candleSnapshotCount,
+    },
     [copy.buffer],
   );
 }
@@ -100,37 +177,60 @@ function syncPriceToVpvr() {
   vpWorker.postMessage({ type: 'setPriceRange', minPrice: displayedMinPrice, maxPrice: displayedMaxPrice });
 }
 
-function wsBaseUrl(): string {
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${proto}://${window.location.host}`;
-}
-
 function syncPriceToOb() {
-  if (!obWorker || displayedMinPrice <= 0 || displayedMaxPrice <= displayedMinPrice) return;
-  obWorker.postMessage({ type: 'setPriceRange', minPrice: displayedMinPrice, maxPrice: displayedMaxPrice });
+  if (displayedMinPrice <= 0 || displayedMaxPrice <= displayedMinPrice) return;
+  if (USE_EMSCRIPTEN_OB_HEATMAP) {
+    worker?.postMessage({
+      type: 'setObPriceRange',
+      minPrice: displayedMinPrice,
+      maxPrice: displayedMaxPrice,
+    });
+  } else if (obWorker) {
+    obWorker.postMessage({ type: 'setPriceRange', minPrice: displayedMinPrice, maxPrice: displayedMaxPrice });
+  }
 }
 
 function syncTimeAxisToOb() {
-  if (!obWorker || candleSnapshotCount < 1) return;
+  if (candleSnapshotCount < 1) return;
   const n = candleSnapshotCount * CANDLE_FIELD_STRIDE;
   const copy = new Float64Array(n);
   copy.set(candleSnapshotBuffer.subarray(0, n));
-  obWorker.postMessage(
-    { type: 'setTimeAxis', visStart: visibleStartIndex, visEnd: visibleEndIndex, tf: settings.timeframe, candleTsBuf: copy, candleCount: candleSnapshotCount },
-    [copy.buffer],
-  );
+  const payload = {
+    type: USE_EMSCRIPTEN_OB_HEATMAP ? 'setObTimeAxis' : 'setTimeAxis',
+    visStart: visibleStartIndex,
+    visEnd: visibleEndIndex,
+    tf: settings.timeframe,
+    candleTsBuf: copy,
+    candleCount: candleSnapshotCount,
+  };
+  if (USE_EMSCRIPTEN_OB_HEATMAP) worker?.postMessage(payload, [copy.buffer]);
+  else if (obWorker) obWorker.postMessage(payload, [copy.buffer]);
 }
 
 function syncIntensityToOb() {
-  obWorker?.postMessage({ type: 'setIntensity', peakSize: settings.obPeak, lowSize: settings.obLow });
+  const msg = { type: 'setIntensity', peakSize: settings.obPeak, lowSize: settings.obLow };
+  if (USE_EMSCRIPTEN_OB_HEATMAP) {
+    worker?.postMessage({ type: 'setObIntensity', peakSize: settings.obPeak, lowSize: settings.obLow });
+  } else {
+    obWorker?.postMessage(msg);
+  }
 }
 
 function obAggregateParam(): string {
-  return settings.obAggregate ? 'binance,bybit' : '';
+  return settings.obAggregate ? 'binance,bybit' : 'binance';
+}
+
+function stopObFeed(): void {
+  stopObFeedPort(feedPortsHost);
+}
+
+/** OB heatmap — always /ws/heatmap (session MUX is scripts + bar stats only). */
+function startObFeed(): void {
+  startObFeedPort(feedPortsHost);
 }
 
 function syncAggregateToOb() {
-  obWorker?.postMessage({ type: 'setAggregate', exchanges: obAggregateParam() });
+  startObFeed();
 }
 
 function syncTimeAxisToFp() {
@@ -139,7 +239,13 @@ function syncTimeAxisToFp() {
   const copy = new Float64Array(n);
   copy.set(candleSnapshotBuffer.subarray(0, n));
   fpWorker.postMessage(
-    { type: 'setTimeAxis', visStart: visibleStartIndex, visEnd: visibleEndIndex, candleTsBuf: copy, candleCount: candleSnapshotCount },
+    {
+      type: 'setTimeAxis',
+      visStart: visibleStartIndex,
+      visEnd: visibleEndIndex,
+      candleTsBuf: copy,
+      candleCount: candleSnapshotCount,
+    },
     [copy.buffer],
   );
 }
@@ -149,25 +255,33 @@ function syncPriceToFp() {
   fpWorker.postMessage({ type: 'setPriceRange', minPrice: displayedMinPrice, maxPrice: displayedMaxPrice });
 }
 
-let animFrameId = 0;
-let resizeObs: ResizeObserver | null = null;
-
-let W = 800, H = 600;
+let W = 800,
+  H = 600;
 const DPR = Math.min(window.devicePixelRatio || 1, 2);
 
 let gCtx: CanvasRenderingContext2D | null = null;
 let xCtx: CanvasRenderingContext2D | null = null;
 
-let PW = 0, PH = 0;
-const MR = 80, MB = 32;
+let PW = 0,
+  PH = 0;
+const MR = 80,
+  MB = 32;
 
-const _isWinChrome = /Windows/.test(navigator.userAgent) && /Chrome/.test(navigator.userAgent) && !/Edge|Edg/.test(navigator.userAgent);
+const _isWinChrome =
+  /Windows/.test(navigator.userAgent) &&
+  /Chrome/.test(navigator.userAgent) &&
+  !/Edge|Edg/.test(navigator.userAgent);
 
-let gridDirty = true, crossDirty = true;
+let gridDirty = true,
+  crossDirty = true;
 let midP = 0;
-let targetMinPrice = 0, targetMaxPrice = 0;
-let displayedMinPrice = 0, displayedMaxPrice = 0;
-let vwapD = 0, vwapW = 0, vwapM = 0;
+let targetMinPrice = 0,
+  targetMaxPrice = 0;
+let displayedMinPrice = 0,
+  displayedMaxPrice = 0;
+let vwapD = 0,
+  vwapW = 0,
+  vwapM = 0;
 const Y_LERP = 0.12;
 
 const CANDLE_FIELD_STRIDE = 7;
@@ -178,34 +292,49 @@ let bufTotal = 0;
 let _scrollStartX: number | null = null;
 let _scrollStartRightOffset = 0;
 
-let yScale = 1.0, yOff = 0;
-let yDragging = false, yDragY0 = 0, yDragScale0 = 1.0;
+let yScale = 1.0,
+  yOff = 0;
+let yDragging = false,
+  yDragY0 = 0,
+  yDragScale0 = 1.0;
 
-let kineticAnimationState: { startOffset: number; startTime: number; speed: number; duration: number } | null = null;
+let kineticAnimationState: {
+  startOffset: number;
+  startTime: number;
+  speed: number;
+  duration: number;
+} | null = null;
 const KINETIC_SCROLL_MIN_SPEED = 0.2;
 const KINETIC_SCROLL_MAX_SPEED = 7;
-const KINETIC_SCROLL_DAMPING   = 0.997;
-const KINETIC_SCROLL_MIN_MOVE_PIXELS  = 15;
-const KINETIC_SCROLL_EPSILON   = 1;
+const KINETIC_SCROLL_DAMPING = 0.997;
+const KINETIC_SCROLL_MIN_MOVE_PIXELS = 15;
+const KINETIC_SCROLL_EPSILON = 1;
 const KINETIC_SCROLL_MAX_DELAY_MS = 50;
 let kineticVelocitySamples: { pos: number; time: number }[] = [];
 
-let visibleStartIndex = 0, visibleEndIndex = 750;
+let visibleStartIndex = 0,
+  visibleEndIndex = 750;
 let workerViewportSynced = false;
 
-let crossOn = false, crosshairMouseXPixels = 0, crosshairMouseYPixels = 0;
-let crossPLabel = '', crossTLabel = '';
-let drawnCX = -1, drawnCY = -1;
+let crossOn = false,
+  crosshairMouseXPixels = 0,
+  crosshairMouseYPixels = 0;
+let crossPLabel = '',
+  crossTLabel = '';
+let drawnCX = -1,
+  drawnCY = -1;
+let resizeObs: ResizeObserver | null = null;
 
 let rectCache: DOMRect | null = null;
 let rectCacheT = 0;
-let atLiveEdge = true;
 
 let cameraDirty = false;
 let vpDirty = false;
 let yDirty = false;
 
-function overlayLayout(): ChartOverlayLayout { return { W, H, PW, PH, DPR, MR, MB }; }
+function overlayLayout(): ChartOverlayLayout {
+  return { W, H, PW, PH, DPR, MR, MB };
+}
 
 function applyHudFromIndex(di: number): void {
   if (di < 0 || di >= candleSnapshotCount) return;
@@ -215,7 +344,10 @@ function applyHudFromIndex(di: number): void {
   const l = candleSnapshotBuffer[base + 3];
   const c = candleSnapshotBuffer[base + 4];
   if (!(o > 0) || !(c > 0)) return;
-  hudOpen.value  = o; hudHigh.value  = h; hudLow.value   = l; hudClose.value = c;
+  hudOpen.value = o;
+  hudHigh.value = h;
+  hudLow.value = l;
+  hudClose.value = c;
   const d = c - o;
   hudDelta.value = d;
   hudDeltaPct.value = o > 0 ? (d / o) * 100 : 0;
@@ -231,8 +363,12 @@ function getRect(): DOMRect | null {
   return rectCache;
 }
 
-function chartW(): number { return PW / DPR; }
-function syncBufToScale() { timeScale.setBufferTotal(bufTotal); }
+function chartW(): number {
+  return PW / DPR;
+}
+function syncBufToScale() {
+  timeScale.setBufferTotal(bufTotal);
+}
 function lastBarScreenX(): number {
   const w = chartW();
   if (w <= 0 || bufTotal < 1) return 0;
@@ -242,13 +378,15 @@ function syncVis() {
   syncBufToScale();
   const w = chartW();
   const r = timeScale.syncVisibleRange(w);
-  visibleStartIndex = r.visStart; visibleEndIndex = r.visEnd; atLiveEdge = r.atLiveEdge;
+  visibleStartIndex = r.visStart;
+  visibleEndIndex = r.visEnd;
 }
 function zoom(pointX: number, scale: number) {
   syncBufToScale();
   timeScale.zoomAt(pointX, scale, chartW());
   syncVis();
   vpDirty = gridDirty = true;
+  scheduleFrame();
 }
 
 function startScroll(x: number) {
@@ -266,6 +404,7 @@ function scrollTo(x: number) {
   timeScale.correctOffset();
   syncVis();
   cameraDirty = gridDirty = true;
+  scheduleFrame();
   kineticAddSample(timeScale.rightOffset, performance.now());
 }
 function endScroll() {
@@ -274,20 +413,27 @@ function endScroll() {
   startKinetic();
 }
 function scrollChart(deltaPx: number) {
-  startScroll(0); scrollTo(deltaPx);
-  kineticVelocitySamples = []; endScroll();
+  startScroll(0);
+  scrollTo(deltaPx);
+  kineticVelocitySamples = [];
+  endScroll();
 }
 function wheelAdj(ev: WheelEvent): number {
   switch (ev.deltaMode) {
-    case ev.DOM_DELTA_PAGE: return 120;
-    case ev.DOM_DELTA_LINE: return 32;
+    case ev.DOM_DELTA_PAGE:
+      return 120;
+    case ev.DOM_DELTA_LINE:
+      return 32;
   }
-  return _isWinChrome ? (1 / window.devicePixelRatio) : 1;
+  return _isWinChrome ? 1 / window.devicePixelRatio : 1;
 }
 function kineticAddSample(pos: number, time: number) {
   if (kineticVelocitySamples.length > 0) {
     const last = kineticVelocitySamples[kineticVelocitySamples.length - 1];
-    if (last.time === time) { last.pos = pos; return; }
+    if (last.time === time) {
+      last.pos = pos;
+      return;
+    }
     if (Math.abs(last.pos - pos) < KINETIC_SCROLL_MIN_MOVE_PIXELS / timeScale.barSpacing) return;
   }
   kineticVelocitySamples.push({ pos, time });
@@ -310,7 +456,9 @@ function startKinetic() {
     spd = Math.sign(spd) * Math.min(Math.abs(spd), KINETIC_SCROLL_MAX_SPEED / timeScale.barSpacing);
     if (speeds.length > 0 && Math.sign(spd) !== Math.sign(speeds[0])) break;
     const d = Math.abs(s[i].pos - s[i - 1].pos);
-    speeds.push(spd); dists.push(d); totalDist += d;
+    speeds.push(spd);
+    dists.push(d);
+    totalDist += d;
   }
   if (totalDist === 0) return;
 
@@ -321,98 +469,298 @@ function startKinetic() {
   const lnD = Math.log(KINETIC_SCROLL_DAMPING);
   const dur = Math.log((KINETIC_SCROLL_EPSILON * lnD) / -Math.abs(resultSpeed)) / lnD;
   if (dur <= 0) return;
-  kineticAnimationState = { startOffset: timeScale.rightOffset, startTime: now, speed: resultSpeed, duration: dur };
+  kineticAnimationState = {
+    startOffset: timeScale.rightOffset,
+    startTime: now,
+    speed: resultSpeed,
+    duration: dur,
+  };
+  scheduleFrame();
 }
 function tickKinetic(now: number): boolean {
   if (!kineticAnimationState) return false;
   const elapsed = now - kineticAnimationState.startTime;
-  if (elapsed >= kineticAnimationState.duration) { kineticAnimationState = null; return false; }
+  if (elapsed >= kineticAnimationState.duration) {
+    kineticAnimationState = null;
+    return false;
+  }
   const lnD = Math.log(KINETIC_SCROLL_DAMPING);
-  const pos = kineticAnimationState.startOffset + kineticAnimationState.speed * (Math.pow(KINETIC_SCROLL_DAMPING, elapsed) - 1) / lnD;
+  const pos =
+    kineticAnimationState.startOffset +
+    (kineticAnimationState.speed * (Math.pow(KINETIC_SCROLL_DAMPING, elapsed) - 1)) / lnD;
   timeScale.setRightOffset(pos);
   syncVis();
   cameraDirty = gridDirty = true;
   return true;
 }
-function stopKinetic() { kineticAnimationState = null; }
+function stopKinetic() {
+  kineticAnimationState = null;
+}
+
+function rebuildScriptPlotLines(): void {
+  const lines: ScriptPlotOverlayLine[] = [];
+  const mid = midP > 0 ? midP : (displayedMinPrice + displayedMaxPrice) * 0.5;
+  for (const mount of scriptRuntime.mountsForScope(paneRuntime.scopeId, 'overlay')) {
+    if (!mount.plotPrices?.length) continue;
+    const templateId = mount.templateId as ScriptIndicatorId;
+    if (templateId === 'key-levels') {
+      lines.push(...buildKeyLevelPlotLines(mount.plotPrices, mount.plotRoles, mid, 12));
+      continue;
+    }
+    const color = SCRIPT_INDICATOR_COLORS[templateId] ?? '#6eb5ff';
+    const label = SCRIPT_INDICATOR_LABELS[templateId] ?? mount.templateId;
+    for (let i = 0; i < mount.plotPrices.length; i++) {
+      lines.push({ price: mount.plotPrices[i], color, label: i === 0 ? label : undefined });
+    }
+  }
+  scriptPlotLines.value = lines;
+  gridDirty = true;
+}
 
 function applyTimeframeChange(tf: string) {
-  timeScale.barSpacing = 1.5; timeScale.rightOffset = 0;
+  syncChartFeedPortSubscriptions();
+  timeScale.barSpacing = 1.5;
+  timeScale.rightOffset = 0;
   workerViewportSynced = false;
-  visibleStartIndex = 0; visibleEndIndex = 750; yScale = 1.0; yOff = 0;
-  candleSnapshotCount = 0; bufTotal = 0;
+  visibleStartIndex = 0;
+  visibleEndIndex = 750;
+  yScale = 1.0;
+  yOff = 0;
+  candleSnapshotCount = 0;
+  bufTotal = 0;
   targetMinPrice = targetMaxPrice = displayedMinPrice = displayedMaxPrice = midP = 0;
-  atLiveEdge = true; gridDirty = true;
+  gridDirty = true;
   stopKinetic();
   worker?.postMessage({ type: 'setTimeframe', tf });
-  obWorker?.postMessage({ type: 'setTimeframe', tf });
+  if (!USE_EMSCRIPTEN_OB_HEATMAP) obWorker?.postMessage({ type: 'setTimeframe', tf });
+  startObFeed();
   fpWorker?.postMessage({ type: 'setTimeframe', tf });
   scheduleOverlayAxisSync();
 }
 
-function toBinanceSymbol(pair: string): string { return pair.replace(/[^A-Za-z0-9]/g, '').toUpperCase(); }
-
-function applySymbolChange(sym: string) {
-  const upperSym = toBinanceSymbol(sym);
-  timeScale.barSpacing = 1.5; timeScale.rightOffset = 0;
-  workerViewportSynced = false;
-  visibleStartIndex = 0; visibleEndIndex = 750;
-  yScale = 1.0; yOff = 0;
-  candleSnapshotCount = 0; bufTotal = 0;
-  targetMinPrice = targetMaxPrice = displayedMinPrice = displayedMaxPrice = midP = 0;
-  atLiveEdge = true; gridDirty = true;
-  stopKinetic();
-  if (worker) worker.postMessage({ type: 'setSymbol', symbol: upperSym });
-  else { stopWorker(); startWorker(); }
-  obWorker?.postMessage({ type: 'setSymbol', symbol: upperSym });
-  fpWorker?.postMessage({ type: 'setSymbol', symbol: upperSym.toLowerCase() });
+function toBinanceSymbol(pair: string): string {
+  return pair.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
 }
 
-watch(() => settings.timeframe, (tf) => applyTimeframeChange(tf));
-watch(() => settings.symbol, (s) => applySymbolChange(s));
-watch([
-  () => settings.vwapDaily, () => settings.vwapWeekly, () => settings.vwapMonthly,
-  () => settings.vwapBands, () => settings.ema, () => settings.liquidations,
-], () => syncRenderFlags());
+let chartFeedStreamKey = '';
 
-watch(() => settings.obHeatmap, (on) => {
-  if (!on) stopObWorker();
-  else setTimeout(() => { if (settings.obHeatmap) startObWorker(); }, 0);
-});
-watch(() => settings.obBinMode, (mode) => obWorker?.postMessage({ type: 'setBinMode', mode }));
-watch(() => settings.obAggregate, () => syncAggregateToOb());
+const feedPortsHost: ChartFeedPortsHost = {
+  settings,
+  getWorker: () => worker,
+  getObWorker: () => obWorker,
+  getReleaseObFeed: () => releaseObFeed,
+  setReleaseObFeed: (fn) => {
+    releaseObFeed = fn;
+  },
+  getObFeedPortAttached: () => obFeedPortAttached,
+  setObFeedPortAttached: (v) => {
+    obFeedPortAttached = v;
+  },
+  getObFeedPort: () => obFeedPort,
+  setObFeedPort: (p) => {
+    obFeedPort = p;
+  },
+  getChartFeedPort: () => chartFeedPort,
+  setChartFeedStreamKey: (k) => {
+    chartFeedStreamKey = k;
+  },
+  getChartFeedStreamKey: () => chartFeedStreamKey,
+  toBinanceSymbol,
+  obAggregateParam,
+  onHeatmapBuffer: (buffer) => {
+    const t = USE_EMSCRIPTEN_OB_HEATMAP ? worker : obWorker;
+    if (!t) return;
+    t.postMessage({ type: 'obFrame', buffer }, [buffer]);
+  },
+};
+
+function syncChartFeedPortSubscriptions(): void {
+  syncChartFeedPorts(feedPortsHost);
+}
+
+function applySymbolChange(sym: string) {
+  chartFeedStreamKey = '';
+  syncChartFeedPortSubscriptions();
+  const upperSym = toBinanceSymbol(sym);
+  timeScale.barSpacing = 1.5;
+  timeScale.rightOffset = 0;
+  workerViewportSynced = false;
+  visibleStartIndex = 0;
+  visibleEndIndex = 750;
+  yScale = 1.0;
+  yOff = 0;
+  candleSnapshotCount = 0;
+  bufTotal = 0;
+  targetMinPrice = targetMaxPrice = displayedMinPrice = displayedMaxPrice = midP = 0;
+  gridDirty = true;
+  stopKinetic();
+  if (worker) worker.postMessage({ type: 'setSymbol', symbol: upperSym });
+  else {
+    stopWorker();
+    startWorker();
+  }
+  if (!USE_EMSCRIPTEN_OB_HEATMAP) obWorker?.postMessage({ type: 'setSymbol', symbol: upperSym });
+  startObFeed();
+  fpWorker?.postMessage({ type: 'setSymbol', symbol: upperSym.toLowerCase() });
+  if (USE_SESSION_MUX) {
+    paneRuntime.remountOnContextChange();
+    rebuildScriptPlotLines();
+  }
+}
+
+watch(
+  () => settings.timeframe,
+  (tf) => {
+    applyTimeframeChange(tf);
+    if (USE_SESSION_MUX) {
+      paneRuntime.remountOnContextChange();
+      rebuildScriptPlotLines();
+    }
+  },
+);
+watch(
+  () => settings.symbol,
+  (s) => applySymbolChange(s),
+);
+watch(
+  () => [settings.scriptKeyLevels, settings.scriptNetPositioning, settings.scriptObImbalance],
+  () => {
+    if (!closing) paneRuntime.syncOverlayScripts();
+  },
+);
+watch(
+  () => {
+    const mounts = scriptRuntime.mountsForScope(paneRuntime.scopeId, 'overlay');
+    let sig = '';
+    for (const m of mounts) {
+      sig += `${m.localId}:${m.status}:${m.plotPrices?.length ?? 0};`;
+    }
+    return sig;
+  },
+  () => {
+    if (!closing) rebuildScriptPlotLines();
+  },
+);
+watch(
+  [
+    () => settings.vwapDaily,
+    () => settings.vwapWeekly,
+    () => settings.vwapMonthly,
+    () => settings.vwapBands,
+    () => settings.ema,
+    () => settings.liquidations,
+  ],
+  () => syncRenderFlags(),
+);
+
+watch(
+  () => settings.obHeatmap,
+  (on) => {
+    if (!on) {
+      stopObFeed();
+      stopObWorker();
+    } else {
+      setTimeout(() => {
+        if (settings.obHeatmap) {
+          startObWorker();
+          startObFeed();
+        }
+      }, 0);
+    }
+  },
+);
+watch(
+  () => settings.obBinMode,
+  (mode) => {
+    if (USE_EMSCRIPTEN_OB_HEATMAP) worker?.postMessage({ type: 'setObBinMode', mode });
+    else obWorker?.postMessage({ type: 'setBinMode', mode });
+  },
+);
+watch(
+  () => settings.obAggregate,
+  () => syncAggregateToOb(),
+);
 watch([() => settings.obPeak, () => settings.obLow], () => syncIntensityToOb());
-watch(() => settings.footprint, (on) => {
-  if (!on) stopFpWorker();
-  else setTimeout(() => { if (settings.footprint) startFpWorker(); }, 0);
-});
-watch(() => settings.vpvr, (on) => {
-  if (!on) stopVpWorker();
-  else setTimeout(() => { if (settings.vpvr) startVpWorker(); }, 0);
-});
+watch(
+  () => settings.footprint,
+  (on) => {
+    if (!on) stopFpWorker();
+    else
+      setTimeout(() => {
+        if (settings.footprint) startFpWorker();
+      }, 0);
+  },
+);
+watch(
+  () => settings.vpvr,
+  (on) => {
+    if (!on) stopVpWorker();
+    else
+      setTimeout(() => {
+        if (settings.vpvr) startVpWorker();
+      }, 0);
+  },
+);
 
 function startWorker() {
-  if (worker) return;
+  if (worker) {
+    worker.postMessage({ type: 'resume' });
+    return;
+  }
   const mc = mainCanvas.value;
   if (!mc) return;
+  if (mainCanvasTransferred) {
+    engineStatus.value = 'error';
+    fatalError.value = 'Chart canvas already transferred; reload the page.';
+    return;
+  }
   let osc: OffscreenCanvas | null = null;
-  try { osc = mc.transferControlToOffscreen(); } catch { osc = null; }
-  worker = new Worker(new URL('../workers/heatmapWorker.ts', import.meta.url), { type: 'module' });
+  try {
+    osc = mc.transferControlToOffscreen();
+    mainCanvasTransferred = true;
+  } catch {
+    osc = null;
+    if (mainCanvasTransferred) {
+      engineStatus.value = 'error';
+      fatalError.value = 'Chart canvas transfer failed; reload the page.';
+      return;
+    }
+  }
+  worker = spawnChartEngineWorker();
+
+  if (USE_SESSION_MUX && typeof SharedArrayBuffer !== 'undefined') {
+    const feedMc = new MessageChannel();
+    chartFeedPort = feedMc.port2;
+    attachFeedPort(feedMc.port2);
+    syncChartFeedPortSubscriptions();
+    worker.postMessage({ type: 'initFeedPort', port: feedMc.port1 }, [feedMc.port1]);
+  }
 
   worker.onmessage = (ev: MessageEvent) => {
     const m = ev.data;
     switch (m.type) {
-      case 'meta':
+      case 'meta': {
+        const now = performance.now();
+        if (now - lastHudMetaMs < HUD_THROTTLE_MS) break;
+        lastHudMetaMs = now;
         midP = m.midPrice;
-        targetMinPrice = m.minPrice; targetMaxPrice = m.maxPrice;
-        if (displayedMinPrice === 0 && displayedMaxPrice === 0) { displayedMinPrice = targetMinPrice; displayedMaxPrice = targetMaxPrice; }
-        vwapD = m.vwapD || 0; vwapW = m.vwapW || 0; vwapM = m.vwapM || 0;
+        targetMinPrice = m.minPrice;
+        targetMaxPrice = m.maxPrice;
+        if (displayedMinPrice === 0 && displayedMaxPrice === 0) {
+          displayedMinPrice = targetMinPrice;
+          displayedMaxPrice = targetMaxPrice;
+        }
+        vwapD = m.vwapD || 0;
+        vwapW = m.vwapW || 0;
+        vwapM = m.vwapM || 0;
         gridDirty = crossDirty = true;
+        scheduleFrame();
         busEmit({ type: 'midPrice', price: midP });
         syncPriceToOb();
         syncPriceToFp();
         syncPriceToVpvr();
         break;
+      }
       case 'candles':
         candleSnapshotBuffer = m.buf instanceof Float64Array ? m.buf : new Float64Array(m.buf);
         candleSnapshotCount = m.count;
@@ -435,18 +783,18 @@ function startWorker() {
           }
           workerViewportSynced = true;
         }
-        atLiveEdge = visibleEndIndex >= bufTotal;
         gridDirty = true;
         scheduleOverlayAxisSync();
         break;
       }
       case 'historyLoaded':
-        if (m.direction === 'newer' && m.count === 0) atLiveEdge = true;
         bufTotal = m.total || bufTotal;
         syncBufToScale();
         gridDirty = true;
         break;
-      case 'fps': fps.value = m.fps; break;
+      case 'fps':
+        fps.value = m.fps;
+        break;
       case 'engineReady':
         engineStatus.value = 'webgl2+wasm';
         syncRenderFlags();
@@ -461,15 +809,43 @@ function startWorker() {
       case 'error':
         debugWarn('[Chart]', m.msg);
         break;
+      case 'scriptPlots':
+        rebuildScriptPlotLines();
+        break;
     }
   };
 
   const sym = toBinanceSymbol(settings.symbol);
   const initMsg: Record<string, unknown> = {
-    type: 'init', symbol: sym, tf: settings.timeframe, dpr: DPR, w: W, h: H,
+    type: 'init',
+    symbol: sym,
+    tf: settings.timeframe,
+    dpr: DPR,
+    w: W,
+    h: H,
     renderFlags: renderFlags(),
+    useEmscriptenPipeline: USE_EMSCRIPTEN_WORKERS && USE_SESSION_MUX,
+    useChartRuntimeIndicators: USE_CHART_RUNTIME_INDICATORS && USE_EMSCRIPTEN_WORKERS && USE_SESSION_MUX,
+    useEmscriptenObHeatmap: USE_EMSCRIPTEN_OB_HEATMAP,
   };
-  if (osc) { initMsg.canvas = osc; worker.postMessage(initMsg, [osc]); }
+  const transfers: Transferable[] = [];
+  if (osc) {
+    initMsg.canvas = osc;
+    transfers.push(osc);
+  }
+  if (USE_EMSCRIPTEN_OB_HEATMAP) {
+    const obc = obHeatmapCanvas.value;
+    if (obc) {
+      try {
+        const obOsc = obc.transferControlToOffscreen();
+        initMsg.obCanvas = obOsc;
+        transfers.push(obOsc);
+      } catch {
+        /* canvas already transferred */
+      }
+    }
+  }
+  if (transfers.length) worker.postMessage(initMsg, transfers);
   else worker.postMessage(initMsg);
 }
 
@@ -478,36 +854,68 @@ function stopWorker() {
   worker.postMessage({ type: 'stop' });
   worker.terminate();
   worker = null;
+  mainCanvasTransferred = false;
+  if (chartFeedPort) {
+    detachFeedPort(chartFeedPort);
+    chartFeedPort = null;
+  }
 }
 
 // Workers are spawned **once** per widget lifetime so the OffscreenCanvas
 // transfer (which can only happen once per HTMLCanvasElement) is never lost.
 // Toggling a layer off sends a pause message; toggling on sends resume.
 function startObWorker() {
+  if (USE_EMSCRIPTEN_OB_HEATMAP) {
+    worker?.postMessage({ type: 'resumeObHeatmap' });
+    syncPriceToOb();
+    syncIntensityToOb();
+    attachObFeedPort(feedPortsHost);
+    startObFeed();
+    return;
+  }
   if (obWorker) {
     obWorker.postMessage({ type: 'resume' });
-    syncPriceToOb(); syncIntensityToOb(); syncAggregateToOb();
+    syncPriceToOb();
+    syncIntensityToOb();
+    attachObFeedPort(feedPortsHost);
+    startObFeed();
     return;
   }
   const oc = obHeatmapCanvas.value;
   if (!oc) return;
   let osc: OffscreenCanvas | null = null;
-  try { osc = oc.transferControlToOffscreen(); } catch { osc = null; }
-  obWorker = new Worker(new URL('../workers/obHeatmapWorker.ts', import.meta.url), { type: 'module' });
+  try {
+    osc = oc.transferControlToOffscreen();
+  } catch {
+    osc = null;
+  }
+  obWorker = spawnObHeatmapWorker();
   const sym = toBinanceSymbol(settings.symbol);
   const init: Record<string, unknown> = {
-    type: 'init', symbol: sym, tf: settings.timeframe, dpr: DPR, w: W, h: H,
-    wsBase: wsBaseUrl(), aggregate: obAggregateParam(),
+    type: 'init',
+    symbol: sym,
+    tf: settings.timeframe,
+    dpr: DPR,
+    w: W,
+    h: H,
   };
-  if (osc) { init.canvas = osc; obWorker.postMessage(init, [osc]); }
-  else obWorker.postMessage(init);
+  if (osc) {
+    init.canvas = osc;
+    obWorker.postMessage(init, [osc]);
+  } else obWorker.postMessage(init);
   obWorker.postMessage({ type: 'resize', w: W, h: H, dpr: DPR });
   syncPriceToOb();
   syncIntensityToOb();
-  syncAggregateToOb();
+  attachObFeedPort(feedPortsHost);
+  startObFeed();
 }
 
 function stopObWorker() {
+  stopObFeed();
+  if (USE_EMSCRIPTEN_OB_HEATMAP) {
+    worker?.postMessage({ type: 'pauseObHeatmap' });
+    return;
+  }
   if (!obWorker) return;
   obWorker.postMessage({ type: 'pause' });
 }
@@ -522,12 +930,25 @@ function startFpWorker() {
   const fc = footprintCanvas.value;
   if (!fc) return;
   let osc: OffscreenCanvas | null = null;
-  try { osc = fc.transferControlToOffscreen(); } catch { osc = null; }
-  fpWorker = new Worker(new URL('../workers/footprintLayerWorker.ts', import.meta.url), { type: 'module' });
+  try {
+    osc = fc.transferControlToOffscreen();
+  } catch {
+    osc = null;
+  }
+  fpWorker = spawnFootprintLayerWorker();
   const sym = toBinanceSymbol(settings.symbol).toLowerCase();
-  const init: Record<string, unknown> = { type: 'init', symbol: sym, tf: settings.timeframe, dpr: DPR, w: W, h: H };
-  if (osc) { init.canvas = osc; fpWorker.postMessage(init, [osc]); }
-  else fpWorker.postMessage(init);
+  const init: Record<string, unknown> = {
+    type: 'init',
+    symbol: sym,
+    tf: settings.timeframe,
+    dpr: DPR,
+    w: W,
+    h: H,
+  };
+  if (osc) {
+    init.canvas = osc;
+    fpWorker.postMessage(init, [osc]);
+  } else fpWorker.postMessage(init);
   fpWorker.postMessage({ type: 'resize', w: W, h: H, dpr: DPR });
   syncPriceToFp();
   scheduleOverlayAxisSync();
@@ -548,11 +969,17 @@ function startVpWorker() {
   const vc = vpvrCanvas.value;
   if (!vc) return;
   let osc: OffscreenCanvas | null = null;
-  try { osc = vc.transferControlToOffscreen(); } catch { osc = null; }
-  vpWorker = new Worker(new URL('../workers/vpvrLayerWorker.ts', import.meta.url), { type: 'module' });
+  try {
+    osc = vc.transferControlToOffscreen();
+  } catch {
+    osc = null;
+  }
+  vpWorker = spawnVpvrLayerWorker();
   const init: Record<string, unknown> = { type: 'init', dpr: DPR, w: W, h: H };
-  if (osc) { init.canvas = osc; vpWorker.postMessage(init, [osc]); }
-  else vpWorker.postMessage(init);
+  if (osc) {
+    init.canvas = osc;
+    vpWorker.postMessage(init, [osc]);
+  } else vpWorker.postMessage(init);
   vpWorker.postMessage({ type: 'resize', w: W, h: H, dpr: DPR });
   syncPriceToVpvr();
   scheduleOverlayAxisSync();
@@ -567,42 +994,75 @@ function resize() {
   const wrap = wrapEl.value;
   if (!wrap) return;
   const r = wrap.getBoundingClientRect();
-  rectCache = r; rectCacheT = performance.now();
-  W = Math.max(200, r.width * DPR | 0);
-  H = Math.max(200, r.height * DPR | 0);
-  PW = W - MR * DPR; PH = H - MB * DPR;
+  rectCache = r;
+  rectCacheT = performance.now();
+  W = Math.max(200, (r.width * DPR) | 0);
+  H = Math.max(200, (r.height * DPR) | 0);
+  PW = W - MR * DPR;
+  PH = H - MB * DPR;
   for (const c of [gridCanvas.value, crossCanvas.value]) {
     if (!c) continue;
-    c.width = W; c.height = H;
-    c.style.width = r.width + 'px'; c.style.height = r.height + 'px';
+    c.width = W;
+    c.height = H;
+    c.style.width = r.width + 'px';
+    c.style.height = r.height + 'px';
   }
   for (const c of [obHeatmapCanvas.value, vpvrCanvas.value, footprintCanvas.value, mainCanvas.value]) {
     if (!c) continue;
     c.style.width = r.width + 'px';
     c.style.height = r.height + 'px';
   }
-  gCtx = gridCanvas.value?.getContext('2d', { alpha: true }) ?? null;
-  xCtx = crossCanvas.value?.getContext('2d', { alpha: true }) ?? null;
+  gCtx = gridCanvas.value?.getContext('2d', { alpha: true, desynchronized: true }) ?? null;
+  xCtx = crossCanvas.value?.getContext('2d', { alpha: true, desynchronized: true }) ?? null;
   gridDirty = crossDirty = true;
   worker?.postMessage({ type: 'resize', w: W, h: H, dpr: DPR });
-  obWorker?.postMessage({ type: 'resize', w: W, h: H, dpr: DPR });
+  if (!USE_EMSCRIPTEN_OB_HEATMAP) obWorker?.postMessage({ type: 'resize', w: W, h: H, dpr: DPR });
   fpWorker?.postMessage({ type: 'resize', w: W, h: H, dpr: DPR });
   vpWorker?.postMessage({ type: 'resize', w: W, h: H, dpr: DPR });
 }
 
 function drawGrid() {
-  const ctx = gCtx; if (!ctx) return;
+  const ctx = gCtx;
+  if (!ctx) return;
   gridDirty = false;
-  overlay.drawPlotGrid(ctx, overlayLayout(), displayedMinPrice, displayedMaxPrice, visibleStartIndex, visibleEndIndex, candleSnapshotBuffer, candleSnapshotCount, CANDLE_FIELD_STRIDE, settings.timeframe);
+  const L = overlayLayout();
+  overlay.drawPlotGrid(
+    ctx,
+    L,
+    displayedMinPrice,
+    displayedMaxPrice,
+    visibleStartIndex,
+    visibleEndIndex,
+    candleSnapshotBuffer,
+    candleSnapshotCount,
+    CANDLE_FIELD_STRIDE,
+    settings.timeframe,
+  );
+  if (scriptPlotLines.value.length) {
+    overlay.drawScriptPlotLines(ctx, L, displayedMinPrice, displayedMaxPrice, scriptPlotLines.value);
+  }
 }
 
 function drawCross() {
-  const ctx = xCtx; if (!ctx) return;
+  const ctx = xCtx;
+  if (!ctx) return;
   crossDirty = false;
-  drawnCX = crosshairMouseXPixels; drawnCY = crosshairMouseYPixels;
+  drawnCX = crosshairMouseXPixels;
+  drawnCY = crosshairMouseYPixels;
   const L = overlayLayout();
   ctx.clearRect(0, 0, W, H);
-  overlay.drawAxisChrome(ctx, L, displayedMinPrice, displayedMaxPrice, visibleStartIndex, visibleEndIndex, candleSnapshotBuffer, candleSnapshotCount, CANDLE_FIELD_STRIDE, settings.timeframe);
+  overlay.drawAxisChrome(
+    ctx,
+    L,
+    displayedMinPrice,
+    displayedMaxPrice,
+    visibleStartIndex,
+    visibleEndIndex,
+    candleSnapshotBuffer,
+    candleSnapshotCount,
+    CANDLE_FIELD_STRIDE,
+    settings.timeframe,
+  );
   overlay.drawCrosshair(ctx, L, {
     midPrice: midP,
     dispMin: displayedMinPrice,
@@ -614,32 +1074,49 @@ function drawCross() {
     crossTLabel,
     lastBarX: lastBarScreenX(),
     vwapLabels: [
-      { on: settings.vwapDaily,   text: 'D VWAP', price: vwapD, color: '#f0c130', fg: '#06060b' },
-      { on: settings.vwapWeekly,  text: 'W VWAP', price: vwapW, color: '#ef4f8e', fg: '#ffffff' },
+      { on: settings.vwapDaily, text: 'D VWAP', price: vwapD, color: '#f0c130', fg: '#06060b' },
+      { on: settings.vwapWeekly, text: 'W VWAP', price: vwapW, color: '#ef4f8e', fg: '#ffffff' },
       { on: settings.vwapMonthly, text: 'M VWAP', price: vwapM, color: '#3fd3e4', fg: '#06060b' },
     ],
   });
 }
 
-function frame() {
-  animFrameId = requestAnimationFrame(frame);
-  tickKinetic(performance.now());
-
-  if (vpDirty) {
-    vpDirty = false; cameraDirty = false;
+const { scheduleFrame, pause: pauseRenderLoop } = createChartRenderLoop({
+  getVpDirty: () => vpDirty,
+  setVpDirty: (v) => {
+    vpDirty = v;
+  },
+  getCameraDirty: () => cameraDirty,
+  setCameraDirty: (v) => {
+    cameraDirty = v;
+  },
+  getYDirty: () => yDirty,
+  setYDirty: (v) => {
+    yDirty = v;
+  },
+  getGridDirty: () => gridDirty,
+  getCrossDirty: () => crossDirty,
+  getKineticActive: () => kineticAnimationState !== null,
+  getTargetMinPrice: () => targetMinPrice,
+  getTargetMaxPrice: () => targetMaxPrice,
+  getDisplayedMinPrice: () => displayedMinPrice,
+  getDisplayedMaxPrice: () => displayedMaxPrice,
+  tickKinetic: (now) => {
+    tickKinetic(now);
+  },
+  onViewportSync: () => {
     worker?.postMessage({ type: 'setViewport', visStart: visibleStartIndex, visEnd: visibleEndIndex });
     scheduleOverlayAxisSync();
-  } else if (cameraDirty) {
-    cameraDirty = false;
+  },
+  onCameraSync: () => {
     worker?.postMessage({ type: 'setCamera', visStart: visibleStartIndex, visEnd: visibleEndIndex });
     scheduleOverlayAxisSync();
-  }
-  if (yDirty) {
-    yDirty = false;
+  },
+  onYScaleSync: () => {
     worker?.postMessage({ type: 'setYScale', yScale, yOffset: yOff });
-  }
-
-  if (targetMinPrice > 0 && targetMaxPrice > targetMinPrice) {
+  },
+  onPriceLerp: () => {
+    if (targetMinPrice <= 0 || targetMaxPrice <= targetMinPrice) return;
     const dMin = targetMinPrice - displayedMinPrice;
     const dMax = targetMaxPrice - displayedMaxPrice;
     const range = targetMaxPrice - targetMinPrice;
@@ -649,21 +1126,30 @@ function frame() {
       displayedMaxPrice += dMax * Y_LERP;
       gridDirty = crossDirty = true;
     } else if (displayedMinPrice !== targetMinPrice || displayedMaxPrice !== targetMaxPrice) {
-      displayedMinPrice = targetMinPrice; displayedMaxPrice = targetMaxPrice;
-      syncPriceToOb(); syncPriceToFp(); syncPriceToVpvr();
+      displayedMinPrice = targetMinPrice;
+      displayedMaxPrice = targetMaxPrice;
+      syncPriceToOb();
+      syncPriceToFp();
+      syncPriceToVpvr();
       gridDirty = crossDirty = true;
     }
-  }
-
-  const plotDirty = gridDirty;
-  if (plotDirty) drawGrid();
-  if (plotDirty || crossDirty || crosshairMouseXPixels !== drawnCX || crosshairMouseYPixels !== drawnCY) drawCross();
-}
+  },
+  drawGrid,
+  drawCross,
+  getCrosshairDrawState: () => ({
+    cx: crosshairMouseXPixels,
+    cy: crosshairMouseYPixels,
+    drawnCX,
+    drawnCY,
+  }),
+});
 
 let _panning = false;
 function onMove(ev: MouseEvent) {
-  const rect = getRect(); if (!rect) return;
-  const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+  const rect = getRect();
+  if (!rect) return;
+  const mx = ev.clientX - rect.left,
+    my = ev.clientY - rect.top;
   const inYAxis = mx > rect.width - MR;
 
   if (yDragging) {
@@ -671,16 +1157,21 @@ function onMove(ev: MouseEvent) {
     yDirty = gridDirty = true;
     return;
   }
-  if (_panning) { scrollTo(ev.clientX); return; }
+  if (_panning) {
+    scrollTo(ev.clientX);
+    return;
+  }
 
-  crosshairMouseXPixels = mx; crosshairMouseYPixels = my;
+  crosshairMouseXPixels = mx;
+  crosshairMouseYPixels = my;
   // `cursor` tool suppresses the crosshair entirely (pan-only mode).
   crossOn = settings.tool !== 'cursor' && !inYAxis && my < rect.height - MB;
 
   if (crossOn) {
-    crossPLabel = (displayedMinPrice > 0 && displayedMaxPrice > displayedMinPrice)
-      ? overlay.fmtPrice(overlay.y2p(my * DPR, displayedMinPrice, displayedMaxPrice, PH))
-      : '';
+    crossPLabel =
+      displayedMinPrice > 0 && displayedMaxPrice > displayedMinPrice
+        ? overlay.fmtPrice(overlay.y2p(my * DPR, displayedMinPrice, displayedMaxPrice, PH))
+        : '';
     const vLen = visibleEndIndex - visibleStartIndex;
     if (vLen > 0 && candleSnapshotCount > 0) {
       const xStep = chartW() / vLen;
@@ -691,26 +1182,37 @@ function onMove(ev: MouseEvent) {
         hudHover.value = true;
       } else crossTLabel = '';
     } else crossTLabel = '';
-  } else { crossPLabel = ''; crossTLabel = ''; }
+  } else {
+    crossPLabel = '';
+    crossTLabel = '';
+  }
 
   const wrap = wrapEl.value;
   if (wrap) {
     const cursorChar = inYAxis
       ? 'ns-resize'
       : my < rect.height - MB
-        ? (settings.tool === 'cursor' ? 'grab' : settings.tool === 'pencil' ? 'crosshair' : 'crosshair')
+        ? settings.tool === 'cursor'
+          ? 'grab'
+          : settings.tool === 'pencil'
+            ? 'crosshair'
+            : 'crosshair'
         : 'default';
     wrap.style.cursor = cursorChar;
   }
   crossDirty = true;
+  scheduleFrame();
 }
 function onDown(ev: MouseEvent) {
   if (ev.button !== 0) return;
   ev.preventDefault();
-  const rect = getRect(); if (!rect) return;
+  const rect = getRect();
+  if (!rect) return;
   const mx = ev.clientX - rect.left;
   if (mx > rect.width - MR) {
-    yDragging = true; yDragY0 = ev.clientY; yDragScale0 = yScale;
+    yDragging = true;
+    yDragY0 = ev.clientY;
+    yDragScale0 = yScale;
     return;
   }
   _panning = true;
@@ -723,7 +1225,8 @@ function onUp() {
     worker?.postMessage({ type: 'setPanning', panning: false });
     vpDirty = true;
   }
-  _panning = false; yDragging = false;
+  _panning = false;
+  yDragging = false;
 }
 function onLeave() {
   if (_panning) {
@@ -731,13 +1234,17 @@ function onLeave() {
     worker?.postMessage({ type: 'setPanning', panning: false });
     vpDirty = true;
   }
-  crossOn = false; crossDirty = true; _panning = false; yDragging = false;
+  crossOn = false;
+  crossDirty = true;
+  _panning = false;
+  yDragging = false;
   hudHover.value = false;
   if (candleSnapshotCount > 0) applyHudFromIndex(candleSnapshotCount - 1);
 }
 function onWheel(ev: WheelEvent) {
   ev.preventDefault();
-  const rect = getRect(); if (!rect) return;
+  const rect = getRect();
+  if (!rect) return;
   const mx = ev.clientX - rect.left;
   const my = ev.clientY - rect.top;
   const cW = rect.width - MR;
@@ -746,7 +1253,7 @@ function onWheel(ev: WheelEvent) {
   const adj = wheelAdj(ev);
 
   if (mx > cW) {
-    const normDY = -(adj * ev.deltaY / 100);
+    const normDY = -((adj * ev.deltaY) / 100);
     if (normDY === 0) return;
     const s = Math.sign(normDY) * Math.min(1, Math.abs(normDY));
     yScale = Math.max(0.1, Math.min(10, yScale + s * (yScale / 10)));
@@ -758,16 +1265,19 @@ function onWheel(ev: WheelEvent) {
     scrollChart(-(adj * dxRaw));
     return;
   }
-  const normDY = -(adj * ev.deltaY / 100);
+  const normDY = -((adj * ev.deltaY) / 100);
   if (normDY === 0) return;
   const anchorX = Math.max(0, Math.min(mx, cW));
   const scale = Math.sign(normDY) * Math.min(1, Math.abs(normDY));
   zoom(anchorX, scale);
 }
 function onDbl(ev: MouseEvent) {
-  const rect = getRect(); if (!rect) return;
+  const rect = getRect();
+  if (!rect) return;
   if (ev.clientX - rect.left > rect.width - MR) {
-    yScale = 1.0; yOff = 0; yDirty = gridDirty = true;
+    yScale = 1.0;
+    yOff = 0;
+    yDirty = gridDirty = true;
   } else {
     stopKinetic();
     timeScale.barSpacing = 1.5;
@@ -780,6 +1290,8 @@ function onDbl(ev: MouseEvent) {
 }
 
 let active = true;
+let chartBooted = false;
+
 function start() {
   if (!active) return;
   resize();
@@ -787,125 +1299,339 @@ function start() {
   // succeed against their (always-mounted, v-show'd) HTMLCanvasElements. If
   // the user has the layer off we pause the worker immediately — that frees
   // its WebSocket and rAF loop without losing the offscreen handle.
-  startObWorker(); if (!settings.obHeatmap) obWorker?.postMessage({ type: 'pause' });
-  startFpWorker(); if (!settings.footprint) fpWorker?.postMessage({ type: 'pause' });
-  startVpWorker(); if (!settings.vpvr) vpWorker?.postMessage({ type: 'pause' });
-  startWorker();
-  frame();
-  resizeObs = new ResizeObserver(() => { rectCache = null; resize(); });
+  if (USE_EMSCRIPTEN_OB_HEATMAP) {
+    startWorker();
+    startObWorker();
+    if (!settings.obHeatmap) worker?.postMessage({ type: 'pauseObHeatmap' });
+  } else {
+    startObWorker();
+    if (!settings.obHeatmap) obWorker?.postMessage({ type: 'pause' });
+    else startObFeed();
+    startWorker();
+  }
+  startFpWorker();
+  if (!settings.footprint) fpWorker?.postMessage({ type: 'pause' });
+  startVpWorker();
+  if (!settings.vpvr) vpWorker?.postMessage({ type: 'pause' });
+  if (!chartBooted) {
+    chartBooted = true;
+    paneRuntime.syncOverlayScripts();
+    rebuildScriptPlotLines();
+  }
+  scheduleFrame();
+  resizeObs = new ResizeObserver(() => {
+    rectCache = null;
+    resize();
+  });
   if (wrapEl.value) resizeObs.observe(wrapEl.value);
   wrapEl.value?.addEventListener('wheel', onWheel, { passive: false });
 }
 function pause() {
-  if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = 0; }
-  // Final teardown: pause workers, terminate the main one (it'll be recreated
-  // on next mount). Layer-workers stay live for activate/deactivate cycles —
-  // they only fully terminate on unmount.
-  obWorker?.postMessage({ type: 'pause' });
+  pauseRenderLoop();
+  stopObFeed();
+  if (USE_EMSCRIPTEN_OB_HEATMAP) worker?.postMessage({ type: 'pauseObHeatmap' });
+  else obWorker?.postMessage({ type: 'pause' });
   fpWorker?.postMessage({ type: 'pause' });
   vpWorker?.postMessage({ type: 'pause' });
-  stopWorker();
+  worker?.postMessage({ type: 'pause' });
   wrapEl.value?.removeEventListener('wheel', onWheel);
-  resizeObs?.disconnect(); resizeObs = null;
+  resizeObs?.disconnect();
+  resizeObs = null;
 }
 
 function terminateAllLayerWorkers() {
-  for (const w of [obWorker, fpWorker, vpWorker]) {
+  stopObFeed();
+  teardownObFeedPort(feedPortsHost);
+  const layerWorkers = USE_EMSCRIPTEN_OB_HEATMAP ? [fpWorker, vpWorker] : [obWorker, fpWorker, vpWorker];
+  for (const w of layerWorkers) {
     if (!w) continue;
     w.postMessage({ type: 'stop' });
-    try { w.terminate(); } catch { /* ignore */ }
+    try {
+      w.terminate();
+    } catch {
+      /* ignore */
+    }
   }
   obWorker = fpWorker = vpWorker = null;
 }
 
-onMounted(() => { start(); });
-onUnmounted(() => { active = false; pause(); terminateAllLayerWorkers(); });
-onActivated(() => { active = true; start(); });
-onDeactivated(() => { active = false; pause(); });
+onMounted(() => {
+  paneRuntime.registerPane();
+  start();
+});
+onUnmounted(() => {
+  active = false;
+  chartBooted = false;
+  releasePaneSettingsSnapshot(props.widget.id);
+  paneRuntime.teardown();
+  pause();
+  stopWorker();
+  terminateAllLayerWorkers();
+});
+onActivated(() => {
+  active = true;
+  chartPaneSetActive(paneRuntime.scopeId, true);
+  start();
+});
+onDeactivated(() => {
+  active = false;
+  chartBooted = false;
+  chartPaneSetActive(paneRuntime.scopeId, false);
+  pause();
+});
 
 defineExpose({ widget: props.widget });
 </script>
 
 <template>
-  <WorkspaceWidget :widget="widget" :title="widgetTitle" :badge="widgetBadge" no-close>
-  <div ref="wrapEl" class="chart-wrap"
-    @mousemove="onMove" @mouseleave="onLeave"
-    @mousedown="onDown" @mouseup="onUp"
-    @dblclick="onDbl">
-    <canvas ref="gridCanvas" class="hm-layer hm-z0"></canvas>
-    <canvas v-show="settings.obHeatmap" ref="obHeatmapCanvas" class="hm-layer hm-z1"></canvas>
-    <canvas ref="mainCanvas" class="hm-layer hm-z2"></canvas>
-    <canvas v-show="settings.vpvr" ref="vpvrCanvas" class="hm-layer hm-z25"></canvas>
-    <canvas v-show="settings.footprint" ref="footprintCanvas" class="hm-layer hm-z3"></canvas>
-    <canvas ref="crossCanvas" class="hm-layer hm-z4"></canvas>
+  <WorkspaceWidget
+    :widget="widget"
+    :title="widgetTitle"
+    :badge="widgetBadge"
+    handle-close
+    @close="onChartClose"
+  >
+    <div
+      ref="wrapEl"
+      class="chart-wrap"
+      @mousemove="onMove"
+      @mouseleave="onLeave"
+      @mousedown="onDown"
+      @mouseup="onUp"
+      @dblclick="onDbl"
+    >
+      <canvas ref="gridCanvas" class="hm-layer hm-z0"></canvas>
+      <canvas v-show="settings.obHeatmap" ref="obHeatmapCanvas" class="hm-layer hm-z1"></canvas>
+      <canvas ref="mainCanvas" class="hm-layer hm-z2"></canvas>
+      <canvas v-show="settings.vpvr" ref="vpvrCanvas" class="hm-layer hm-z25"></canvas>
+      <canvas v-show="settings.footprint" ref="footprintCanvas" class="hm-layer hm-z3"></canvas>
+      <canvas ref="crossCanvas" class="hm-layer hm-z4"></canvas>
 
-    <!-- mmt.gg-style inline OHLC HUD top-left of chart -->
-    <div class="chart-hud">
-      <span class="hud-sym">{{ settings.symbol.toLowerCase() }}</span>
-      <span class="hud-ex">{{ settings.exchange.toLowerCase() }}f</span>
-      <span class="hud-tf">{{ settings.timeframe }}</span>
-      <span class="hud-pair" :class="{ bull: hudBull, bear: !hudBull }">
-        <span class="hud-k">O</span><span class="hud-v">{{ overlay.fmtPrice(hudOpen) }}</span>
-        <span class="hud-k">H</span><span class="hud-v">{{ overlay.fmtPrice(hudHigh) }}</span>
-        <span class="hud-k">L</span><span class="hud-v">{{ overlay.fmtPrice(hudLow) }}</span>
-        <span class="hud-k">C</span><span class="hud-v">{{ overlay.fmtPrice(hudClose) }}</span>
-        <span class="hud-d">{{ (hudDelta >= 0 ? '+' : '') + hudDelta.toFixed(1) }}</span>
-        <span class="hud-d">{{ (hudDeltaPct >= 0 ? '+' : '') + hudDeltaPct.toFixed(2) + '%' }}</span>
-      </span>
-      <span v-if="settings.vwapDaily   && vwapD > 0" class="hud-overlay vd">VWAP D {{ overlay.fmtPrice(vwapD) }}</span>
-      <span v-if="settings.vwapWeekly  && vwapW > 0" class="hud-overlay vw">VWAP W {{ overlay.fmtPrice(vwapW) }}</span>
-      <span v-if="settings.vwapMonthly && vwapM > 0" class="hud-overlay vm">VWAP M {{ overlay.fmtPrice(vwapM) }}</span>
-    </div>
-    <div class="chart-fps" :class="{ good: fps >= 55 }">{{ fps }} FPS</div>
-    <div v-if="liveTagText" class="chart-live">{{ liveTagText }}</div>
+      <!-- mmt.gg-style inline OHLC HUD top-left of chart -->
+      <div class="chart-hud">
+        <span class="hud-sym">{{ settings.symbol.toLowerCase() }}</span>
+        <span class="hud-ex">{{ settings.exchange.toLowerCase() }}f</span>
+        <span class="hud-tf">{{ settings.timeframe }}</span>
+        <span class="hud-pair" :class="{ bull: hudBull, bear: !hudBull }">
+          <span class="hud-k">O</span><span class="hud-v">{{ overlay.fmtPrice(hudOpen) }}</span>
+          <span class="hud-k">H</span><span class="hud-v">{{ overlay.fmtPrice(hudHigh) }}</span>
+          <span class="hud-k">L</span><span class="hud-v">{{ overlay.fmtPrice(hudLow) }}</span>
+          <span class="hud-k">C</span><span class="hud-v">{{ overlay.fmtPrice(hudClose) }}</span>
+          <span class="hud-d">{{ (hudDelta >= 0 ? '+' : '') + hudDelta.toFixed(1) }}</span>
+          <span class="hud-d">{{ (hudDeltaPct >= 0 ? '+' : '') + hudDeltaPct.toFixed(2) + '%' }}</span>
+        </span>
+        <span v-if="settings.vwapDaily && vwapD > 0" class="hud-overlay vd"
+          >VWAP D {{ overlay.fmtPrice(vwapD) }}</span
+        >
+        <span v-if="settings.vwapWeekly && vwapW > 0" class="hud-overlay vw"
+          >VWAP W {{ overlay.fmtPrice(vwapW) }}</span
+        >
+        <span v-if="settings.vwapMonthly && vwapM > 0" class="hud-overlay vm"
+          >VWAP M {{ overlay.fmtPrice(vwapM) }}</span
+        >
+      </div>
+      <div class="chart-fps" :class="{ good: fps >= 55 }">{{ fps }} FPS</div>
+      <div v-if="liveTagText" class="chart-live">{{ liveTagText }}</div>
 
-    <div v-if="fatalError" class="hm-fatal">
-      <div class="hm-fatal-box">
-        <div class="hm-fatal-icon">!</div>
-        <div class="hm-fatal-title">Engine Error</div>
-        <div class="hm-fatal-msg">{{ fatalError }}</div>
-        <div class="hm-fatal-hint">Try refreshing the page or use a browser that supports WebGL2.</div>
+      <div v-if="fatalError" class="hm-fatal">
+        <div class="hm-fatal-box">
+          <div class="hm-fatal-icon">!</div>
+          <div class="hm-fatal-title">Engine Error</div>
+          <div class="hm-fatal-msg">{{ fatalError }}</div>
+          <div class="hm-fatal-hint">Try refreshing the page or use a browser that supports WebGL2.</div>
+        </div>
       </div>
     </div>
-  </div>
   </WorkspaceWidget>
 </template>
 
 <style scoped>
-.chart-wrap{position:absolute;inset:0;background:#06060b;cursor:crosshair;user-select:none;overflow:hidden}
-.hm-layer{position:absolute;top:0;left:0;display:block}
-.hm-z0{z-index:0}.hm-z1{z-index:1}.hm-z2{z-index:2}.hm-z25{z-index:2.5}.hm-z3{z-index:3}.hm-z4{z-index:4}
-
-.chart-hud{
-  position:absolute;top:8px;left:10px;
-  display:flex;align-items:center;flex-wrap:wrap;gap:0 10px;
-  font:11px/1.4 Consolas,"Courier New",monospace;
-  color:#aebcce;letter-spacing:.2px;
-  pointer-events:none;z-index:5;
-  max-width:calc(100% - 100px);user-select:none;
+.chart-wrap {
+  position: absolute;
+  inset: 0;
+  background: #06060b;
+  cursor: crosshair;
+  user-select: none;
+  overflow: hidden;
 }
-.hud-sym{color:#d0dce8;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
-.hud-ex{color:#7a8a9c;text-transform:lowercase}
-.hud-tf{color:#7a8a9c;text-transform:uppercase;font-weight:600}
-.hud-pair{display:inline-flex;gap:6px;align-items:center;color:#3dc985}
-.hud-pair.bear{color:#ef4f60}
-.hud-pair.bull{color:#3dc985}
-.hud-k{color:#5a6878;margin-right:2px;font-weight:600}
-.hud-v{color:inherit;font-variant-numeric:tabular-nums}
-.hud-d{color:inherit;font-variant-numeric:tabular-nums;font-weight:600;margin-left:2px}
-.hud-overlay{font-size:10px;letter-spacing:.2px;font-weight:600}
-.hud-overlay.vd{color:#f0c130}
-.hud-overlay.vw{color:#ef4f8e}
-.hud-overlay.vm{color:#3fd3e4}
+.hm-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+}
+.hm-z0 {
+  z-index: 0;
+}
+.hm-z1 {
+  z-index: 1;
+}
+.hm-z2 {
+  z-index: 2;
+}
+.hm-z25 {
+  z-index: 2.5;
+}
+.hm-z3 {
+  z-index: 3;
+}
+.hm-z4 {
+  z-index: 4;
+}
 
-.chart-fps{position:absolute;top:6px;right:90px;font:600 9.5px Consolas,monospace;color:#ef4f60;letter-spacing:.2px;pointer-events:none;z-index:5}
-.chart-fps.good{color:#3dc985}
-.chart-live{position:absolute;top:6px;right:6px;font:700 9.5px Consolas,monospace;color:#06060b;background:#3dc985;padding:1px 6px;border-radius:3px;letter-spacing:.5px;pointer-events:none;z-index:5}
+.chart-hud {
+  position: absolute;
+  top: 8px;
+  left: 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 10px;
+  font:
+    11px/1.4 Consolas,
+    'Courier New',
+    monospace;
+  color: #aebcce;
+  letter-spacing: 0.2px;
+  pointer-events: none;
+  z-index: 5;
+  max-width: calc(100% - 100px);
+  user-select: none;
+}
+.hud-sym {
+  color: #d0dce8;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.hud-ex {
+  color: #7a8a9c;
+  text-transform: lowercase;
+}
+.hud-tf {
+  color: #7a8a9c;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.hud-pair {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: #3dc985;
+}
+.hud-pair.bear {
+  color: #ef4f60;
+}
+.hud-pair.bull {
+  color: #3dc985;
+}
+.hud-k {
+  color: #5a6878;
+  margin-right: 2px;
+  font-weight: 600;
+}
+.hud-v {
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.hud-d {
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  margin-left: 2px;
+}
+.hud-overlay {
+  font-size: 10px;
+  letter-spacing: 0.2px;
+  font-weight: 600;
+}
+.hud-overlay.vd {
+  color: #f0c130;
+}
+.hud-overlay.vw {
+  color: #ef4f8e;
+}
+.hud-overlay.vm {
+  color: #3fd3e4;
+}
 
-.hm-fatal{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(6,6,11,0.92);z-index:10}
-.hm-fatal-box{text-align:center;max-width:400px;padding:32px 40px;background:#0c0c14;border:1px solid #2a1a1a;border-radius:8px}
-.hm-fatal-icon{font-size:2rem;color:#ef4f60;font-weight:700;margin-bottom:12px;width:48px;height:48px;line-height:48px;border-radius:50%;background:#1a0a0a;display:inline-block}
-.hm-fatal-title{font-size:.9rem;color:#ef4f60;font-weight:700;margin-bottom:8px;letter-spacing:.5px}
-.hm-fatal-msg{font-size:.7rem;color:#a0a8b0;margin-bottom:12px;line-height:1.5;word-break:break-word}
-.hm-fatal-hint{font-size:.6rem;color:#5a6a7a;line-height:1.4}
+.chart-fps {
+  position: absolute;
+  top: 6px;
+  right: 90px;
+  font:
+    600 9.5px Consolas,
+    monospace;
+  color: #ef4f60;
+  letter-spacing: 0.2px;
+  pointer-events: none;
+  z-index: 5;
+}
+.chart-fps.good {
+  color: #3dc985;
+}
+.chart-live {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font:
+    700 9.5px Consolas,
+    monospace;
+  color: #06060b;
+  background: #3dc985;
+  padding: 1px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.hm-fatal {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 6, 11, 0.92);
+  z-index: 10;
+}
+.hm-fatal-box {
+  text-align: center;
+  max-width: 400px;
+  padding: 32px 40px;
+  background: #0c0c14;
+  border: 1px solid #2a1a1a;
+  border-radius: 8px;
+}
+.hm-fatal-icon {
+  font-size: 2rem;
+  color: #ef4f60;
+  font-weight: 700;
+  margin-bottom: 12px;
+  width: 48px;
+  height: 48px;
+  line-height: 48px;
+  border-radius: 50%;
+  background: #1a0a0a;
+  display: inline-block;
+}
+.hm-fatal-title {
+  font-size: 0.9rem;
+  color: #ef4f60;
+  font-weight: 700;
+  margin-bottom: 8px;
+  letter-spacing: 0.5px;
+}
+.hm-fatal-msg {
+  font-size: 0.7rem;
+  color: #a0a8b0;
+  margin-bottom: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.hm-fatal-hint {
+  font-size: 0.6rem;
+  color: #5a6a7a;
+  line-height: 1.4;
+}
 </style>

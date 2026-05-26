@@ -35,7 +35,7 @@ frame_ring_push :: proc "contextless" (
     slot_index := ring.tailIndex % FRAME_RING_CAPACITY
     offset := slot_index * MAX_FRAME_BYTES
     for index in 0..<int(length) {
-        ring.rawBytes[offset + index] = payload[index]
+        ring.rawBytes[offset + u32(index)] = payload[index]
     }
     ring.frameLengths[slot_index] = length
     ring.tailIndex = next_tail

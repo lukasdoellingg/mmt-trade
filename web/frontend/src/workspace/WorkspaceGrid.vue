@@ -15,10 +15,34 @@ const sorted = computed(() => {
 const lazyChart = defineAsyncComponent(() => import('../widgets/ChartWidget.vue'));
 const lazyOrderflow = defineAsyncComponent(() => import('../widgets/OrderFlowLadderWidget.vue'));
 
+const lazyBarStats = defineAsyncComponent(() => import('../widgets/BarStatsWidget.vue'));
+const lazyScriptPane = defineAsyncComponent(() => import('../widgets/ScriptIndicatorPaneWidget.vue'));
+const lazyCoinScanner = defineAsyncComponent(() => import('../widgets/CoinScannerWidget.vue'));
+const lazyFuturesMetric = defineAsyncComponent(() => import('../widgets/FuturesMetricPaneWidget.vue'));
+
 function renderBody(w: WidgetState) {
   const reg = getWidget(w.type);
   if (!reg) return h('div', { class: 'ws-fallback' }, 'Unknown widget: ' + w.type);
-  const Comp = w.type === 'chart' ? lazyChart : lazyOrderflow;
+  let Comp;
+  switch (w.type) {
+    case 'chart':
+      Comp = lazyChart;
+      break;
+    case 'bar-stats':
+      Comp = lazyBarStats;
+      break;
+    case 'script-indicator-pane':
+      Comp = lazyScriptPane;
+      break;
+    case 'coin-scanner':
+      Comp = lazyCoinScanner;
+      break;
+    case 'futures-metric-pane':
+      Comp = lazyFuturesMetric;
+      break;
+    default:
+      Comp = lazyOrderflow;
+  }
   return h(Comp, { widget: w });
 }
 </script>
@@ -30,11 +54,21 @@ function renderBody(w: WidgetState) {
 </template>
 
 <style scoped>
-.ws-grid{
-  position:absolute;inset:0;background:#06060b;contain:layout paint;
+.ws-grid {
+  position: absolute;
+  inset: 0;
+  background: #06060b;
+  contain: layout paint;
 }
-.ws-fallback{
-  display:flex;align-items:center;justify-content:center;
-  width:100%;height:100%;color:#5a6878;font:12px Consolas,monospace;
+.ws-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: #5a6878;
+  font:
+    12px Consolas,
+    monospace;
 }
 </style>

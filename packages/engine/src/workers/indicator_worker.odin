@@ -1,35 +1,56 @@
-// Indicator-computation worker.
-//
-// Runs heavy aggregations off the main thread: CVD, footprint imbalance,
-// VWAP-sigma rolling sums when the visible window is large enough that
-// inline computation drops frames.
+// Indicator compute worker — EMA/VWAP recompute off main thread (MMT-identical role).
 package workers
 
 import "../data"
 import "../layers"
 
-IndicatorWorkerContext :: struct {
-    candleStoreHandle:    ^data.CandleStore,
-    vwapRollingState:     layers.VwapRollingState,
-    cvdLayerState:        ^layers.CvdLayerState,
-    recomputeFromIndex:   i32,
-    recomputeUntilIndex:  i32,
+@(private="file")
+indicator_worker_ctx: IndicatorWorkerContext
+
+@(private="file")
+ema_fast_storage: [data.CHART_RUNTIME_MAX_CANDLES]f64
+@(private="file")
+ema_slow_storage: [data.CHART_RUNTIME_MAX_CANDLES]f64
+@(private="file")
+ema_buffers: layers.EmaBuffers
+@(private="file")
+vwap_state: layers.VwapRollingState
+@(private="file")
+indicator_buffers_ready: bool
+
+@(private)
+indicator_worker_init_buffers :: proc "contextless" () {
+    if indicator_buffers_ready { return }
+    layers.ema_buffers_init(&ema_buffers, &ema_fast_storage[0], &ema_slow_storage[0], data.CHART_RUNTIME_MAX_CANDLES)
+    layers.vwap_rolling_state_init(&vwap_state)
+    indicator_buffers_ready = true
+}
+
+indicator_worker_set_context :: proc "contextless" (ctx: ^IndicatorWorkerContext) {
+    indicator_worker_ctx = ctx^
 }
 
 @(export, link_name="indicator_worker_main")
-indicator_worker_main :: proc "c" (context_ptr: rawptr) {
-    if context_ptr == nil { return }
-    worker_context := cast(^IndicatorWorkerContext) context_ptr
-    recompute_vwap_range(worker_context)
+indicator_worker_main :: proc "c" () {
+    ctx := &indicator_worker_ctx
+    hub := data.chart_runtime_hub()
+    from_index := ctx.recomputeFromIndex
+    until_index := ctx.recomputeUntilIndex
+    if until_index <= from_index {
+        until_index = data.candle_store_count(&hub.candleStore)
+    }
+    if until_index <= from_index { return }
+
+    indicator_worker_init_buffers()
+    layers.ema_recompute_full(&ema_buffers, &hub.candleStore)
+    layers.vwap_seed_until(&vwap_state, &hub.candleStore, until_index - 1)
+
+    ctx.recomputeFromIndex = until_index
+    ctx.recomputeUntilIndex = until_index
+    hub.indicatorDirty = false
 }
 
-@(private)
-recompute_vwap_range :: proc "contextless" (ctx: ^IndicatorWorkerContext) {
-    layers.vwap_rolling_state_init(&ctx.vwapRollingState)
-    layers.vwap_seed_until(&ctx.vwapRollingState, ctx.candleStoreHandle, ctx.recomputeFromIndex)
-    for candle_index := ctx.recomputeFromIndex;
-        candle_index < ctx.recomputeUntilIndex;
-        candle_index += 1 {
-        _, _, _ = layers.vwap_rolling_advance(&ctx.vwapRollingState, ctx.candleStoreHandle, candle_index)
-    }
+IndicatorWorkerContext :: struct {
+    recomputeFromIndex:   i32,
+    recomputeUntilIndex:  i32,
 }

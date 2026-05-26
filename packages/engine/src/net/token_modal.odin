@@ -42,3 +42,15 @@ mmt_session_token_set :: proc "contextless" (
 mmt_session_token_is_set :: #force_inline proc "contextless" (token: ^MmtSessionToken) -> bool {
     return token.storedLength > 0
 }
+
+@(private="file")
+session_token_singleton: MmtSessionToken
+
+mmt_session_token_global :: proc "contextless" () -> ^MmtSessionToken {
+    return &session_token_singleton
+}
+
+mmt_session_token_as_string :: proc "contextless" (token: ^MmtSessionToken) -> string {
+    if token.storedLength == 0 { return "" }
+    return string(token.storageBytes[:token.storedLength])
+}

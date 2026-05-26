@@ -12,15 +12,15 @@ const coin = computed(() => (props.symbol || 'BTC/USDT').replace(/\/.*/, ''));
 const loading = ref(true);
 
 const TF_OPTS = [
-  { label: '1m',  range: '1d',  interval: '1m'  },
-  { label: '5m',  range: '5d',  interval: '5m'  },
-  { label: '15m', range: '5d',  interval: '15m' },
+  { label: '1m', range: '1d', interval: '1m' },
+  { label: '5m', range: '5d', interval: '5m' },
+  { label: '15m', range: '5d', interval: '15m' },
   { label: '30m', range: '1mo', interval: '30m' },
-  { label: '1h',  range: '1mo', interval: '1h'  },
-  { label: '4h',  range: '6mo', interval: '1d'  },
-  { label: '1D',  range: '1y',  interval: '1d'  },
-  { label: '1W',  range: '5y',  interval: '1wk' },
-  { label: '1M',  range: 'max', interval: '1mo' },
+  { label: '1h', range: '1mo', interval: '1h' },
+  { label: '4h', range: '6mo', interval: '1d' },
+  { label: '1D', range: '1y', interval: '1d' },
+  { label: '1W', range: '5y', interval: '1wk' },
+  { label: '1M', range: 'max', interval: '1mo' },
 ];
 
 const activeTf = ref(TF_OPTS[6]);
@@ -39,7 +39,11 @@ async function loadCmeHistory(signal) {
     const tf = activeTf.value;
     const res = await fetchTradFiCmeHistory(props.symbol, tf.range, tf.interval, signal);
     cmeHistory.value = res.data || [];
-  } catch (e) { if (e.name !== 'AbortError') { /* silent */ } }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      /* silent */
+    }
+  }
 }
 
 async function loadCmeBasis(signal) {
@@ -47,14 +51,22 @@ async function loadCmeBasis(signal) {
     const tf = activeTf.value;
     const res = await fetchTradFiChart('BTC=F', tf.range, tf.interval, signal);
     cmeBasisHistory.value = res.data || [];
-  } catch (e) { if (e.name !== 'AbortError') { /* silent */ } }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      /* silent */
+    }
+  }
 }
 
 async function loadEtfFlows(signal) {
   try {
     const res = await fetchEtfFlows(signal);
     etfData.value = { rows: res.rows || [], holdings: res.holdings || {} };
-  } catch (e) { if (e.name !== 'AbortError') { /* silent */ } }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      /* silent */
+    }
+  }
 }
 
 async function loadAll() {
@@ -63,12 +75,10 @@ async function loadAll() {
   const { signal } = abortCtrl;
   loading.value = true;
   try {
-    await Promise.allSettled([
-      loadCmeHistory(signal),
-      loadCmeBasis(signal),
-      loadEtfFlows(signal),
-    ]);
-  } catch { /* silent */ }
+    await Promise.allSettled([loadCmeHistory(signal), loadCmeBasis(signal), loadEtfFlows(signal)]);
+  } catch {
+    /* silent */
+  }
   if (!signal.aborted) loading.value = false;
 }
 
@@ -80,8 +90,14 @@ function startTimer() {
   refreshTimer = setInterval(loadAll, 120_000);
 }
 function stopTimer() {
-  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
-  if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+  if (abortCtrl) {
+    abortCtrl.abort();
+    abortCtrl = null;
+  }
 }
 
 onMounted(startTimer);
@@ -108,7 +124,9 @@ const xDt = computed(() => {
 function yDollarAxis() {
   return {
     labels: {
-      formatter() { return '$' + compactFmt.format(this.value); },
+      formatter() {
+        return '$' + compactFmt.format(this.value);
+      },
       style: { color: '#5a6a7a', fontSize: '9px' },
     },
     gridLineColor: '#14141e',
@@ -121,8 +139,15 @@ const yPctAxis = {
 };
 
 const areaFill = {
-  fillColor: { linearGradient: { x1: 0, y1: 0, x2: 0, y2: 1 }, stops: [[0, 'rgba(56,97,251,0.35)'], [1, 'rgba(56,97,251,0.02)']] },
-  lineWidth: 1.5, color: '#3861fb',
+  fillColor: {
+    linearGradient: { x1: 0, y1: 0, x2: 0, y2: 1 },
+    stops: [
+      [0, 'rgba(56,97,251,0.35)'],
+      [1, 'rgba(56,97,251,0.02)'],
+    ],
+  },
+  lineWidth: 1.5,
+  color: '#3861fb',
 };
 
 const candleOpts = {
@@ -140,10 +165,14 @@ const chartCmeFutOi = computed(() => ({
   xAxis: xDt.value,
   yAxis: yDollarAxis(),
   plotOptions: { area: areaFill },
-  series: cmeHistory.value.length ? [{
-    name: `${coin.value} CME Futures Open Interest`,
-    data: cmeHistory.value.map(d => [d.ts, Math.round(d.close * 5)]),
-  }] : [],
+  series: cmeHistory.value.length
+    ? [
+        {
+          name: `${coin.value} CME Futures Open Interest`,
+          data: cmeHistory.value.map((d) => [d.ts, Math.round(d.close * 5)]),
+        },
+      ]
+    : [],
 }));
 
 const chartCmeFutVol = computed(() => ({
@@ -151,10 +180,14 @@ const chartCmeFutVol = computed(() => ({
   xAxis: xDt.value,
   yAxis: { ...yDollarAxis(), min: 0 },
   plotOptions: { column: { borderWidth: 0, color: '#3861fb', pointPadding: 0, groupPadding: 0.05 } },
-  series: cmeHistory.value.length ? [{
-    name: `${coin.value} CME Futures Volume`,
-    data: cmeHistory.value.map(d => [d.ts, Math.round(d.volume * d.close)]),
-  }] : [],
+  series: cmeHistory.value.length
+    ? [
+        {
+          name: `${coin.value} CME Futures Volume`,
+          data: cmeHistory.value.map((d) => [d.ts, Math.round(d.volume * d.close)]),
+        },
+      ]
+    : [],
 }));
 
 const chartCmeBasis = computed(() => {
@@ -166,11 +199,13 @@ const chartCmeBasis = computed(() => {
       xAxis: xDt.value,
       yAxis: yDollarAxis(),
       plotOptions: { candlestick: candleOpts },
-      series: [{
-        name: `${coin.value} CME Futures`,
-        type: 'candlestick',
-        data: cmeBasisHistory.value.map(d => [d.ts, d.open, d.high, d.low, d.close]),
-      }],
+      series: [
+        {
+          name: `${coin.value} CME Futures`,
+          type: 'candlestick',
+          data: cmeBasisHistory.value.map((d) => [d.ts, d.open, d.high, d.low, d.close]),
+        },
+      ],
     };
   }
 
@@ -197,10 +232,14 @@ const chartCmeOptOi = computed(() => ({
   xAxis: xDt.value,
   yAxis: yDollarAxis(),
   plotOptions: { area: areaFill },
-  series: cmeHistory.value.length ? [{
-    name: `${coin.value} CME Options Open Interest`,
-    data: cmeHistory.value.map(d => [d.ts, Math.round(d.close * 2.5)]),
-  }] : [],
+  series: cmeHistory.value.length
+    ? [
+        {
+          name: `${coin.value} CME Options Open Interest`,
+          data: cmeHistory.value.map((d) => [d.ts, Math.round(d.close * 2.5)]),
+        },
+      ]
+    : [],
 }));
 
 const chartCmeOptVol = computed(() => ({
@@ -208,10 +247,14 @@ const chartCmeOptVol = computed(() => ({
   xAxis: xDt.value,
   yAxis: { ...yDollarAxis(), min: 0 },
   plotOptions: { column: { borderWidth: 0, color: '#3861fb', pointPadding: 0, groupPadding: 0.05 } },
-  series: cmeHistory.value.length ? [{
-    name: `${coin.value} CME Options Volume`,
-    data: cmeHistory.value.map(d => [d.ts, Math.round(d.volume * d.close * 0.3)]),
-  }] : [],
+  series: cmeHistory.value.length
+    ? [
+        {
+          name: `${coin.value} CME Options Volume`,
+          data: cmeHistory.value.map((d) => [d.ts, Math.round(d.volume * d.close * 0.3)]),
+        },
+      ]
+    : [],
 }));
 
 const etfTableRows = computed(() => {
@@ -242,19 +285,55 @@ function flowColor(v) {
   <div class="cme">
     <div class="top-bar">
       <div class="mode-group">
-        <button class="mode-btn" :class="{ active: chartMode === 'area' }" @click="chartMode = 'area'" title="Area">
-          <svg width="14" height="14" viewBox="0 0 14 14"><path d="M1 12 L4 6 L7 8 L10 3 L13 5 L13 12 Z" fill="currentColor" opacity=".3" stroke="currentColor" stroke-width="1.2"/></svg>
+        <button
+          class="mode-btn"
+          :class="{ active: chartMode === 'area' }"
+          title="Area"
+          @click="chartMode = 'area'"
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14">
+            <path
+              d="M1 12 L4 6 L7 8 L10 3 L13 5 L13 12 Z"
+              fill="currentColor"
+              opacity=".3"
+              stroke="currentColor"
+              stroke-width="1.2"
+            />
+          </svg>
         </button>
-        <button class="mode-btn" :class="{ active: chartMode === 'candle' }" @click="chartMode = 'candle'" title="Candlestick">
-          <svg width="14" height="14" viewBox="0 0 14 14"><line x1="4" y1="1" x2="4" y2="13" stroke="currentColor" stroke-width="1"/><rect x="2" y="4" width="4" height="5" fill="currentColor" rx=".5"/><line x1="10" y1="2" x2="10" y2="12" stroke="currentColor" stroke-width="1"/><rect x="8" y="5" width="4" height="4" fill="none" stroke="currentColor" stroke-width="1" rx=".5"/></svg>
+        <button
+          class="mode-btn"
+          :class="{ active: chartMode === 'candle' }"
+          title="Candlestick"
+          @click="chartMode = 'candle'"
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14">
+            <line x1="4" y1="1" x2="4" y2="13" stroke="currentColor" stroke-width="1" />
+            <rect x="2" y="4" width="4" height="5" fill="currentColor" rx=".5" />
+            <line x1="10" y1="2" x2="10" y2="12" stroke="currentColor" stroke-width="1" />
+            <rect
+              x="8"
+              y="5"
+              width="4"
+              height="4"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1"
+              rx=".5"
+            />
+          </svg>
         </button>
       </div>
       <div class="tf-group">
         <button
-          v-for="tf in TF_OPTS" :key="tf.label"
-          class="tf-btn" :class="{ active: activeTf.label === tf.label }"
+          v-for="tf in TF_OPTS"
+          :key="tf.label"
+          class="tf-btn"
+          :class="{ active: activeTf.label === tf.label }"
           @click="onTfChange(tf)"
-        >{{ tf.label }}</button>
+        >
+          {{ tf.label }}
+        </button>
       </div>
     </div>
 
@@ -267,7 +346,10 @@ function flowColor(v) {
         <HC :options="chartCmeFutVol" />
       </DashCard>
 
-      <DashCard :title="isCandle ? `${coin} CME Futures` : `${coin} CME Annualized Basis`" :loading="!cmeBasisHistory.length && loading">
+      <DashCard
+        :title="isCandle ? `${coin} CME Futures` : `${coin} CME Annualized Basis`"
+        :loading="!cmeBasisHistory.length && loading"
+      >
         <HC :options="chartCmeBasis" />
       </DashCard>
 
@@ -284,7 +366,7 @@ function flowColor(v) {
           <span class="etf-title">BTC ETF Daily Flow (US$m)</span>
         </div>
         <div class="etf-table-wrap">
-          <table class="etf-table" v-if="etfTableRows.length">
+          <table v-if="etfTableRows.length" class="etf-table">
             <thead>
               <tr>
                 <th class="th-date">Date</th>
@@ -343,10 +425,17 @@ function flowColor(v) {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background .15s, color .15s;
+  transition:
+    background 0.15s,
+    color 0.15s;
 }
-.mode-btn:hover { color: #a0b0c0; }
-.mode-btn.active { background: #2a2a3a; color: #d0e0f0; }
+.mode-btn:hover {
+  color: #a0b0c0;
+}
+.mode-btn.active {
+  background: #2a2a3a;
+  color: #d0e0f0;
+}
 
 .tf-group {
   display: flex;
@@ -360,14 +449,18 @@ function flowColor(v) {
   border: none;
   color: #5a6a7a;
   font: inherit;
-  font-size: .55rem;
+  font-size: 0.55rem;
   padding: 3px 6px;
   cursor: pointer;
   text-transform: uppercase;
-  letter-spacing: .3px;
-  transition: background .15s, color .15s;
+  letter-spacing: 0.3px;
+  transition:
+    background 0.15s,
+    color 0.15s;
 }
-.tf-btn:hover { color: #a0b0c0; }
+.tf-btn:hover {
+  color: #a0b0c0;
+}
 .tf-btn.active {
   background: #2a2a3a;
   color: #d0e0f0;
@@ -401,10 +494,10 @@ function flowColor(v) {
   height: 26px;
 }
 .etf-title {
-  font-size: .6rem;
+  font-size: 0.6rem;
   color: #7a8a9a;
   text-transform: uppercase;
-  letter-spacing: .4px;
+  letter-spacing: 0.4px;
   white-space: nowrap;
 }
 
@@ -415,17 +508,28 @@ function flowColor(v) {
   scrollbar-width: thin;
   scrollbar-color: #2a3a2a #0f0f14;
 }
-.etf-table-wrap::-webkit-scrollbar { width: 4px; }
-.etf-table-wrap::-webkit-scrollbar-track { background: #0f0f14; }
-.etf-table-wrap::-webkit-scrollbar-thumb { background: #2a3a2a; border-radius: 3px; }
+.etf-table-wrap::-webkit-scrollbar {
+  width: 4px;
+}
+.etf-table-wrap::-webkit-scrollbar-track {
+  background: #0f0f14;
+}
+.etf-table-wrap::-webkit-scrollbar-thumb {
+  background: #2a3a2a;
+  border-radius: 3px;
+}
 
 .etf-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: .58rem;
+  font-size: 0.58rem;
   font-variant-numeric: tabular-nums;
 }
-.etf-table thead { position: sticky; top: 0; z-index: 1; }
+.etf-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
 .etf-table th {
   background: #0f0f14;
   color: #5a6a7a;
@@ -433,11 +537,13 @@ function flowColor(v) {
   text-align: right;
   padding: 3px 5px;
   border-bottom: 1px solid #1a1a24;
-  font-size: .5rem;
+  font-size: 0.5rem;
   text-transform: uppercase;
   white-space: nowrap;
 }
-.th-date { text-align: left !important; }
+.th-date {
+  text-align: left !important;
+}
 .etf-table td {
   padding: 2px 5px;
   text-align: right;
@@ -454,6 +560,6 @@ function flowColor(v) {
   justify-content: center;
   height: 100%;
   color: #5a7a5a;
-  font-size: .7rem;
+  font-size: 0.7rem;
 }
 </style>
