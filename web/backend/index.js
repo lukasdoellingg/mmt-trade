@@ -76,6 +76,7 @@ app.use('/api/', restLimiter);
 app.use(['/api/orderbook', '/api/orderbooks'], orderBookLimiter);
 
 const PORT = process.env.PORT || 3001;
+const HOST = process.env.HOST || undefined;
 const REQUEST_TIMEOUT_MS = 30000;
 const ROUTE_TIMEOUT_MS = 120000;
 const CACHE_TTL_MS = 60_000;
@@ -693,8 +694,8 @@ function releaseHeatmapUpstream(upstreamKey, upstream, { useAgg }) {
 
 // --------------- Graceful shutdown & server start ---------------
 
-const server = app.listen(PORT, () => {
-  logInfo('backend_listening', { port: PORT });
+const server = app.listen(PORT, HOST, () => {
+  logInfo('backend_listening', { port: PORT, host: HOST ?? 'all' });
 });
 
 const webSocketGate = createWebSocketSecurityGate(allowedCorsOrigins);

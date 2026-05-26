@@ -8,7 +8,8 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -n backend,frontend -c cyan,green \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "predev": "node scripts/dev-preflight.mjs",
+    "dev": "concurrently -n backend,frontend -c cyan,green \"npm run dev:backend\" \"wait-on -t 60000 http-get://127.0.0.1:3001/health && npm run dev:frontend\"",
     "dev:backend": "npm --workspace web/backend run dev",
     "dev:frontend": "npm --workspace web/frontend run dev",
     "build": "npm --workspace web/frontend run build",
@@ -40,7 +41,8 @@
     "eslint-plugin-vue": "^9.27.0",
     "prettier": "^3.3.0",
     "typescript": "^5.9.3",
-    "vue-eslint-parser": "^9.4.0"
+    "vue-eslint-parser": "^9.4.0",
+    "wait-on": "^8.0.5"
   },
   "engines": {
     "node": ">=20.0.0"

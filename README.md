@@ -116,6 +116,20 @@ npm run dev
 
 Öffne **http://localhost:5173** im Browser. Der Vite Dev-Server nutzt automatisch den API-Proxy.
 
+`npm run dev` wartet bis `http://127.0.0.1:3001/health` antwortet, bevor Vite startet (vermeidet `ECONNREFUSED`-Proxy-Fehler).
+
+### Windows (Dev-Checkliste)
+
+1. **Node.js 20+** — `node -v`
+2. **Dependencies** — im Repo-Root: `npm run install:all`
+3. **Health-Check** — nach Backend-Start im Browser: [http://127.0.0.1:3001/health](http://127.0.0.1:3001/health) → `{"ok":true,...}`
+4. **Firewall** — Node.js für private Netzwerke erlauben (Windows-Firewall-Popup beim ersten Start)
+5. **Port 3001 frei** — PowerShell: `netstat -ano | findstr :3001`
+6. **WASM** — `web\frontend\public\engine.wasm` muss existieren (Preflight prüft das bei `npm run dev`)
+7. **Fallback (zwei Terminals)** — Backend zuerst, dann Frontend; danach Hard-Refresh (Ctrl+Shift+R)
+
+Der Vite-Proxy nutzt `127.0.0.1:3001` statt `localhost` (Windows IPv6/`::1`-Probleme).
+
 ### Einzeln starten
 
 ```bash
