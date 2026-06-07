@@ -80,7 +80,7 @@ function ensureWorker(): Worker {
     if (!handlers) return;
     for (const h of handlers) h(msg.streamKey, msg.buffer);
   };
-  worker.postMessage({ type: 'init', port: mc.port2 }, [mc.port2]);
+  worker.postMessage({ type: 'init', port: mc.port2, control: true }, [mc.port2]);
   for (const port of feedPorts) {
     worker.postMessage({ type: 'init', port }, [port]);
   }
@@ -216,7 +216,13 @@ export function updateScriptInputs(runtimeId: string, overrides: Record<string, 
 
 export function destroyScriptRuntime(runtimeId: string): void {
   ensureWorker();
+  runtimeRefCount.delete(`runtime:${runtimeId}`);
   worker!.postMessage({ type: 'unsubscribe_runtime', runtimeId });
+}
+
+export function cancelPendingRuntime(createToken: number): void {
+  ensureWorker();
+  worker!.postMessage({ type: 'cancel_runtime', createToken });
 }
 
 export function createScriptRuntime(

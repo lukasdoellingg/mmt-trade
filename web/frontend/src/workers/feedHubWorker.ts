@@ -18,9 +18,17 @@ interface PortEntry {
 
 const ports = new Map<number, PortEntry>();
 let nextPortId = 1;
+let mainControlPortId: number | null = null;
 let socket: WebSocket | null = null;
 const streamRefCount = new Map<SubKey, number>();
 const streamKeyBySpec = new Map<string, SubKey>();
+
+interface PendingRuntimeSpec {
+  scriptId: string;
+  context: Record<string, unknown>;
+  createToken: number;
+}
+const pendingRuntimes = new Map<number, PendingRuntimeSpec>();
 
 const RECONNECT_BASE_MS = 1500;
 const RECONNECT_MAX_MS = 120_000;
@@ -150,12 +158,33 @@ function fanoutRuntimePlot(streamKey: string, payload: ArrayBuffer): void {
   if (parsed.roles && parsed.roles.length >= parsed.count) {
     msg.roles = parsed.roles.subarray(0, parsed.count);
   }
-  broadcast(msg);
+  if (mainControlPortId != null) {
+    const entry = ports.get(mainControlPortId);
+    if (entry) {
+      try {
+        entry.port.postMessage(msg);
+      } catch {
+        /* port closed */
+      }
+    }
+  }
+}
+
+function replayPendingRuntimes(): void {
+  for (const spec of pendingRuntimes.values()) {
+    sendJson({
+      op: 'create_runtime',
+      scriptId: spec.scriptId,
+      createToken: spec.createToken,
+      context: spec.context,
+    });
+  }
 }
 
 function resubscribeAll(): void {
   for (const [key, count] of streamRefCount) {
     if (count <= 0) continue;
+    if (key.startsWith('runtime:')) continue;
     const specKey = [...streamKeyBySpec.entries()].find(([, v]) => v === key)?.[0];
     if (specKey) {
       try {
@@ -173,6 +202,7 @@ function resubscribeAll(): void {
       }
     }
   }
+  replayPendingRuntimes();
 }
 
 function openSocket(): void {
@@ -259,12 +289,13 @@ function detachPort(id: number): void {
 }
 
 type WorkerInMsg =
-  | { type: 'init'; port: MessagePort; portId?: number }
+  | { type: 'init'; port: MessagePort; portId?: number; control?: boolean }
   | { type: 'detach'; portId: number }
   | { type: 'subscribe_spec'; spec: Record<string, unknown>; streamKey: string }
   | { type: 'unsubscribe_spec'; streamKey: string }
   | { type: 'subscribe_runtime'; runtimeId: string }
   | { type: 'unsubscribe_runtime'; runtimeId: string }
+  | { type: 'cancel_runtime'; createToken: number }
   | { type: 'update_inputs'; runtime_id: string; overrides: Record<string, unknown> }
   | { type: 'create_runtime'; scriptId: string; context?: Record<string, unknown>; createToken?: number }
   | { type: 'ping' };
@@ -278,6 +309,7 @@ self.onmessage = (ev: MessageEvent<WorkerInMsg>) => {
   if (msg.type === 'init') {
     const id = typeof msg.portId === 'number' ? msg.portId : nextPortId++;
     if (id >= nextPortId) nextPortId = id + 1;
+    if (msg.control) mainControlPortId = id;
     registerPort(id, msg.port);
     return;
   }
@@ -309,12 +341,22 @@ self.onmessage = (ev: MessageEvent<WorkerInMsg>) => {
     return;
   }
   if (msg.type === 'create_runtime') {
+    const token = msg.createToken ?? 1;
+    pendingRuntimes.set(token, {
+      scriptId: msg.scriptId,
+      context: msg.context ?? {},
+      createToken: token,
+    });
     sendJson({
       op: 'create_runtime',
       scriptId: msg.scriptId,
-      createToken: msg.createToken,
+      createToken: token,
       context: msg.context ?? {},
     });
+    return;
+  }
+  if (msg.type === 'cancel_runtime') {
+    pendingRuntimes.delete(msg.createToken);
     return;
   }
   if (msg.type === 'ping') {

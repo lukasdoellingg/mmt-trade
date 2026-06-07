@@ -5,7 +5,7 @@
 import { computed, ref, shallowRef } from 'vue';
 import {
   createScriptRuntime,
-  destroyScriptRuntime,
+  cancelPendingRuntime,
   onSessionJson,
   onSessionStatus,
   onScriptPlotUpdate,
@@ -18,6 +18,10 @@ import { USE_SESSION_MUX } from '../config/featureFlags';
 import type { ScriptIndicatorId } from '../indicators/indicatorCatalog';
 import { symKeyFromSymbol } from '../constants';
 import { chartPaneFindMountByRuntimeId, chartPaneUpsertMount } from '../app/chartObjectTree';
+import { ScriptRuntimeAttachment } from './scriptRuntimeAttachment';
+import { getLease } from '../workspace/runtimeLockRegistry';
+
+const attachmentRegistry = new Map<string, ScriptRuntimeAttachment>();
 
 export type ScriptRuntimeMount = {
   /** Scoped key `${scopeId}:${localId}`. */
@@ -28,6 +32,8 @@ export type ScriptRuntimeMount = {
   templateId: string;
   createToken: number;
   streamKey: string;
+  symbol: string;
+  timeframe: string;
   status: 'idle' | 'mounting' | 'live' | 'error';
   errorMessage?: string;
   pane: 'overlay' | 'window';
@@ -126,6 +132,32 @@ function ensureRuntimeSubscription(runtimeId: string): void {
   }
 }
 
+function getLeaseForRuntime(runtimeId: string) {
+  for (const att of attachmentRegistry.values()) {
+    if (att.runtimeId === runtimeId && att.anchorId) {
+      return getLease(att.anchorId);
+    }
+  }
+  return undefined;
+}
+
+function ensureAttachment(mount: ScriptRuntimeMount, anchorId?: string): ScriptRuntimeAttachment {
+  let att = attachmentRegistry.get(mount.key);
+  if (!att) {
+    att = new ScriptRuntimeAttachment({
+      scopeId: mount.scopeId,
+      localId: mount.localId,
+      templateId: mount.templateId as ScriptIndicatorId,
+      createToken: mount.createToken,
+      pane: mount.pane,
+      parentChartWidgetId: mount.parentChartWidgetId,
+      anchorId,
+    });
+    attachmentRegistry.set(mount.key, att);
+  }
+  return att;
+}
+
 function promoteMountLive(
   next: Map<string, ScriptRuntimeMount>,
   id: string,
@@ -134,6 +166,8 @@ function promoteMountLive(
 ): void {
   clearMountTimeout(mount.createToken);
   next.set(id, { ...mount, runtimeId, status: 'live' });
+  const att = ensureAttachment(mount);
+  att.promoteLive(runtimeId);
   ensureRuntimeSubscription(runtimeId);
   const found = chartPaneFindMountByRuntimeId(runtimeId);
   if (!found) {
@@ -159,6 +193,15 @@ function releaseRuntimeSubscription(runtimeId: string): void {
 }
 
 function applyPlotToMount(runtimeId: string, prices: Float64Array, roles?: Uint8Array): void {
+  const lease = getLeaseForRuntime(runtimeId);
+  if (lease?.state === 'suspended') return;
+
+  for (const att of attachmentRegistry.values()) {
+    if (att.runtimeId === runtimeId || (att.state === 'pending' && att.createToken === parseCreateTokenFromRuntimeId(runtimeId))) {
+      att.onPlot(prices, roles);
+    }
+  }
+
   const next = new Map(mounts.value);
   let changed = false;
   const tokenFromId = parseCreateTokenFromRuntimeId(runtimeId);
@@ -190,13 +233,35 @@ function syncRuntimeCreated(runtimeId: string, createToken: number): void {
   mounts.value = next;
 }
 
+function replayPendingMounts(): void {
+  if (!USE_SESSION_MUX) return;
+  for (const mount of mounts.value.values()) {
+    if (mount.status !== 'mounting' && mount.status !== 'error') continue;
+    if (!mount.createToken) continue;
+    scheduleMountTimeout(mount.createToken);
+    createScriptRuntime(
+      mount.templateId,
+      {
+        symbol: symKeyFromSymbol(mount.symbol),
+        tf: mount.timeframe,
+        bucket_group: 6,
+        createToken: mount.createToken,
+      },
+      mount.createToken,
+    );
+  }
+}
+
 function ensureListeners(): void {
   if (!USE_SESSION_MUX) return;
   if (!statusListenerInstalled) {
     statusListenerInstalled = true;
     onSessionStatus((status) => {
       sessionConnectionStatus.value = status;
-      if (status === 'live') schedulePendingMountTimeouts();
+      if (status === 'live') {
+        schedulePendingMountTimeouts();
+        replayPendingMounts();
+      }
     });
   }
   if (!jsonListenerInstalled) {
@@ -271,6 +336,8 @@ export function useScriptRuntime() {
           templateId,
           createToken: 0,
           streamKey: '',
+          symbol,
+          timeframe,
           status: 'error',
           errorMessage: 'Script session disabled in build (set VITE_USE_SESSION_MUX=1)',
           pane,
@@ -291,32 +358,32 @@ export function useScriptRuntime() {
         templateId,
         createToken,
         streamKey: `runtime:pending:${templateId}:${symKeyFromSymbol(symbol)}:${timeframeToSec(timeframe)}`,
+        symbol,
+        timeframe,
         status: 'mounting',
         pane,
         parentChartWidgetId: pane === 'window' ? parentChartWidgetId : undefined,
         plotPrices: null,
       });
       mounts.value = next;
+      const mountRecord = next.get(key)!;
+      ensureAttachment(mountRecord).mount(symbol, timeframe, bucketGroup);
       scheduleMountTimeout(createToken);
-      createScriptRuntime(
-        templateId,
-        {
-          symbol: symKeyFromSymbol(symbol),
-          tf: timeframe,
-          bucket_group: bucketGroup,
-          createToken,
-        },
-        createToken,
-      );
       return key;
     },
 
     unmount(key: string): void {
       const mount = mounts.value.get(key);
       if (mount) clearMountTimeout(mount.createToken);
+      const att = attachmentRegistry.get(key);
+      if (att) {
+        att.release();
+        attachmentRegistry.delete(key);
+      }
       if (mount?.runtimeId) {
         releaseRuntimeSubscription(mount.runtimeId);
-        destroyScriptRuntime(mount.runtimeId);
+      } else if (mount?.status === 'mounting' && mount.createToken) {
+        cancelPendingRuntime(mount.createToken);
       }
       if (!mounts.value.has(key)) return;
       const next = new Map(mounts.value);

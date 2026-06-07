@@ -1,7 +1,13 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, inject, type Ref } from 'vue';
 import type { WidgetState } from './types';
 import { CELL_PX, useWorkspace } from './useWorkspace';
+import {
+  beginTabDrag,
+  endTabDrag,
+  onHeaderHover,
+  clearTabHover,
+} from './tabDragCoordinator';
 
 const props = defineProps<{
   widget: WidgetState;
@@ -14,19 +20,39 @@ const props = defineProps<{
   handleClose?: boolean;
   /** Hide all drag/resize affordances (locked widget). */
   locked?: boolean;
+  /** Fill parent (tab stack body) instead of absolute grid position. */
+  embedded?: boolean;
+  /** Viewport size in cells for edge-dock snap. */
+  viewportCells?: { w: number; h: number };
 }>();
 
 const emit = defineEmits<{ gear: []; link: []; close: [] }>();
 
-const { removeWidget, updateRect, bringToFront } = useWorkspace();
+const { removeWidget, updateRect, bringToFront, createTabGroup, dockWidgetToEdge } = useWorkspace();
 
-const style = computed(() => ({
-  left: props.widget.rect.x * CELL_PX + 'px',
-  top: props.widget.rect.y * CELL_PX + 'px',
-  width: props.widget.rect.w * CELL_PX + 'px',
-  height: props.widget.rect.h * CELL_PX + 'px',
-  zIndex: String(props.widget.z),
-}));
+const splitLayoutActive = inject<Ref<boolean>>('splitLayoutActive', computed(() => false));
+const globalLayoutLocked = inject<Ref<boolean>>('layoutLocked', computed(() => false));
+
+const isEmbedded = computed(() => props.embedded || splitLayoutActive.value);
+const isLocked = computed(() => props.locked || globalLayoutLocked.value);
+
+const style = computed(() => {
+  if (isEmbedded.value) {
+    return {
+      position: 'relative' as const,
+      width: '100%',
+      height: '100%',
+      zIndex: '1',
+    };
+  }
+  return {
+    left: props.widget.rect.x * CELL_PX + 'px',
+    top: props.widget.rect.y * CELL_PX + 'px',
+    width: props.widget.rect.w * CELL_PX + 'px',
+    height: props.widget.rect.h * CELL_PX + 'px',
+    zIndex: String(props.widget.z),
+  };
+});
 
 interface DragState {
   pointerId: number;
@@ -41,10 +67,11 @@ const MIN_W = 12; // 96 px
 const MIN_H = 10; // 80 px
 
 function onDragDown(ev: PointerEvent) {
-  if (props.locked) return;
+  if (isLocked.value || isEmbedded.value) return;
   if ((ev.target as HTMLElement).closest('[data-no-drag]')) return;
   ev.preventDefault();
   (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
+  beginTabDrag(props.widget.id);
   drag = {
     pointerId: ev.pointerId,
     startX: ev.clientX,
@@ -55,8 +82,19 @@ function onDragDown(ev: PointerEvent) {
   bringToFront(props.widget.id);
 }
 
+function onHeaderEnter(): void {
+  if (!drag || drag.mode !== 'move') return;
+  onHeaderHover(props.widget.id, (ids) => {
+    createTabGroup(ids);
+  });
+}
+
+function onHeaderLeave(): void {
+  clearTabHover();
+}
+
 function onResizeDown(mode: DragState['mode'], ev: PointerEvent) {
-  if (props.locked) return;
+  if (isLocked.value || isEmbedded.value) return;
   ev.preventDefault();
   ev.stopPropagation();
   (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
@@ -131,8 +169,26 @@ function onPointerMove(ev: PointerEvent) {
   updateRect(props.widget.id, { x, y, w, h });
 }
 
+function tryEdgeDock(): void {
+  if (!props.viewportCells || splitLayoutActive.value) return;
+  const r = props.widget.rect;
+  const cx = r.x + r.w / 2;
+  const cy = r.y + r.h / 2;
+  const vw = props.viewportCells.w;
+  const vh = props.viewportCells.h;
+  const threshold = 2;
+  if (cx < threshold) dockWidgetToEdge(props.widget.anchorId, 'left', vw, vh);
+  else if (cx > vw - threshold) dockWidgetToEdge(props.widget.anchorId, 'right', vw, vh);
+  else if (cy < threshold) dockWidgetToEdge(props.widget.anchorId, 'top', vw, vh);
+  else if (cy > vh - threshold) dockWidgetToEdge(props.widget.anchorId, 'bottom', vw, vh);
+}
+
 function onPointerUp(ev: PointerEvent) {
-  if (drag && ev.pointerId === drag.pointerId) drag = null;
+  if (drag && ev.pointerId === drag.pointerId) {
+    if (drag.mode === 'move') tryEdgeDock();
+    drag = null;
+    endTabDrag();
+  }
 }
 
 function onClose() {
@@ -143,13 +199,16 @@ function onClose() {
 </script>
 
 <template>
-  <div class="ws-widget" :style="style" @pointerdown="bringToFront(widget.id)">
+  <div class="ws-widget" :class="{ embedded: isEmbedded }" :style="style" @pointerdown="bringToFront(widget.id)">
     <header
+      v-if="!isEmbedded"
       class="ws-head"
       @pointerdown="onDragDown"
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
       @pointercancel="onPointerUp"
+      @pointerenter="onHeaderEnter"
+      @pointerleave="onHeaderLeave"
     >
       <span class="ws-title">{{ title }}</span>
       <span v-if="badge" class="ws-badge">{{ badge }}</span>
@@ -164,7 +223,7 @@ function onClose() {
     <div class="ws-body">
       <slot />
     </div>
-    <template v-if="!locked">
+    <template v-if="!isLocked && !isEmbedded">
       <span
         class="ws-edge ws-e-n"
         @pointerdown="(e) => onResizeDown('n', e)"
@@ -228,6 +287,12 @@ function onClose() {
   box-shadow: 0 1px 0 #000;
   overflow: hidden;
   contain: layout paint;
+}
+.ws-widget.embedded {
+  position: relative;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 .ws-head {
   display: flex;

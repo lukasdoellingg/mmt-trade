@@ -14,7 +14,8 @@ test('closeChartWidget cascades script panes and unregisters tree', () => {
   assert.match(workspace, /script-indicator-pane/);
   assert.match(workspace, /parentChartWidgetId/);
   assert.match(workspace, /chartPaneUnregister/);
-  assert.match(workspace, /activeChartId\.value = remaining/);
+  assert.match(workspace, /setFocusAnchor/);
+  assert.match(workspace, /releaseLease/);
 });
 
 test('chart widget exposes close button via WorkspaceWidget', () => {

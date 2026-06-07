@@ -126,6 +126,13 @@ export function useChartPaneRuntime(widget: WidgetState, settings: PaneChartSett
     if (!USE_SESSION_MUX) return;
     if (!store.widgets.some((w) => w.id === scopeId)) return;
     chartPaneRefreshContext(scopeId, settings.symbol, settings.exchange, settings.timeframe);
+    let mounts = chartPaneSyncScriptMounts(scopeId, widgetProps() as { runtimes?: ChartRuntimeAttachment[] });
+    mounts = mounts.map((m) => ({
+      ...m,
+      runtimeId: undefined,
+      status: 'mounting' as const,
+    }));
+    persistMounts(mounts);
     scriptRuntime.remountAll(scriptActiveFlags(), settings.symbol, settings.timeframe, scopeId);
     syncOverlayScripts();
   }

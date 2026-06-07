@@ -13,7 +13,12 @@ import { computed, onBeforeUnmount, ref } from 'vue';
 import ChartSymbolBar from './ChartSymbolBar.vue';
 import { TIMEFRAMES, useChartSettings } from '../../chart/chartSettings';
 import { initialChartWidgetProps, useActivePaneSettings } from '../../chart/chartPaneSettings';
-import { useWorkspace, CELL_PX, switchLayoutSlot, activeLayoutSlot } from '../../workspace/useWorkspace';
+import { useWorkspace, CELL_PX, switchLayoutSlot, activeLayoutSlot, layoutLocked } from '../../workspace/useWorkspace';
+import {
+  copyLayoutToClipboard,
+  listLayoutCatalog,
+  readLayoutFromClipboard,
+} from '../../workspace/layoutCatalog';
 import { listWidgets } from '../../workspace/registry';
 import ChartObjectTreePanel from './ChartObjectTreePanel.vue';
 import { spawnIndicatorWindow } from '../../chart/useChartPaneRuntime';
@@ -27,7 +32,8 @@ const props = withDefaults(defineProps<{ mode?: 'heatmap' | 'futures' }>(), { mo
 
 const shell = useChartSettings();
 const pane = useActivePaneSettings();
-const { addWidget, findFreeSlot, store } = useWorkspace();
+const { addWidget, findFreeSlot, store, exportCurrentLayout, importLayout, saveCurrentToCatalog, splitFocusedPane, resetHeatmapDefaultSplit, loadLayoutFromCatalog } =
+  useWorkspace();
 
 const isFutures = computed(() => props.mode === 'futures');
 
@@ -36,18 +42,22 @@ const orderflowOpen = ref(false);
 const addWidgetOpen = ref(false);
 const addMetricOpen = ref(false);
 const treeOpen = ref(false);
+const layoutOpen = ref(false);
+const layoutStatus = ref('');
 
 const indicatorsBtn = ref<HTMLElement | null>(null);
 const orderflowBtn = ref<HTMLElement | null>(null);
 const addWidgetBtn = ref<HTMLElement | null>(null);
 const addMetricBtn = ref<HTMLElement | null>(null);
 const treeBtn = ref<HTMLElement | null>(null);
+const layoutBtn = ref<HTMLElement | null>(null);
 
 const indicatorsPos = useDropdownAnchor(indicatorsOpen, indicatorsBtn, 'left');
 const orderflowPos = useDropdownAnchor(orderflowOpen, orderflowBtn, 'right');
 const addWidgetPos = useDropdownAnchor(addWidgetOpen, addWidgetBtn, 'right');
 const addMetricPos = useDropdownAnchor(addMetricOpen, addMetricBtn, 'right');
 const treePos = useDropdownAnchor(treeOpen, treeBtn, 'right');
+const layoutPos = useDropdownAnchor(layoutOpen, layoutBtn, 'right');
 
 const FUTURES_METRICS = Object.keys(FUTURES_METRIC_LABELS) as FuturesMetricKind[];
 
@@ -57,6 +67,7 @@ function closeAllMenus() {
   addWidgetOpen.value = false;
   addMetricOpen.value = false;
   treeOpen.value = false;
+  layoutOpen.value = false;
 }
 // Bubble phase, not capture — that way `@click.stop` on menu rows works and
 // only an actual outside-click closes the menus.
@@ -65,6 +76,8 @@ onBeforeUnmount(() => window.removeEventListener('click', closeAllMenus));
 
 const widgetTypes = computed(() => listWidgets());
 const hasChart = computed(() => store.widgets.some((w) => w.type === 'chart'));
+const catalogCount = computed(() => listLayoutCatalog().length);
+const catalogEntries = computed(() => listLayoutCatalog());
 
 function onPickTf(tf: string) {
   pane.timeframe = tf;
@@ -207,6 +220,68 @@ function onLayoutSlot(slot: 1 | 2 | 3 | 4) {
   switchLayoutSlot(slot);
 }
 
+async function onExportLayout() {
+  const ok = await copyLayoutToClipboard(exportCurrentLayout());
+  layoutStatus.value = ok ? 'Copied to clipboard' : 'Copy failed';
+}
+
+async function onImportLayout() {
+  const profile = isFutures.value ? 'futures' : 'heatmap';
+  const doc = await readLayoutFromClipboard(profile);
+  if (!doc) {
+    layoutStatus.value = 'Invalid layout JSON';
+    return;
+  }
+  importLayout(doc);
+  layoutStatus.value = 'Layout imported';
+  layoutOpen.value = false;
+}
+
+function onSaveLayoutCatalog() {
+  const name = window.prompt('Layout name', exportCurrentLayout().meta.name);
+  if (!name) return;
+  saveCurrentToCatalog(name);
+  layoutStatus.value = `Saved "${name}"`;
+}
+
+function onSplitH() {
+  splitFocusedPane('h');
+  layoutStatus.value = 'Split horizontal';
+}
+
+function onSplitV() {
+  splitFocusedPane('v');
+  layoutStatus.value = 'Split vertical';
+}
+
+function onResetDefaultSplit() {
+  const v = viewportCells();
+  resetHeatmapDefaultSplit(v.w, v.h);
+  layoutStatus.value = 'Reset to default split';
+  layoutOpen.value = false;
+}
+
+function onLoadCatalogEntry(entryId: string) {
+  if (loadLayoutFromCatalog(entryId)) {
+    layoutStatus.value = 'Layout loaded';
+    layoutOpen.value = false;
+  } else {
+    layoutStatus.value = 'Load failed';
+  }
+}
+
+function toggleLayoutLock() {
+  layoutLocked.value = !layoutLocked.value;
+  layoutStatus.value = layoutLocked.value ? 'Layout locked' : 'Layout unlocked';
+}
+
+function onLayoutClick(e: Event) {
+  e.stopPropagation();
+  closeAllMenus();
+  layoutOpen.value = true;
+  layoutStatus.value = '';
+}
+
 function onTreeClick(e: Event) {
   e.stopPropagation();
   const wasOpen = treeOpen.value;
@@ -265,6 +340,10 @@ function onAddWidgetClick(e: Event) {
         {{ slot }}
       </button>
     </div>
+
+    <button ref="layoutBtn" class="slot-btn" title="Layout export/import" @click="onLayoutClick">
+      Layout
+    </button>
 
     <button
       v-show="hasChart && !isFutures"
@@ -463,6 +542,29 @@ function onAddWidgetClick(e: Event) {
     <div v-if="treeOpen" class="dd-float" :style="treePos" @click.stop>
       <ChartObjectTreePanel @close="treeOpen = false" />
     </div>
+    <div v-if="layoutOpen" class="dd-float dd-menu" :style="layoutPos" @click.stop>
+      <button class="dd-row" @click="onSplitH">Split horizontal</button>
+      <button class="dd-row" @click="onSplitV">Split vertical</button>
+      <button v-if="!isFutures" class="dd-row" @click="onResetDefaultSplit">Reset default split</button>
+      <button class="dd-row" @click="toggleLayoutLock">
+        {{ layoutLocked ? 'Unlock layout' : 'Lock layout' }}
+      </button>
+      <div v-if="catalogEntries.length" class="dd-divider">Catalog</div>
+      <button
+        v-for="entry in catalogEntries"
+        :key="entry.id"
+        class="dd-row"
+        @click="onLoadCatalogEntry(entry.id)"
+      >
+        Load: {{ entry.name }}
+      </button>
+      <div class="dd-divider"></div>
+      <button class="dd-row" @click="onExportLayout">Export to clipboard</button>
+      <button class="dd-row" @click="onImportLayout">Import from clipboard</button>
+      <button class="dd-row" @click="onSaveLayoutCatalog">Save to catalog</button>
+      <div v-if="layoutStatus" class="dd-hint">{{ layoutStatus }}</div>
+      <div v-if="catalogCount" class="dd-hint">Catalog: {{ catalogCount }} saved</div>
+    </div>
   </Teleport>
 </template>
 
@@ -641,6 +743,14 @@ function onAddWidgetClick(e: Event) {
   color: #6a7a8a;
   letter-spacing: 0.3px;
   text-transform: uppercase;
+}
+.dd-divider {
+  height: 1px;
+  margin: 4px 8px;
+  background: #1a1a26;
+  font-size: 9px;
+  color: #5a6878;
+  padding: 4px 2px 2px;
 }
 .layout-slots {
   display: flex;
