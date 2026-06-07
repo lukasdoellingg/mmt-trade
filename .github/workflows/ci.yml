@@ -4,8 +4,24 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_dispatch:
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      engine: ${{ steps.filter.outputs.engine }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            engine:
+              - 'packages/engine/**'
+              - 'scripts/build-wasm.sh'
+              - 'odin/**'
+
   quality:
     runs-on: ubuntu-latest
     steps:
@@ -26,36 +42,29 @@ jobs:
       - run: npm run test:regression
       - run: node scripts/verify-wasm-artifacts.mjs
 
-  engine-smoke:
+  engine:
     runs-on: ubuntu-latest
+    needs: changes
+    if: >-
+      needs.changes.outputs.engine == 'true' ||
+      github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Install Odin
+      - uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release: nightly
+      - uses: mymindstorm/setup-emsdk@v14
+      - name: Verify toolchain
         run: |
-          curl -fsSL https://odin-lang.org/install.sh | bash -s -- nightly
-          echo "$HOME/.odin/bin" >> $GITHUB_PATH
+          odin version
+          emcc --version
+      - name: Install vendored Sokol/cimgui
+        run: bash packages/engine/scripts/install-vendor.sh
       - name: Engine smoke build
         run: npm run build:engine:smoke
-        env:
-          SKIP_EMSCRIPTEN: '1'
-
-  engine-chart:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - name: Install Odin
-        run: |
-          curl -fsSL https://odin-lang.org/install.sh | bash -s -- nightly
-          echo "$HOME/.odin/bin" >> $GITHUB_PATH
-      - name: Install Emscripten
-        run: |
-          git clone https://github.com/emscripten-core/emsdk.git packages/engine/.emsdk
-          cd packages/engine/.emsdk && ./emsdk install latest && ./emsdk activate latest
       - name: Chart runtime build
         run: npm run build:engine:chart

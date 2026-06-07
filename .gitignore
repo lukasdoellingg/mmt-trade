@@ -74,10 +74,12 @@ captures/
 docs/captures/*.bin
 docs/captures/*.har
 
-# ── WASM artifacts (generated, not source) ────────────────────────
-web/frontend/public/engine.wasm
+# ── WASM artifacts ────────────────────────────────────────────────
+# Required CI artifacts — commit after Odin rebuild (see packages/engine/build.sh).
+# !web/frontend/public/engine.wasm
+# !web/frontend/public/chart_runtime.wasm
+# Generated glue / terminal bundles stay local-only:
 web/frontend/public/terminal.wasm
-web/frontend/public/chart_runtime.wasm
 web/frontend/public/chart_runtime.js
 packages/shell/public/engine.wasm
 packages/shell/public/terminal.wasm

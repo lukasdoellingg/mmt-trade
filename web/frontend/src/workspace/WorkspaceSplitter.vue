@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue';
+import { onBeforeUnmount } from 'vue';
 
 const props = defineProps<{
   axis: 'h' | 'v';

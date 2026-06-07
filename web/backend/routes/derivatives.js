@@ -11,7 +11,6 @@ export function registerDerivativesRoutes(app, deps) {
     cached,
     setCache,
     safeSend,
-    safeError,
     FUTURES_EXCHANGES,
     futSym,
     withRetry,
