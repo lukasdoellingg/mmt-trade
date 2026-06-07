@@ -1,7 +1,7 @@
 /**
  * Layout split tree — build, mutate, and dock helpers (LCM Phase B).
  */
-import type { RegionNode, WidgetRect, WidgetState, WorkspaceProfile } from './types';
+import type { RegionNode, WidgetState, WorkspaceProfile } from './types';
 import { newAnchorId } from './layoutDocument';
 
 export type DockEdge = 'left' | 'right' | 'top' | 'bottom';
@@ -74,7 +74,7 @@ export function splitLeaf(
   root: RegionNode | null,
   anchorId: string,
   axis: 'h' | 'v',
-  profile: WorkspaceProfile,
+  _profile: WorkspaceProfile,
 ): { root: RegionNode; newAnchorId: string } | null {
   if (!root) return null;
   const leaf = findLeafByAnchor(root, anchorId);

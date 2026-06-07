@@ -25,7 +25,6 @@ import { chartPaneUnregister } from '../app/chartObjectTree';
 import { snapshotPaneSettings } from '../chart/chartPaneSettings';
 import {
   applyTabGroupVisibility,
-  documentToWorkspaceLayout,
   ensureWidgetAnchor,
   layoutMetaFor,
   LAYOUT_DOC_VERSION,
@@ -40,7 +39,6 @@ import {
   resolveFocusedChartWidgetId,
   resumeSlot,
   setFocusAnchor,
-  slotKeyFor,
   suspendSlot,
 } from './runtimeLockRegistry';
 import { saveLayoutToCatalog, getCatalogEntry } from './layoutCatalog';
