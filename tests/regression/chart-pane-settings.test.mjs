@@ -17,9 +17,11 @@ test('per-chart pane settings module exists', () => {
   assert.doesNotMatch(paneSettings, /reactive\(\s*\n?\s*new Proxy/);
 });
 
-test('workspace tracks active chart and layout v4', () => {
+test('workspace tracks focus anchor and layout v5', () => {
   assert.match(workspace, /activeChartId/);
-  assert.match(workspace, /LAYOUT_VERSION = 4/);
+  assert.match(workspace, /LAYOUT_DOC_VERSION/);
+  assert.match(workspace, /focusAnchorId/);
+  assert.match(workspace, /mmt-layout-heatmap-v5/);
 });
 
 test('chartSettings is shell-only', () => {

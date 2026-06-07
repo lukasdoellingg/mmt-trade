@@ -19,7 +19,13 @@ import {
   type ScriptPlotOverlayLine,
 } from '../chart/ChartOverlayRenderer';
 import { useChartPaneRuntime } from '../chart/useChartPaneRuntime';
-import { chartPaneSetActive } from '../app/chartObjectTree';
+import {
+  chartPaneSetActive,
+  chartPaneActivateLease,
+  chartPaneRegisterLease,
+  chartPaneReleaseLease,
+  chartPaneSuspendLease,
+} from '../app/chartObjectTree';
 import type { ScriptIndicatorId } from '../indicators/scriptIndicatorIds';
 import { buildKeyLevelPlotLines } from '../indicators/keyLevelsDisplay';
 import { SCRIPT_INDICATOR_COLORS, SCRIPT_INDICATOR_LABELS } from '../indicators/indicatorCatalog';
@@ -1357,7 +1363,9 @@ function terminateAllLayerWorkers() {
 
 onMounted(() => {
   paneRuntime.registerPane();
+  chartPaneRegisterLease(props.widget.id, 'chart');
   start();
+  chartPaneActivateLease(props.widget.id);
 });
 onUnmounted(() => {
   active = false;
@@ -1367,16 +1375,19 @@ onUnmounted(() => {
   pause();
   stopWorker();
   terminateAllLayerWorkers();
+  chartPaneReleaseLease(props.widget.id);
 });
 onActivated(() => {
   active = true;
   chartPaneSetActive(paneRuntime.scopeId, true);
+  chartPaneActivateLease(props.widget.id);
   start();
 });
 onDeactivated(() => {
   active = false;
   chartBooted = false;
   chartPaneSetActive(paneRuntime.scopeId, false);
+  chartPaneSuspendLease(props.widget.id);
   pause();
 });
 
@@ -1388,6 +1399,7 @@ defineExpose({ widget: props.widget });
     :widget="widget"
     :title="widgetTitle"
     :badge="widgetBadge"
+    :embedded="!!widget.tabGroupId"
     handle-close
     @close="onChartClose"
   >

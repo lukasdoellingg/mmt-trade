@@ -14,6 +14,12 @@ test('scriptRuntime scopes session errors by createToken', () => {
   assert.match(scriptRuntime, /if \(matched\) mounts\.value = next/);
 });
 
+test('scriptRuntime unmount does not double-destroy runtime', () => {
+  assert.doesNotMatch(scriptRuntime, /destroyScriptRuntime/);
+  assert.match(scriptRuntime, /releaseRuntimeSubscription/);
+  assert.match(scriptRuntime, /cancelPendingRuntime/);
+});
+
 test('wsSession echoes createToken on create_runtime errors', () => {
   assert.match(wsSession, /createToken.*runtime limit|runtime limit.*createToken/s);
   assert.match(wsSession, /create_runtime failed', createToken/);

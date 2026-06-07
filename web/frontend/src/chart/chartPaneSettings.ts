@@ -4,6 +4,11 @@
  */
 import { DEFAULT_SYMBOL } from '../core/defaults';
 import { useWorkspace } from '../workspace/useWorkspace';
+import {
+  focusAnchorId,
+  resolveFocusedChartWidgetId,
+  resolveWidgetIdForAnchor,
+} from '../workspace/runtimeLockRegistry';
 import type { ChartSettings } from './chartSettings';
 
 const LEGACY_STORAGE_KEY = 'mmt-chart-settings-v1';
@@ -120,10 +125,9 @@ export function initialChartWidgetProps(): Record<string, unknown> {
 }
 
 function resolveActiveChartId(
-  store: { widgets: { id: string; type: string }[] },
-  activeChartId: { value: string | null },
+  store: { widgets: { id: string; type: string; anchorId: string }[] },
 ): string | null {
-  return activeChartId.value ?? store.widgets.find((w) => w.type === 'chart')?.id ?? null;
+  return resolveFocusedChartWidgetId(store.widgets);
 }
 
 function paneProxy(
@@ -164,18 +168,24 @@ export function usePaneSettings(widgetId: string): PaneChartSettings {
   return paneProxy(() => widgetId, store, updateProps);
 }
 
-/** Active chart pane for ChartTopBar / tool rail (last focused chart). */
+/** Active chart pane for ChartTopBar / tool rail (focused anchor). */
 export function useActivePaneSettings(): PaneChartSettings {
-  const { store, activeChartId, updateProps } = useWorkspace();
-  return paneProxy(() => resolveActiveChartId(store, activeChartId), store, updateProps);
+  const { store, updateProps } = useWorkspace();
+  return paneProxy(() => resolveActiveChartId(store), store, updateProps);
 }
 
 /** Read-only snapshot of active pane (for computed titles). */
 export function activePaneSnapshot(): PaneChartSettings | null {
-  const { store, activeChartId } = useWorkspace();
-  const id = resolveActiveChartId(store, activeChartId);
+  const { store } = useWorkspace();
+  const id = resolveActiveChartId(store);
   if (!id) return null;
   const w = store.widgets.find((x) => x.id === id);
   if (!w || w.type !== 'chart') return null;
   return pickPaneProps((w.props ?? {}) as Record<string, unknown>);
+}
+
+/** Resolve widget id from focus anchor (LCM). */
+export function activeChartWidgetId(): string | null {
+  const { store } = useWorkspace();
+  return resolveWidgetIdForAnchor(focusAnchorId.value, store.widgets);
 }

@@ -9,6 +9,7 @@ import ChartTopBar from '../../components/chart/ChartTopBar.vue';
 import ChartToolRail from '../../components/chart/ChartToolRail.vue';
 import WorkspaceGrid from '../../workspace/WorkspaceGrid.vue';
 import { useWorkspace, setWorkspaceProfile, CELL_PX } from '../../workspace/useWorkspace';
+import { buildHeatmapDefaultTree } from '../../workspace/layoutTree';
 import '../../workspace/widgets';
 import { useChartSettings } from '../../chart/chartSettings';
 import { initialChartWidgetProps, useActivePaneSettings } from '../../chart/chartPaneSettings';
@@ -20,7 +21,7 @@ setWorkspaceProfile('heatmap');
 
 const shell = useChartSettings();
 const pane = useActivePaneSettings();
-const { store, ensureDefaults, fitToViewport, resetWorkspace } = useWorkspace();
+const { store, ensureDefaults, fitToViewport, resetWorkspace, setLayoutRoot } = useWorkspace();
 
 if (props.symbol) pane.symbol = props.symbol;
 if (props.exchange) pane.exchange = props.exchange;
@@ -50,6 +51,8 @@ function bootDefaults(): void {
       props: { aggregate: DEFAULT_PERP_AGGREGATE_CSV },
     },
   ]);
+  const tree = buildHeatmapDefaultTree(store.widgets, { w: wCells, h: hCells });
+  if (tree) setLayoutRoot(tree);
   for (const w of store.widgets) {
     if (w.type === 'chart') {
       const p = (w.props ?? {}) as Record<string, unknown>;

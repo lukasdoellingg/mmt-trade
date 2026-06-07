@@ -3,7 +3,16 @@
  * ChartRuntimeHost owns wire I/O; this module tracks mount metadata per widget.
  */
 import { ref } from 'vue';
-import { activeChartId } from '../workspace/useWorkspace';
+import {
+  registerLease,
+  releaseLease,
+  resumeLease,
+  setFocusAnchor,
+  setLeaseState,
+  slotKeyFor,
+  suspendLease,
+} from '../workspace/runtimeLockRegistry';
+import { activeWorkspaceProfile, activeLayoutSlot, useWorkspace } from '../workspace/useWorkspace';
 import type {
   ChartRuntimeAttachment,
   ChartWidgetRuntimeProps,
@@ -69,7 +78,42 @@ export function chartPaneSetActive(widgetId: string, active: boolean): void {
     node.isActive = active;
     bumpTreeRevision();
   }
-  if (active) activeChartId.value = widgetId;
+  if (active) {
+    const anchorId = resolveAnchorForWidget(widgetId);
+    if (anchorId) setFocusAnchor(anchorId);
+  }
+}
+
+function resolveAnchorForWidget(widgetId: string): string | null {
+  const { store } = useWorkspace();
+  return store.widgets.find((w) => w.id === widgetId)?.anchorId ?? null;
+}
+
+export function chartPaneRegisterLease(widgetId: string, widgetType: 'chart'): void {
+  const anchorId = resolveAnchorForWidget(widgetId);
+  if (!anchorId) return;
+  const slotKey = slotKeyFor(activeWorkspaceProfile.value, activeLayoutSlot.value);
+  registerLease(anchorId, widgetId, widgetType, slotKey);
+  setLeaseState(anchorId, 'booting');
+}
+
+export function chartPaneActivateLease(widgetId: string): void {
+  const anchorId = resolveAnchorForWidget(widgetId);
+  if (!anchorId) return;
+  setLeaseState(anchorId, 'active');
+  resumeLease(anchorId);
+}
+
+export function chartPaneSuspendLease(widgetId: string): void {
+  const anchorId = resolveAnchorForWidget(widgetId);
+  if (!anchorId) return;
+  suspendLease(anchorId);
+}
+
+export function chartPaneReleaseLease(widgetId: string): void {
+  const anchorId = resolveAnchorForWidget(widgetId);
+  if (!anchorId) return;
+  releaseLease(anchorId);
 }
 
 export function chartPaneSyncScriptMounts(

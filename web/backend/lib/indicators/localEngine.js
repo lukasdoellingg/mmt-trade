@@ -1,5 +1,5 @@
 /**
- * Local script-indicator engine — replaces MMT create_runtime / remote plot server.
+ * Local script-indicator engine — shared compute per scriptId:symbol:tf, unique wire runtime_id per attachment.
  */
 import { RUNTIME_LIMITS, SCRIPT_IDS } from './runtimeLimits.js';
 import { timeframeToSec } from '../streamProtocol.js';
@@ -12,27 +12,36 @@ import { computeKeyLevelsDetailed } from './keyLevels.js';
 /** @type {Map<string, { at: number, klines: object[] }>} */
 const klineFetchCache = new Map();
 
-/** @type {Map<string, RuntimeSlot>} */
-const slots = new Map();
+/** @type {Map<string, ComputeSlot>} */
+const computeSlots = new Map();
+
+/** @type {Map<string, { computeKey: string, createToken: number }>} */
+const runtimeToWire = new Map();
 
 /**
- * @typedef {object} RuntimeSlot
+ * @typedef {object} WireSlot
  * @property {string} runtimeId
+ * @property {number} createToken
+ * @property {Set<object>} clients
+ */
+
+/**
+ * @typedef {object} ComputeSlot
+ * @property {string} computeKey
  * @property {string} scriptId
  * @property {string} symbol
  * @property {string} tf
  * @property {number} timeframeSec
- * @property {number} createToken
  * @property {Record<string, unknown>} inputs
  * @property {number[]} levels
- * @property {Set<object>} clients
+ * @property {Map<string, WireSlot>} wires
  * @property {ReturnType<typeof setInterval> | null} timer
  * @property {string} [obBookAggregate]
  * @property {boolean} [obBookHeld]
  */
 
-function slotKey(scriptId, symbol, tf, createToken) {
-  return `${scriptId}:${symbol}:${tf}:${createToken}`;
+function computeKey(scriptId, symbol, tf) {
+  return `${scriptId}:${symbol}:${tf}`;
 }
 
 function binanceInterval(tf) {
@@ -112,7 +121,19 @@ function buildPlotPayload(runtimeId, prices, roles) {
   return encodeRuntimePlotPayload(runtimeId, prices);
 }
 
+function fanoutPlot(slot, mux) {
+  const roles =
+    slot.scriptId === 'key-levels'
+      ? keyLevelCache.get(cacheKey(slot.symbol, slot.tf))?.roles
+      : undefined;
+  for (const wire of slot.wires.values()) {
+    const payload = buildPlotPayload(wire.runtimeId, slot.levels, roles);
+    mux.broadcastEnvelope(wire.runtimeId, payload);
+  }
+}
+
 /**
+ * @param {ComputeSlot} slot
  * @param {import('../infoStream/multiplexer.js').InfoStreamMultiplexer} mux
  */
 function schedulePush(slot, mux) {
@@ -123,11 +144,26 @@ function schedulePush(slot, mux) {
       : RUNTIME_LIMITS.pushIntervalMs;
   slot.timer = setInterval(async () => {
     slot.levels = await computeLevels(slot.scriptId, slot.symbol, slot.tf, slot.inputs);
-    const roles =
-      slot.scriptId === 'key-levels' ? keyLevelCache.get(cacheKey(slot.symbol, slot.tf))?.roles : undefined;
-    const payload = buildPlotPayload(slot.runtimeId, slot.levels, roles);
-    mux.broadcastEnvelope(slot.runtimeId, payload);
+    fanoutPlot(slot, mux);
   }, pushMs);
+}
+
+function teardownCompute(key, slot) {
+  if (slot.timer) clearInterval(slot.timer);
+  if (slot.obBookHeld && slot.obBookAggregate) {
+    releaseObBook(slot.symbol, slot.obBookAggregate);
+  }
+  for (const wire of slot.wires.values()) {
+    runtimeToWire.delete(wire.runtimeId);
+  }
+  computeSlots.delete(key);
+}
+
+function wireHasClients(slot) {
+  for (const wire of slot.wires.values()) {
+    if (wire.clients.size > 0) return true;
+  }
+  return false;
 }
 
 /**
@@ -141,43 +177,50 @@ function schedulePush(slot, mux) {
  */
 export async function mountLocalRuntime(client, scriptId, symbol, tf, inputs, createToken, mux) {
   if (!SCRIPT_IDS.has(scriptId)) return null;
-  if (slots.size >= RUNTIME_LIMITS.maxRuntimesGlobal) return null;
+  if (computeSlots.size >= RUNTIME_LIMITS.maxRuntimesGlobal) return null;
 
   const sym = (symbol || 'BTCUSDT').toUpperCase();
-  const timeframeSec = typeof inputs?.timeframe === 'number' ? inputs.timeframe : timeframeToSec(tf || '1h');
-  const key = slotKey(scriptId, sym, tf || '1h', createToken);
+  const tfNorm = tf || '1h';
+  const timeframeSec = typeof inputs?.timeframe === 'number' ? inputs.timeframe : timeframeToSec(tfNorm);
+  const key = computeKey(scriptId, sym, tfNorm);
   const runtimeId = `local:${scriptId}:${sym}:${timeframeSec}:${createToken}`;
 
-  let slot = slots.get(key);
+  let slot = computeSlots.get(key);
   if (!slot) {
-    const levels = await computeLevels(scriptId, sym, tf || '1h', inputs);
+    const levels = await computeLevels(scriptId, sym, tfNorm, inputs);
     const obAgg =
       scriptId === 'aggregated-ob-imbalance'
         ? parseAggregateExchanges(inputs?.aggregate ?? 'binance,bybit').join(',')
         : undefined;
     if (obAgg) acquireObBook(sym, obAgg);
     slot = {
-      runtimeId,
+      computeKey: key,
       scriptId,
       symbol: sym,
-      tf: tf || '1h',
+      tf: tfNorm,
       timeframeSec,
-      createToken,
       inputs: { ...inputs },
       levels,
-      clients: new Set(),
+      wires: new Map(),
       timer: null,
       obBookAggregate: obAgg,
       obBookHeld: !!obAgg,
     };
-    slots.set(key, slot);
+    computeSlots.set(key, slot);
     schedulePush(slot, mux);
   }
 
-  slot.clients.add(client);
+  let wire = slot.wires.get(runtimeId);
+  if (!wire) {
+    wire = { runtimeId, createToken, clients: new Set() };
+    slot.wires.set(runtimeId, wire);
+    runtimeToWire.set(runtimeId, { computeKey: key, createToken });
+  }
+
+  wire.clients.add(client);
   mux.subscribeRuntime(client, runtimeId);
 
-  const roles = scriptId === 'key-levels' ? keyLevelCache.get(cacheKey(sym, tf || '1h'))?.roles : undefined;
+  const roles = scriptId === 'key-levels' ? keyLevelCache.get(cacheKey(sym, tfNorm))?.roles : undefined;
   const payload = buildPlotPayload(runtimeId, slot.levels, roles);
   mux.broadcastEnvelope(runtimeId, payload);
 
@@ -185,37 +228,48 @@ export async function mountLocalRuntime(client, scriptId, symbol, tf, inputs, cr
 }
 
 export function updateLocalRuntime(runtimeId, overrides) {
-  for (const slot of slots.values()) {
-    if (slot.runtimeId !== runtimeId) continue;
-    slot.inputs = { ...slot.inputs, ...overrides };
-    return true;
-  }
-  return false;
+  const ref = runtimeToWire.get(runtimeId);
+  if (!ref) return false;
+  const slot = computeSlots.get(ref.computeKey);
+  if (!slot) return false;
+  slot.inputs = { ...slot.inputs, ...overrides };
+  return true;
 }
 
-function teardownSlot(key, slot) {
-  if (slot.timer) clearInterval(slot.timer);
-  if (slot.obBookHeld && slot.obBookAggregate) {
-    releaseObBook(slot.symbol, slot.obBookAggregate);
-  }
-  slots.delete(key);
-}
-
-/** Drop one runtime for a client (or entire slot when last client leaves). */
+/** Drop one runtime for a client (or entire compute slot when last client leaves). */
 export function destroyLocalRuntime(client, runtimeId) {
-  for (const [key, slot] of slots) {
-    if (slot.runtimeId !== runtimeId) continue;
-    slot.clients.delete(client);
-    if (slot.clients.size === 0) teardownSlot(key, slot);
-    return true;
+  const ref = runtimeToWire.get(runtimeId);
+  if (!ref) return false;
+  const slot = computeSlots.get(ref.computeKey);
+  if (!slot) return false;
+
+  const wire = slot.wires.get(runtimeId);
+  if (!wire) return false;
+
+  wire.clients.delete(client);
+  if (wire.clients.size === 0) {
+    slot.wires.delete(runtimeId);
+    runtimeToWire.delete(runtimeId);
   }
-  return false;
+
+  if (!wireHasClients(slot)) {
+    teardownCompute(ref.computeKey, slot);
+  }
+  return true;
 }
 
 export function releaseRuntimeForClient(client) {
-  for (const [key, slot] of slots) {
-    slot.clients.delete(client);
-    if (slot.clients.size === 0) teardownSlot(key, slot);
+  for (const [key, slot] of computeSlots) {
+    for (const wire of slot.wires.values()) {
+      wire.clients.delete(client);
+      if (wire.clients.size === 0) {
+        runtimeToWire.delete(wire.runtimeId);
+        slot.wires.delete(wire.runtimeId);
+      }
+    }
+    if (!wireHasClients(slot)) {
+      teardownCompute(key, slot);
+    }
   }
 }
 

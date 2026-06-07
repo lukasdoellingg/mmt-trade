@@ -1,21 +1,57 @@
 /**
- * Workspace layout composable. Backs reactive widget state with a localStorage
- * snapshot so layouts survive reloads. Supports heatmap and futures profiles
- * with separate storage keys; futures adds four layout slots.
+ * Workspace layout composable — LCM v5 with anchor IDs, tab groups, layout catalog.
  */
-import { ref, shallowReactive, watch } from 'vue';
-import type { WidgetRect, WidgetState, WidgetType, WorkspaceLayout, WorkspaceProfile } from './types';
+import { computed, ref, shallowReactive, watch } from 'vue';
+import type {
+  LayoutDocument,
+  RegionNode,
+  TabGroupState,
+  WidgetRect,
+  WidgetState,
+  WidgetType,
+  WorkspaceProfile,
+} from './types';
+import {
+  buildHeatmapDefaultTree,
+  inferSplitFromWidgets,
+  dockToEdge,
+  mutateSplitRatio,
+  splitLeaf,
+  type DockEdge,
+} from './layoutTree';
 import { getWidget } from './registry';
 import { busEmit } from './widgetBus';
 import { chartPaneUnregister } from '../app/chartObjectTree';
 import { snapshotPaneSettings } from '../chart/chartPaneSettings';
+import {
+  applyTabGroupVisibility,
+  documentToWorkspaceLayout,
+  ensureWidgetAnchor,
+  layoutMetaFor,
+  LAYOUT_DOC_VERSION,
+  migrateWorkspaceLayoutToDocument,
+  newAnchorId,
+  parseLayoutDocument,
+  parseLegacyWorkspaceLayout,
+} from './layoutDocument';
+import {
+  focusAnchorId,
+  releaseLease,
+  resolveFocusedChartWidgetId,
+  resumeSlot,
+  setFocusAnchor,
+  slotKeyFor,
+  suspendSlot,
+} from './runtimeLockRegistry';
+import { saveLayoutToCatalog, getCatalogEntry } from './layoutCatalog';
 
 const LEGACY_STORAGE_KEY = 'mmt-workspace-v1';
-const HEATMAP_STORAGE_KEY = 'mmt-workspace-heatmap-v1';
+const LEGACY_HEATMAP_KEY = 'mmt-workspace-heatmap-v1';
+const LEGACY_FUTURES_PREFIX = 'mmt-workspace-futures-v1-slot-';
+const HEATMAP_STORAGE_KEY = 'mmt-layout-heatmap-v5';
 const FUTURES_SLOT_KEY = 'mmt-futures-layout-slot';
-const FUTURES_STORAGE_PREFIX = 'mmt-workspace-futures-v1-slot-';
-const LAYOUT_VERSION = 4;
-/** Grid step in CSS pixels. Snap targets are integer multiples. */
+const FUTURES_STORAGE_PREFIX = 'mmt-layout-futures-v5-slot-';
+
 export const CELL_PX = 8;
 
 const BASE_WIDGET_TYPES = new Set<string>([
@@ -28,24 +64,53 @@ const FUTURES_WIDGET_TYPES = new Set<string>([...BASE_WIDGET_TYPES, 'coin-scanne
 
 interface WorkspaceStore {
   widgets: WidgetState[];
+  tabGroups: TabGroupState[];
   topZ: number;
+  focusAnchorId: string | null;
+  /** CSS Grid split tree when set; null = legacy absolute float layout. */
+  layoutRoot: RegionNode | null;
 }
 
 interface ProfileRuntime {
   nextSerial: number;
   hydrated: boolean;
+  layoutDocument: LayoutDocument | null;
 }
 
-const store = shallowReactive<WorkspaceStore>({ widgets: [], topZ: 1 });
-/** Last chart widget that received focus (ChartTopBar edits this pane). */
-export const activeChartId = ref<string | null>(null);
+const store = shallowReactive<WorkspaceStore>({
+  widgets: [],
+  tabGroups: [],
+  topZ: 1,
+  focusAnchorId: null,
+  layoutRoot: null,
+});
+
+/** When true, splitters and widget drag/resize are disabled. */
+export const layoutLocked = ref(false);
+
+/** Last focused chart widget id (derived from focusAnchorId). */
+export const activeChartId = computed({
+  get: () => resolveFocusedChartWidgetId(store.widgets),
+  set: (widgetId: string | null) => {
+    if (!widgetId) {
+      setFocusAnchor(null);
+      store.focusAnchorId = null;
+      return;
+    }
+    const w = store.widgets.find((x) => x.id === widgetId);
+    if (w) {
+      setFocusAnchor(w.anchorId);
+      store.focusAnchorId = w.anchorId;
+    }
+  },
+});
 
 export const activeWorkspaceProfile = ref<WorkspaceProfile>('heatmap');
 export const activeLayoutSlot = ref<1 | 2 | 3 | 4>(1);
 
 const profileRuntimes: Record<WorkspaceProfile, ProfileRuntime> = {
-  heatmap: { nextSerial: 1, hydrated: false },
-  futures: { nextSerial: 1, hydrated: false },
+  heatmap: { nextSerial: 1, hydrated: false, layoutDocument: null },
+  futures: { nextSerial: 1, hydrated: false, layoutDocument: null },
 };
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -54,35 +119,43 @@ function widgetTypesFor(profile: WorkspaceProfile): Set<string> {
   return profile === 'futures' ? FUTURES_WIDGET_TYPES : BASE_WIDGET_TYPES;
 }
 
-function storageKeyFor(profile: WorkspaceProfile, slot = activeLayoutSlot.value): string {
+function storageKeyV5(profile: WorkspaceProfile, slot = activeLayoutSlot.value): string {
   if (profile === 'heatmap') return HEATMAP_STORAGE_KEY;
   return `${FUTURES_STORAGE_PREFIX}${slot}`;
+}
+
+function legacyStorageKey(profile: WorkspaceProfile, slot = activeLayoutSlot.value): string {
+  if (profile === 'heatmap') return LEGACY_HEATMAP_KEY;
+  return `${LEGACY_FUTURES_PREFIX}${slot}`;
 }
 
 function sanitizeWidget(w: WidgetState, profile: WorkspaceProfile): WidgetState | null {
   if (!w || typeof w.id !== 'string' || !widgetTypesFor(profile).has(w.type)) return null;
   const rect = w.rect;
   if (!rect || typeof rect.x !== 'number' || typeof rect.y !== 'number') return null;
+  const anchored = ensureWidgetAnchor(w);
   return {
-    id: w.id,
-    type: w.type,
+    id: anchored.id,
+    anchorId: anchored.anchorId,
+    type: anchored.type,
+    tabGroupId: anchored.tabGroupId,
     rect: {
       x: rect.x | 0,
       y: rect.y | 0,
       w: Math.max(12, rect.w | 0),
       h: Math.max(10, rect.h | 0),
     },
-    z: w.z | 0,
-    props: w.props && typeof w.props === 'object' ? w.props : {},
+    z: anchored.z | 0,
+    props: anchored.props && typeof anchored.props === 'object' ? anchored.props : {},
   };
 }
 
-function migrateLegacyHeatmap(): void {
+function migrateLegacyHeatmapKey(): void {
   try {
-    if (localStorage.getItem(HEATMAP_STORAGE_KEY)) return;
+    if (localStorage.getItem(LEGACY_HEATMAP_KEY) || localStorage.getItem(HEATMAP_STORAGE_KEY)) return;
     const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
     if (!raw) return;
-    localStorage.setItem(HEATMAP_STORAGE_KEY, raw);
+    localStorage.setItem(LEGACY_HEATMAP_KEY, raw);
     localStorage.removeItem(LEGACY_STORAGE_KEY);
   } catch {
     /* ignore */
@@ -99,16 +172,94 @@ function readLayoutSlot(): 1 | 2 | 3 | 4 {
   return 1;
 }
 
-function safeLoad(profile: WorkspaceProfile): WorkspaceLayout | null {
-  migrateLegacyHeatmap();
+function buildDocumentFromStore(profile: WorkspaceProfile): LayoutDocument {
+  const rt = profileRuntimes[profile];
+  const meta = layoutMetaFor(profile, activeLayoutSlot.value, rt.layoutDocument?.meta.name);
+  const widgets = store.widgets.map((w) => ({ ...w, rect: { ...w.rect }, props: { ...w.props } }));
+  const anchors = { ...(rt.layoutDocument?.anchors ?? {}) };
+  const bindings = [...(rt.layoutDocument?.bindings ?? [])];
+
+  for (const w of widgets) {
+    if (!anchors[w.anchorId]) {
+      anchors[w.anchorId] = {
+        anchorId: w.anchorId,
+        widgetType: w.type,
+        props: { ...w.props },
+        leasePolicy: w.type === 'chart' ? 'suspend-on-hide' : 'lazy',
+      };
+    } else {
+      anchors[w.anchorId] = { ...anchors[w.anchorId], props: { ...w.props } };
+    }
+    if (!bindings.some((b) => b.widgetId === w.id)) {
+      bindings.push({ widgetId: w.id, anchorId: w.anchorId });
+    }
+  }
+
+  const regions: RegionNode[] = store.layoutRoot
+    ? [store.layoutRoot]
+    : widgets.map((w) => ({
+        kind: 'leaf' as const,
+        anchorId: w.anchorId,
+        rect: { ...w.rect },
+        z: w.z,
+      }));
+
+  return {
+    version: LAYOUT_DOC_VERSION,
+    meta,
+    focusAnchorId: store.focusAnchorId ?? focusAnchorId.value,
+    regions,
+    anchors,
+    bindings,
+    tabGroups: store.tabGroups.map((g) => ({ ...g, rect: { ...g.rect } })),
+    widgets,
+    nextSerial: rt.nextSerial,
+  };
+}
+
+function extractLayoutRoot(regions: RegionNode[] | undefined): RegionNode | null {
+  if (!regions?.length) return null;
+  if (regions.length === 1 && regions[0].kind === 'split') return regions[0];
+  return null;
+}
+
+function applyDocument(doc: LayoutDocument, profile: WorkspaceProfile): void {
+  const rt = profileRuntimes[profile];
+  const widgets = doc.widgets.map((w) => sanitizeWidget(w, profile)).filter(Boolean) as WidgetState[];
+  store.widgets = widgets;
+  store.tabGroups = doc.tabGroups ?? [];
+  store.topZ = widgets.reduce((acc, w) => Math.max(acc, w.z | 0), 1);
+  store.layoutRoot = extractLayoutRoot(doc.regions);
+  rt.nextSerial = Math.max(1, doc.nextSerial | 0);
+  rt.layoutDocument = doc;
+
+  const focus = doc.focusAnchorId;
+  const lastChart = [...widgets].reverse().find((w) => w.type === 'chart');
+  store.focusAnchorId = focus ?? lastChart?.anchorId ?? widgets[0]?.anchorId ?? null;
+  setFocusAnchor(store.focusAnchorId);
+}
+
+function safeLoad(profile: WorkspaceProfile): LayoutDocument | null {
+  migrateLegacyHeatmapKey();
+  const slot = profile === 'futures' ? activeLayoutSlot.value : 1;
+
   try {
-    const raw = localStorage.getItem(storageKeyFor(profile));
-    if (!raw) return null;
-    const j = JSON.parse(raw) as WorkspaceLayout;
-    if (!j || j.version !== LAYOUT_VERSION || !Array.isArray(j.widgets)) return null;
-    const widgets = j.widgets.map((w) => sanitizeWidget(w, profile)).filter(Boolean) as WidgetState[];
-    if (!widgets.length) return null;
-    return { ...j, widgets };
+    const rawV5 = localStorage.getItem(storageKeyV5(profile, slot));
+    if (rawV5) {
+      const doc = parseLayoutDocument(JSON.parse(rawV5), profile);
+      if (doc) return doc;
+    }
+  } catch {
+    /* fall through */
+  }
+
+  try {
+    const rawLegacy = localStorage.getItem(legacyStorageKey(profile, slot));
+    if (!rawLegacy) return null;
+    const legacy = parseLegacyWorkspaceLayout(JSON.parse(rawLegacy));
+    if (!legacy) return null;
+    const meta = layoutMetaFor(profile, slot);
+    return migrateWorkspaceLayoutToDocument(legacy, meta);
   } catch {
     return null;
   }
@@ -119,20 +270,10 @@ function flushSave(profile = activeWorkspaceProfile.value): void {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  const rt = profileRuntimes[profile];
-  const snap: WorkspaceLayout = {
-    version: LAYOUT_VERSION,
-    widgets: store.widgets.map((w) => ({
-      id: w.id,
-      type: w.type,
-      rect: { ...w.rect },
-      z: w.z,
-      props: w.props,
-    })),
-    nextSerial: rt.nextSerial,
-  };
+  const doc = buildDocumentFromStore(profile);
+  profileRuntimes[profile].layoutDocument = doc;
   try {
-    localStorage.setItem(storageKeyFor(profile), JSON.stringify(snap));
+    localStorage.setItem(storageKeyV5(profile), JSON.stringify(doc));
   } catch {
     /* quota */
   }
@@ -148,26 +289,27 @@ function scheduleSave(): void {
 }
 
 watch(() => store.widgets.length, scheduleSave);
+watch(() => store.tabGroups.length, scheduleSave);
 
 function hydrateProfile(profile: WorkspaceProfile, force = false): void {
   const rt = profileRuntimes[profile];
   if (rt.hydrated && !force) return;
   const loaded = safeLoad(profile);
   if (loaded) {
-    store.widgets = loaded.widgets;
-    rt.nextSerial = Math.max(1, loaded.nextSerial | 0);
-    store.topZ = loaded.widgets.reduce((acc, w) => Math.max(acc, w.z | 0), 1);
+    applyDocument(loaded, profile);
   } else {
     store.widgets = [];
+    store.tabGroups = [];
     rt.nextSerial = 1;
     store.topZ = 1;
+    store.focusAnchorId = null;
+    store.layoutRoot = null;
+    setFocusAnchor(null);
+    rt.layoutDocument = null;
   }
-  activeChartId.value =
-    [...store.widgets].reverse().find((w) => w.type === 'chart')?.id ?? null;
   rt.hydrated = true;
 }
 
-/** Switch active workspace profile (heatmap desk vs futures desk). */
 export function setWorkspaceProfile(profile: WorkspaceProfile): void {
   if (activeWorkspaceProfile.value === profile && profileRuntimes[profile].hydrated) return;
   if (profileRuntimes[activeWorkspaceProfile.value].hydrated) {
@@ -178,11 +320,12 @@ export function setWorkspaceProfile(profile: WorkspaceProfile): void {
     activeLayoutSlot.value = readLayoutSlot();
   }
   hydrateProfile(profile, true);
+  resumeSlot(profile, activeLayoutSlot.value);
 }
 
-/** Futures-only: switch layout slot 1–4 (persists widgets per slot). */
 export function switchLayoutSlot(slot: 1 | 2 | 3 | 4): void {
   if (activeWorkspaceProfile.value !== 'futures' || activeLayoutSlot.value === slot) return;
+  suspendSlot('futures', activeLayoutSlot.value);
   flushSave('futures');
   activeLayoutSlot.value = slot;
   try {
@@ -192,6 +335,7 @@ export function switchLayoutSlot(slot: 1 | 2 | 3 | 4): void {
   }
   profileRuntimes.futures.hydrated = false;
   hydrateProfile('futures', true);
+  resumeSlot('futures', slot);
 }
 
 export function useWorkspace() {
@@ -202,6 +346,11 @@ export function useWorkspace() {
     hydrateProfile(activeWorkspaceProfile.value);
   }
 
+  const visibleWidgets = computed(() => {
+    const { visible } = applyTabGroupVisibility(store.widgets, store.tabGroups);
+    return visible;
+  });
+
   function addWidget(
     type: WidgetType,
     rect?: Partial<WidgetRect>,
@@ -211,9 +360,11 @@ export function useWorkspace() {
     if (!reg) return null;
     const rt = profileRuntimes[activeWorkspaceProfile.value];
     const id = `${type}-${rt.nextSerial++}`;
+    const anchorId = newAnchorId();
     store.topZ++;
     const w: WidgetState = {
       id,
+      anchorId,
       type,
       rect: {
         x: rect?.x ?? 4,
@@ -230,8 +381,16 @@ export function useWorkspace() {
   }
 
   function removeWidget(id: string): void {
-    if (!store.widgets.some((w) => w.id === id)) return;
-    store.widgets = store.widgets.filter((w) => w.id !== id);
+    const w = store.widgets.find((x) => x.id === id);
+    if (!w) return;
+    releaseLease(w.anchorId);
+    store.widgets = store.widgets.filter((x) => x.id !== id);
+    store.tabGroups = store.tabGroups
+      .map((g) => ({
+        ...g,
+        anchorIds: g.anchorIds.filter((a) => a !== w.anchorId),
+      }))
+      .filter((g) => g.anchorIds.length > 0);
     scheduleSave();
   }
 
@@ -246,14 +405,19 @@ export function useWorkspace() {
       if (parent === chartId) removeIds.add(w.id);
     }
 
-    if (activeChartId.value === chartId) {
+    if (activeChartId.value && removeIds.has(activeChartId.value)) {
       const remaining = store.widgets.filter((w) => w.type === 'chart' && !removeIds.has(w.id));
-      activeChartId.value = remaining.length > 0 ? remaining[remaining.length - 1].id : null;
+      const next = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+      store.focusAnchorId = next?.anchorId ?? null;
+      setFocusAnchor(store.focusAnchorId);
     }
 
     for (const id of removeIds) {
       const w = store.widgets.find((x) => x.id === id);
-      if (w) snapshotPaneSettings(id, w.props as Record<string, unknown>);
+      if (w) {
+        snapshotPaneSettings(id, w.props as Record<string, unknown>);
+        releaseLease(w.anchorId);
+      }
     }
 
     chartPaneUnregister(chartId);
@@ -265,6 +429,15 @@ export function useWorkspace() {
     const idx = store.widgets.findIndex((w) => w.id === id);
     if (idx < 0) return;
     const w = store.widgets[idx];
+    if (w.tabGroupId) {
+      const gIdx = store.tabGroups.findIndex((g) => g.groupId === w.tabGroupId);
+      if (gIdx >= 0) {
+        store.tabGroups[gIdx] = { ...store.tabGroups[gIdx], rect: { ...rect } };
+        store.tabGroups = store.tabGroups.slice();
+        scheduleSave();
+      }
+      return;
+    }
     if (w.rect.x === rect.x && w.rect.y === rect.y && w.rect.w === rect.w && w.rect.h === rect.h) return;
     store.widgets[idx] = { ...w, rect };
     store.widgets = store.widgets.slice();
@@ -275,9 +448,65 @@ export function useWorkspace() {
     const idx = store.widgets.findIndex((w) => w.id === id);
     if (idx < 0) return;
     store.topZ++;
-    store.widgets[idx] = { ...store.widgets[idx], z: store.topZ };
-    store.widgets = store.widgets.slice();
+    const w = store.widgets[idx];
+    if (w.tabGroupId) {
+      const gIdx = store.tabGroups.findIndex((g) => g.groupId === w.tabGroupId);
+      if (gIdx >= 0) {
+        store.tabGroups[gIdx] = { ...store.tabGroups[gIdx], z: store.topZ };
+        store.tabGroups = store.tabGroups.slice();
+      }
+    } else {
+      store.widgets[idx] = { ...w, z: store.topZ };
+      store.widgets = store.widgets.slice();
+    }
     scheduleSave();
+  }
+
+  function bringTabGroupToFront(groupId: string): void {
+    const gIdx = store.tabGroups.findIndex((g) => g.groupId === groupId);
+    if (gIdx < 0) return;
+    store.topZ++;
+    store.tabGroups[gIdx] = { ...store.tabGroups[gIdx], z: store.topZ };
+    store.tabGroups = store.tabGroups.slice();
+    scheduleSave();
+  }
+
+  function setTabGroupActive(groupId: string, activeAnchorId: string): void {
+    const gIdx = store.tabGroups.findIndex((g) => g.groupId === groupId);
+    if (gIdx < 0) return;
+    store.tabGroups[gIdx] = { ...store.tabGroups[gIdx], activeAnchorId };
+    store.tabGroups = store.tabGroups.slice();
+    scheduleSave();
+  }
+
+  function createTabGroup(widgetIds: string[], rect?: Partial<WidgetRect>): TabGroupState | null {
+    const members = widgetIds
+      .map((id) => store.widgets.find((w) => w.id === id))
+      .filter(Boolean) as WidgetState[];
+    if (members.length < 2) return null;
+
+    const groupId = newAnchorId();
+    store.topZ++;
+    const first = members[0];
+    const group: TabGroupState = {
+      groupId,
+      rect: {
+        x: rect?.x ?? first.rect.x,
+        y: rect?.y ?? first.rect.y,
+        w: rect?.w ?? first.rect.w,
+        h: rect?.h ?? first.rect.h,
+      },
+      z: store.topZ,
+      activeAnchorId: first.anchorId,
+      anchorIds: members.map((m) => m.anchorId),
+    };
+
+    store.tabGroups = [...store.tabGroups, group];
+    store.widgets = store.widgets.map((w) =>
+      members.some((m) => m.id === w.id) ? { ...w, tabGroupId: groupId } : w,
+    );
+    scheduleSave();
+    return group;
   }
 
   function updateProps(id: string, patch: Record<string, unknown>): void {
@@ -326,14 +555,64 @@ export function useWorkspace() {
     }
   }
 
+  function setLayoutRoot(root: RegionNode | null): void {
+    store.layoutRoot = root;
+    scheduleSave();
+  }
+
+  function onSplitRatio(path: number[], ratio: number): void {
+    if (!store.layoutRoot) return;
+    store.layoutRoot = mutateSplitRatio(store.layoutRoot, path, ratio);
+    scheduleSave();
+  }
+
+  function splitFocusedPane(axis: 'h' | 'v'): void {
+    const anchor = store.focusAnchorId;
+    if (!anchor || !store.layoutRoot) return;
+    const result = splitLeaf(store.layoutRoot, anchor, axis, activeWorkspaceProfile.value);
+    if (!result) return;
+    store.layoutRoot = result.root;
+    scheduleSave();
+  }
+
+  function resetHeatmapDefaultSplit(viewportW: number, viewportH: number): void {
+    if (store.widgets.length === 0) return;
+    const tree = buildHeatmapDefaultTree(store.widgets, { w: viewportW, h: viewportH });
+    if (tree) store.layoutRoot = tree;
+    scheduleSave();
+  }
+
+  function dockWidgetToEdge(anchorId: string, edge: DockEdge, viewportW: number, viewportH: number): void {
+    if (!store.layoutRoot) {
+      const tree = inferSplitFromWidgets(store.widgets, { w: viewportW, h: viewportH });
+      if (tree) store.layoutRoot = tree;
+    }
+    if (!store.layoutRoot) return;
+    const next = dockToEdge(store.layoutRoot, anchorId, edge, { w: viewportW, h: viewportH });
+    if (next) store.layoutRoot = next;
+    scheduleSave();
+  }
+
+  function loadLayoutFromCatalog(entryId: string): boolean {
+    const entry = getCatalogEntry(entryId);
+    if (!entry) return false;
+    importLayout(entry.document);
+    return true;
+  }
+
   function resetWorkspace(): void {
+    for (const w of store.widgets) releaseLease(w.anchorId);
     store.widgets = [];
+    store.tabGroups = [];
+    store.layoutRoot = null;
     const rt = profileRuntimes[activeWorkspaceProfile.value];
     rt.nextSerial = 1;
     store.topZ = 1;
-    activeChartId.value = null;
+    store.focusAnchorId = null;
+    setFocusAnchor(null);
+    rt.layoutDocument = null;
     try {
-      localStorage.removeItem(storageKeyFor(activeWorkspaceProfile.value));
+      localStorage.removeItem(storageKeyV5(activeWorkspaceProfile.value));
     } catch {
       /* ignore */
     }
@@ -363,9 +642,37 @@ export function useWorkspace() {
     return { x: 0, y: 0 };
   }
 
+  function exportCurrentLayout(name?: string): LayoutDocument {
+    const doc = buildDocumentFromStore(activeWorkspaceProfile.value);
+    if (name) doc.meta = { ...doc.meta, name };
+    return doc;
+  }
+
+  function importLayout(doc: LayoutDocument): void {
+    applyDocument(doc, activeWorkspaceProfile.value);
+    scheduleSave();
+  }
+
+  function saveCurrentToCatalog(name?: string) {
+    return saveLayoutToCatalog(exportCurrentLayout(), name);
+  }
+
+  function focusWidgetById(widgetId: string): void {
+    const w = store.widgets.find((x) => x.id === widgetId);
+    if (!w) return;
+    store.focusAnchorId = w.anchorId;
+    setFocusAnchor(w.anchorId);
+  }
+
+  const splitLayoutActive = computed(() => store.layoutRoot != null);
+
   return {
     store,
+    visibleWidgets,
+    splitLayoutActive,
+    layoutLocked,
     activeChartId,
+    focusAnchorId: computed(() => store.focusAnchorId ?? focusAnchorId.value),
     activeWorkspaceProfile,
     activeLayoutSlot,
     addWidget,
@@ -374,11 +681,26 @@ export function useWorkspace() {
     updateRect,
     updateProps,
     bringToFront,
+    bringTabGroupToFront,
+    setTabGroupActive,
+    createTabGroup,
     ensureDefaults,
     fitToViewport,
     resetWorkspace,
     findFreeSlot,
     switchLayoutSlot,
     setWorkspaceProfile,
+    exportCurrentLayout,
+    importLayout,
+    saveCurrentToCatalog,
+    focusWidgetById,
+    flushSave: () => flushSave(),
+    getLayoutDocument: () => buildDocumentFromStore(activeWorkspaceProfile.value),
+    setLayoutRoot,
+    onSplitRatio,
+    splitFocusedPane,
+    resetHeatmapDefaultSplit,
+    dockWidgetToEdge,
+    loadLayoutFromCatalog,
   };
 }
