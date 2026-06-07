@@ -90,9 +90,7 @@ export async function loadEngine(): Promise<EngineBridge> {
   let stamp = '';
   try {
     const stampUrl =
-      typeof location !== 'undefined'
-        ? new URL('/engine.stamp', location.origin).href
-        : '/engine.stamp';
+      typeof location !== 'undefined' ? new URL('/engine.stamp', location.origin).href : '/engine.stamp';
     const stampResp = await fetch(stampUrl, { cache: 'no-store' });
     if (stampResp.ok) stamp = (await stampResp.text()).trim();
   } catch {

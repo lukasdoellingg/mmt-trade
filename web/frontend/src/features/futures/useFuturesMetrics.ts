@@ -94,7 +94,9 @@ export function useFuturesMetrics(symbol: Ref<string>, metric: Ref<FuturesMetric
   async function loadFundingRates(signal: AbortSignal) {
     const { limit } = apiParams.value;
     try {
-      const res = (await fetchFundingRates(symbol.value, limit, signal)) as { rates?: Record<string, unknown> };
+      const res = (await fetchFundingRates(symbol.value, limit, signal)) as {
+        rates?: Record<string, unknown>;
+      };
       fundingRaw.value = res.rates || {};
     } catch (e: unknown) {
       if ((e as { name?: string }).name !== 'AbortError') {
@@ -432,7 +434,9 @@ export function useFuturesMetrics(symbol: Ref<string>, metric: Ref<FuturesMetric
           },
           xAxis: xDt,
           yAxis: yDollar,
-          plotOptions: { column: { borderWidth: 0, groupPadding: 0.05, pointPadding: 0.02, colorByPoint: true } },
+          plotOptions: {
+            column: { borderWidth: 0, groupPadding: 0.05, pointPadding: 0.02, colorByPoint: true },
+          },
           series: [{ name: 'Liquidations (est.)', type: 'column', data: liqSeries.value }],
           tooltip: {
             pointFormatter(this: { color: string; y: number }) {
@@ -481,7 +485,10 @@ export function useFuturesMetrics(symbol: Ref<string>, metric: Ref<FuturesMetric
           series: [
             {
               name: 'Avg Return',
-              data: returnStats.value.days.map((d) => ({ y: d.avg, color: d.avg >= 0 ? '#3dc985' : '#ef4f60' })),
+              data: returnStats.value.days.map((d) => ({
+                y: d.avg,
+                color: d.avg >= 0 ? '#3dc985' : '#ef4f60',
+              })),
             },
           ],
           tooltip: ttPct,

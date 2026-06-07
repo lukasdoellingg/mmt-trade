@@ -41,7 +41,11 @@ function bootDefaults(): void {
   ensureDefaults([
     { type: 'coin-scanner', rect: { x: 0, y: 0, w: scanW, h: topH } },
     { type: 'chart', rect: { x: scanW, y: 0, w: chartW, h: topH }, props: initialChartWidgetProps() },
-    { type: 'futures-metric-pane', rect: { x: 0, y: topH, w: metricW, h: bottomH }, props: { metric: 'funding' } },
+    {
+      type: 'futures-metric-pane',
+      rect: { x: 0, y: topH, w: metricW, h: bottomH },
+      props: { metric: 'funding' },
+    },
     {
       type: 'futures-metric-pane',
       rect: { x: metricW, y: topH, w: metricW, h: bottomH },

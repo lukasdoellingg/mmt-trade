@@ -3,11 +3,7 @@
  */
 import type { ScriptIndicatorId } from '../indicators/indicatorCatalog';
 import { symKeyFromSymbol } from '../constants';
-import {
-  createScriptRuntime,
-  cancelPendingRuntime,
-  updateScriptInputs,
-} from '../engine/feedHubClient';
+import { createScriptRuntime, cancelPendingRuntime, updateScriptInputs } from '../engine/feedHubClient';
 import { USE_SESSION_MUX } from '../config/featureFlags';
 
 const MAX_PLOT_PRICES = 64;

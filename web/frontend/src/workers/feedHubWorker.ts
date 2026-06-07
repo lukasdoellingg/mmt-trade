@@ -261,9 +261,11 @@ function openSocket(): void {
       const entry = matching[i];
       const payload = parsed.payload.slice(0);
       try {
-        entry.port.postMessage(
-          { type: 'session_frame' as const, streamKey: parsed.streamKey, buffer: payload },
-        );
+        entry.port.postMessage({
+          type: 'session_frame' as const,
+          streamKey: parsed.streamKey,
+          buffer: payload,
+        });
       } catch {
         /* port closed */
       }

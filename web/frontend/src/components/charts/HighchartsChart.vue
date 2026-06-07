@@ -94,8 +94,7 @@ function render() {
   try {
     if (chart) {
       const newSeries = opts.series || [];
-      const onlyDataChanged =
-        seriesDataEqual(prevSeries, newSeries) && !seriesNeedsFullUpdate(newSeries);
+      const onlyDataChanged = seriesDataEqual(prevSeries, newSeries) && !seriesNeedsFullUpdate(newSeries);
 
       if (onlyDataChanged && chart.series?.length === newSeries.length) {
         for (let i = 0; i < newSeries.length; i++) {

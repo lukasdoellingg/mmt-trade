@@ -117,8 +117,16 @@ async function fetchEtfFlowsFromYahoo(deps) {
 }
 
 export function registerTradFiRoutes(app, deps) {
-  const { cached, setCache, safeSend, safeError, getExchange, ensureMarkets, VALID_YAHOO_RANGES, VALID_YAHOO_INTERVALS } =
-    deps;
+  const {
+    cached,
+    setCache,
+    safeSend,
+    safeError,
+    getExchange,
+    ensureMarkets,
+    VALID_YAHOO_RANGES,
+    VALID_YAHOO_INTERVALS,
+  } = deps;
 
   app.get('/api/tradfi/overview', async (req, res) => {
     const symbol = req.query.symbol || 'BTC/USDT';

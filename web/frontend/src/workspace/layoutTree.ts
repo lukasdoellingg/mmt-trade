@@ -12,10 +12,7 @@ export interface ViewportCells {
 }
 
 /** Heatmap default: chart | (ladder spot / ladder perp). */
-export function buildHeatmapDefaultTree(
-  widgets: WidgetState[],
-  viewport: ViewportCells,
-): RegionNode | null {
+export function buildHeatmapDefaultTree(widgets: WidgetState[], viewport: ViewportCells): RegionNode | null {
   const chart = widgets.find((w) => w.type === 'chart');
   const ladders = widgets.filter((w) => w.type === 'orderflow-ladder');
   if (!chart || ladders.length < 2) return null;
@@ -121,8 +118,14 @@ export function dockToEdge(
   const axis: 'h' | 'v' = edge === 'left' || edge === 'right' ? 'h' : 'v';
   const ratio =
     edge === 'left' || edge === 'top'
-      ? Math.max(0.15, (edge === 'left' ? leaf.rect.w : leaf.rect.h) / (axis === 'h' ? viewport.w : viewport.h))
-      : Math.max(0.15, 1 - (edge === 'right' ? leaf.rect.w : leaf.rect.h) / (axis === 'h' ? viewport.w : viewport.h));
+      ? Math.max(
+          0.15,
+          (edge === 'left' ? leaf.rect.w : leaf.rect.h) / (axis === 'h' ? viewport.w : viewport.h),
+        )
+      : Math.max(
+          0.15,
+          1 - (edge === 'right' ? leaf.rect.w : leaf.rect.h) / (axis === 'h' ? viewport.w : viewport.h),
+        );
 
   const split = splitLeaf(root, anchorId, axis, 'heatmap');
   if (!split) return root;
@@ -130,10 +133,7 @@ export function dockToEdge(
 }
 
 /** Infer a horizontal split tree from current widget rects (float → split migration). */
-export function inferSplitFromWidgets(
-  widgets: WidgetState[],
-  viewport: ViewportCells,
-): RegionNode | null {
+export function inferSplitFromWidgets(widgets: WidgetState[], viewport: ViewportCells): RegionNode | null {
   if (widgets.length < 2) return null;
   const sorted = [...widgets].sort((a, b) => a.rect.x - b.rect.x || a.rect.y - b.rect.y);
   let root: RegionNode = {

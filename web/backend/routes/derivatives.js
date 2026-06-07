@@ -131,10 +131,12 @@ export function registerDerivativesRoutes(app, deps) {
             ]);
             row.vol24h = ticker.quoteVolume || 0;
             if (ticker.percentage != null) row.change24h = ticker.percentage;
-            else if (ticker.open && ticker.last) row.change24h = ((ticker.last - ticker.open) / ticker.open) * 100;
+            else if (ticker.open && ticker.last)
+              row.change24h = ((ticker.last - ticker.open) / ticker.open) * 100;
             if (funding?.fundingRate != null) {
-              const rate8h = normalizeFundingTo8h([{ ts: funding.timestamp || Date.now(), rate: funding.fundingRate }])[0]
-                ?.rate ?? funding.fundingRate;
+              const rate8h =
+                normalizeFundingTo8h([{ ts: funding.timestamp || Date.now(), rate: funding.fundingRate }])[0]
+                  ?.rate ?? funding.fundingRate;
               row.fundingApr = rate8h * 3 * 365 * 100;
             }
             if (oiSnap) {
