@@ -24,7 +24,7 @@ flowchart TB
 | Node | Package | Owns | Persisted |
 |------|---------|------|-----------|
 | `TerminalRoot` | `app/object_tree.odin` | `FeedHub`, session flags | — |
-| `WorkspaceNode` | JS bridge | widget grid rects | `mmt-workspace-v1` |
+| `WorkspaceNode` | JS bridge | widget grid rects + LCM v5 anchors | `mmt-layout-*-v5` |
 | `ChartPaneNode` | `app/object_tree.odin` | symbol, TF, viewport, mount list | `WidgetState.props` |
 | `StreamSubscription` | `data/stream_registry.odin` | stream key, refcount | — |
 | `ScriptRuntimeMount` | `layers/script_runtime_layer.odin` | `runtime_id`, inputs | `props.runtimes[]` |
@@ -48,3 +48,5 @@ See [mounts.md](./mounts.md) for the four mount kinds and how they map to this t
 | Object tree | [`packages/engine/src/app/object_tree.odin`](../../packages/engine/src/app/object_tree.odin) |
 | Feed hub | [`packages/engine/src/net/feed_hub.odin`](../../packages/engine/src/net/feed_hub.odin) |
 | Stream registry | [`packages/engine/src/data/stream_registry.odin`](../../packages/engine/src/data/stream_registry.odin) |
+| JS script runtime | [`web/frontend/src/chart/scriptRuntime.ts`](../../web/frontend/src/chart/scriptRuntime.ts) |
+| LCM workspace | [`web/frontend/src/workspace/useWorkspace.ts`](../../web/frontend/src/workspace/useWorkspace.ts) — see [layout-composition.md](./layout-composition.md) |
