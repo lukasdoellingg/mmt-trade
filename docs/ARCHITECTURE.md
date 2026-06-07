@@ -26,6 +26,16 @@ Professionelles Team-Projekt für ein **High-End Order-Flow / Trading-Terminal**
 
 Details MMT: [`MMT_REPLICATION_CHECKLIST.md`](./MMT_REPLICATION_CHECKLIST.md).
 
+**Architektur-Specs (normativ):**
+
+| Doc | Inhalt |
+|-----|--------|
+| [`architecture/layout-composition.md`](./architecture/layout-composition.md) | LCM v5 — anchors, leases, split/tab layout, persistence |
+| [`architecture/script-runtime.md`](./architecture/script-runtime.md) | MMT script indicators — session MUX, attachments, reconnect, backend dedup |
+| [`architecture/object-tree.md`](./architecture/object-tree.md) | Odin/JS object tree — ChartPane, mounts, stream refs |
+| [`architecture/feed-hub.md`](./architecture/feed-hub.md) | FeedHub worker — stream refcount, session fan-out |
+| [`INFO_STREAM.md`](./INFO_STREAM.md) | Binary info-stream envelopes (bar-stats, runtime plots) |
+
 ---
 
 ## Ist-Architektur (Runtime)
