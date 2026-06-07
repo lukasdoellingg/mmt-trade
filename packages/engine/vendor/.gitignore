@@ -3,3 +3,4 @@
 # their own licenses — keep them out of this repo's git history.
 *
 !.gitignore
+!mmt_workers_shim.c
