@@ -136,7 +136,9 @@ function onResizeUp(ev: PointerEvent): void {
   background: transparent;
   border: none;
   color: #5a6878;
-  font: 600 11px/1 Consolas, monospace;
+  font:
+    600 11px/1 Consolas,
+    monospace;
   padding: 4px 8px;
   cursor: pointer;
   border-radius: 2px 2px 0 0;

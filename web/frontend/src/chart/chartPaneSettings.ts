@@ -124,9 +124,9 @@ export function initialChartWidgetProps(): Record<string, unknown> {
   return { ...paneDefaults(), ...loadLegacyGlobal() };
 }
 
-function resolveActiveChartId(
-  store: { widgets: { id: string; type: string; anchorId: string }[] },
-): string | null {
+function resolveActiveChartId(store: {
+  widgets: { id: string; type: string; anchorId: string }[];
+}): string | null {
   return resolveFocusedChartWidgetId(store.widgets);
 }
 

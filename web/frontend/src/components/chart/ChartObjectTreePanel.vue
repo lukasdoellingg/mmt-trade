@@ -107,7 +107,10 @@ function isNativeOn(chartWidgetId: string, settingsKey: string): boolean {
   <div class="tree-panel" @click.stop>
     <div class="tree-hdr">
       <span class="tree-title">Object tree</span>
-      <span v-if="!USE_SESSION_MUX" class="tree-warn" title="Restart Vite after setting VITE_USE_SESSION_MUX=1"
+      <span
+        v-if="!USE_SESSION_MUX"
+        class="tree-warn"
+        title="Restart Vite after setting VITE_USE_SESSION_MUX=1"
         >session off — restart Vite</span
       >
     </div>

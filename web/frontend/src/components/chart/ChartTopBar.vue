@@ -13,7 +13,13 @@ import { computed, onBeforeUnmount, ref } from 'vue';
 import ChartSymbolBar from './ChartSymbolBar.vue';
 import { TIMEFRAMES, useChartSettings } from '../../chart/chartSettings';
 import { initialChartWidgetProps, useActivePaneSettings } from '../../chart/chartPaneSettings';
-import { useWorkspace, CELL_PX, switchLayoutSlot, activeLayoutSlot, layoutLocked } from '../../workspace/useWorkspace';
+import {
+  useWorkspace,
+  CELL_PX,
+  switchLayoutSlot,
+  activeLayoutSlot,
+  layoutLocked,
+} from '../../workspace/useWorkspace';
 import {
   copyLayoutToClipboard,
   listLayoutCatalog,
@@ -32,8 +38,17 @@ const props = withDefaults(defineProps<{ mode?: 'heatmap' | 'futures' }>(), { mo
 
 const shell = useChartSettings();
 const pane = useActivePaneSettings();
-const { addWidget, findFreeSlot, store, exportCurrentLayout, importLayout, saveCurrentToCatalog, splitFocusedPane, resetHeatmapDefaultSplit, loadLayoutFromCatalog } =
-  useWorkspace();
+const {
+  addWidget,
+  findFreeSlot,
+  store,
+  exportCurrentLayout,
+  importLayout,
+  saveCurrentToCatalog,
+  splitFocusedPane,
+  resetHeatmapDefaultSplit,
+  loadLayoutFromCatalog,
+} = useWorkspace();
 
 const isFutures = computed(() => props.mode === 'futures');
 

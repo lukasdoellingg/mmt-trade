@@ -197,7 +197,10 @@ function applyPlotToMount(runtimeId: string, prices: Float64Array, roles?: Uint8
   if (lease?.state === 'suspended') return;
 
   for (const att of attachmentRegistry.values()) {
-    if (att.runtimeId === runtimeId || (att.state === 'pending' && att.createToken === parseCreateTokenFromRuntimeId(runtimeId))) {
+    if (
+      att.runtimeId === runtimeId ||
+      (att.state === 'pending' && att.createToken === parseCreateTokenFromRuntimeId(runtimeId))
+    ) {
       att.onPlot(prices, roles);
     }
   }
@@ -207,10 +210,7 @@ function applyPlotToMount(runtimeId: string, prices: Float64Array, roles?: Uint8
   const tokenFromId = parseCreateTokenFromRuntimeId(runtimeId);
   for (const [id, mount] of next) {
     const byRuntime = mount.runtimeId === runtimeId;
-    const byToken =
-      mount.status === 'mounting' &&
-      tokenFromId != null &&
-      mount.createToken === tokenFromId;
+    const byToken = mount.status === 'mounting' && tokenFromId != null && mount.createToken === tokenFromId;
     if (!byRuntime && !byToken) continue;
     if (byToken && !mount.runtimeId) {
       promoteMountLive(next, id, mount, runtimeId);

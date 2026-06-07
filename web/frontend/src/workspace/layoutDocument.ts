@@ -29,8 +29,7 @@ export function defaultLeasePolicy(widgetType: WidgetType): PaneAnchor['leasePol
 }
 
 export function ensureWidgetAnchor(w: WidgetState): WidgetState {
-  const anchorId =
-    typeof w.anchorId === 'string' && w.anchorId.length > 0 ? w.anchorId : newAnchorId();
+  const anchorId = typeof w.anchorId === 'string' && w.anchorId.length > 0 ? w.anchorId : newAnchorId();
   if (w.anchorId === anchorId) return w;
   return { ...w, anchorId };
 }
@@ -203,10 +202,7 @@ export function applyTabGroupVisibility(
   return { visible, hiddenAnchorIds };
 }
 
-export function mergeTabGroup(
-  doc: LayoutDocument,
-  group: TabGroupState,
-): LayoutDocument {
+export function mergeTabGroup(doc: LayoutDocument, group: TabGroupState): LayoutDocument {
   const tabGroups = [...(doc.tabGroups ?? [])];
   const idx = tabGroups.findIndex((g) => g.groupId === group.groupId);
   if (idx >= 0) tabGroups[idx] = group;
@@ -214,10 +210,7 @@ export function mergeTabGroup(
   return { ...doc, tabGroups };
 }
 
-export function widgetRectForGroupMember(
-  w: WidgetState,
-  tabGroups: TabGroupState[],
-): WidgetRect {
+export function widgetRectForGroupMember(w: WidgetState, tabGroups: TabGroupState[]): WidgetRect {
   if (!w.tabGroupId) return w.rect;
   const g = tabGroups.find((t) => t.groupId === w.tabGroupId);
   if (!g || w.anchorId !== g.activeAnchorId) return w.rect;

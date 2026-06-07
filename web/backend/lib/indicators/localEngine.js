@@ -123,9 +123,7 @@ function buildPlotPayload(runtimeId, prices, roles) {
 
 function fanoutPlot(slot, mux) {
   const roles =
-    slot.scriptId === 'key-levels'
-      ? keyLevelCache.get(cacheKey(slot.symbol, slot.tf))?.roles
-      : undefined;
+    slot.scriptId === 'key-levels' ? keyLevelCache.get(cacheKey(slot.symbol, slot.tf))?.roles : undefined;
   for (const wire of slot.wires.values()) {
     const payload = buildPlotPayload(wire.runtimeId, slot.levels, roles);
     mux.broadcastEnvelope(wire.runtimeId, payload);

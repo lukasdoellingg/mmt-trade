@@ -2,12 +2,7 @@
 import { computed, inject, type Ref } from 'vue';
 import type { WidgetState } from './types';
 import { CELL_PX, useWorkspace } from './useWorkspace';
-import {
-  beginTabDrag,
-  endTabDrag,
-  onHeaderHover,
-  clearTabHover,
-} from './tabDragCoordinator';
+import { beginTabDrag, endTabDrag, onHeaderHover, clearTabHover } from './tabDragCoordinator';
 
 const props = defineProps<{
   widget: WidgetState;
@@ -30,8 +25,14 @@ const emit = defineEmits<{ gear: []; link: []; close: [] }>();
 
 const { removeWidget, updateRect, bringToFront, createTabGroup, dockWidgetToEdge } = useWorkspace();
 
-const splitLayoutActive = inject<Ref<boolean>>('splitLayoutActive', computed(() => false));
-const globalLayoutLocked = inject<Ref<boolean>>('layoutLocked', computed(() => false));
+const splitLayoutActive = inject<Ref<boolean>>(
+  'splitLayoutActive',
+  computed(() => false),
+);
+const globalLayoutLocked = inject<Ref<boolean>>(
+  'layoutLocked',
+  computed(() => false),
+);
 
 const isEmbedded = computed(() => props.embedded || splitLayoutActive.value);
 const isLocked = computed(() => props.locked || globalLayoutLocked.value);
@@ -199,7 +200,12 @@ function onClose() {
 </script>
 
 <template>
-  <div class="ws-widget" :class="{ embedded: isEmbedded }" :style="style" @pointerdown="bringToFront(widget.id)">
+  <div
+    class="ws-widget"
+    :class="{ embedded: isEmbedded }"
+    :style="style"
+    @pointerdown="bringToFront(widget.id)"
+  >
     <header
       v-if="!isEmbedded"
       class="ws-head"

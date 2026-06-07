@@ -55,12 +55,7 @@ function onRatio(ratio: number): void {
         </template>
       </WorkspaceSplitPane>
     </div>
-    <WorkspaceSplitter
-      v-if="!layoutLocked"
-      :axis="node.axis"
-      :ratio="node.ratio"
-      @ratio="onRatio"
-    />
+    <WorkspaceSplitter v-if="!layoutLocked" :axis="node.axis" :ratio="node.ratio" @ratio="onRatio" />
     <div class="ws-split-pane">
       <WorkspaceSplitPane
         :node="node.b"

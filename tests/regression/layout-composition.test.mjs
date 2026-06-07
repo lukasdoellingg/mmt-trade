@@ -12,10 +12,7 @@ test('LCM v5 types and registry modules exist', () => {
   assert.match(types, /anchorId: string/);
   assert.match(types, /interface TabGroupState/);
 
-  const registry = readFileSync(
-    path.join(root, 'web/frontend/src/workspace/runtimeLockRegistry.ts'),
-    'utf8',
-  );
+  const registry = readFileSync(path.join(root, 'web/frontend/src/workspace/runtimeLockRegistry.ts'), 'utf8');
   assert.match(registry, /focusAnchorId/);
   assert.match(registry, /suspendSlot/);
   assert.match(registry, /resumeSlot/);

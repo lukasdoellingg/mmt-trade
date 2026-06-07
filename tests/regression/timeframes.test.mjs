@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { TF_MS, TF_SEC, timeframeToMs, timeframeToSec, chartIntervalToBinance } from '../../shared/timeframes.mjs';
+import {
+  TF_MS,
+  TF_SEC,
+  timeframeToMs,
+  timeframeToSec,
+  chartIntervalToBinance,
+} from '../../shared/timeframes.mjs';
 
 test('timeframes: 5m is defined consistently', () => {
   assert.equal(TF_MS['5m'], 300_000);

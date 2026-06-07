@@ -52,9 +52,16 @@ const CVD_TOGGLE = Object.freeze([
 ]);
 
 const hasTf = computed(() =>
-  ['funding', 'oi-hist', 'cvd', 'liquidations', 'volume', 'returns-hour', 'returns-day', 'returns-cum'].includes(
-    metric.value,
-  ),
+  [
+    'funding',
+    'oi-hist',
+    'cvd',
+    'liquidations',
+    'volume',
+    'returns-hour',
+    'returns-day',
+    'returns-cum',
+  ].includes(metric.value),
 );
 const hasFundingToggle = computed(() => metric.value === 'funding');
 const hasCvdToggle = computed(() => metric.value === 'cvd');
@@ -70,7 +77,9 @@ const hasCvdToggle = computed(() => metric.value === 'cvd');
         :tf-options="hasTf ? TF_OPTS : null"
         :tf-value="metrics.tf.value"
         :toggle-options="hasFundingToggle ? FUNDING_TOGGLE : hasCvdToggle ? CVD_TOGGLE : null"
-        :toggle-value="hasFundingToggle ? metrics.fundingMode.value : hasCvdToggle ? metrics.cvdMode.value : ''"
+        :toggle-value="
+          hasFundingToggle ? metrics.fundingMode.value : hasCvdToggle ? metrics.cvdMode.value : ''
+        "
         @update:tf-value="metrics.tf.value = $event"
         @update:toggle-value="
           hasFundingToggle

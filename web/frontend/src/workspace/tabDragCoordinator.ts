@@ -25,10 +25,7 @@ export function clearTabHover(): void {
   hoverTargetId = null;
 }
 
-export function onHeaderHover(
-  targetWidgetId: string,
-  createTabGroup: (ids: string[]) => void,
-): void {
+export function onHeaderHover(targetWidgetId: string, createTabGroup: (ids: string[]) => void): void {
   if (!dragSourceId || dragSourceId === targetWidgetId) return;
   if (hoverTargetId === targetWidgetId) return;
   clearTabHover();

@@ -42,7 +42,12 @@ import {
   HUD_THROTTLE_MS,
 } from '../config/featureFlags';
 import { attachFeedPort, detachFeedPort } from '../engine/feedHubClient';
-import { spawnChartEngineWorker, spawnObHeatmapWorker, spawnFootprintLayerWorker, spawnVpvrLayerWorker } from '../chart/useChartWorkers';
+import {
+  spawnChartEngineWorker,
+  spawnObHeatmapWorker,
+  spawnFootprintLayerWorker,
+  spawnVpvrLayerWorker,
+} from '../chart/useChartWorkers';
 import {
   attachObFeedPort,
   startObFeed as startObFeedPort,

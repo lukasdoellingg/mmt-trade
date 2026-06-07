@@ -69,10 +69,7 @@ export function exportLayoutDocument(doc: LayoutDocument): string {
   return JSON.stringify(doc, null, 2);
 }
 
-export function importLayoutDocument(
-  json: string,
-  profile: WorkspaceProfile,
-): LayoutDocument | null {
+export function importLayoutDocument(json: string, profile: WorkspaceProfile): LayoutDocument | null {
   try {
     const parsed = JSON.parse(json) as unknown;
     const doc = parseLayoutDocument(parsed, profile);
