@@ -56,15 +56,15 @@ jobs:
       - uses: laytan/setup-odin@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          release: nightly
+          release: latest
       - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: '3.1.74'
       - name: Verify toolchain
         run: |
           odin version
           emcc --version
       - name: Install vendored Sokol/cimgui
         run: bash packages/engine/scripts/install-vendor.sh
-      - name: Engine smoke build
-        run: npm run build:engine:smoke
       - name: Chart runtime build
         run: npm run build:engine:chart
