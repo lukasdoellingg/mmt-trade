@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "cbor": "^9.0.2",
-    "ccxt": "^4.2.0",
+    "ccxt": "^4.5.54",
     "compression": "^1.8.1",
     "cors": "^2.8.5",
     "express": "^4.21.0",
